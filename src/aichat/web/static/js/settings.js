@@ -1015,7 +1015,7 @@ function initGeneral() {
     if ($('g-idle').value === '' || !Number.isInteger(idle) || idle < 0 || idle > 1440) fail('local.idle_unload_minutes', 'Enter a whole number of minutes from 0 to 1440.', $('g-idle'));
     if ($('g-mpc').value === '' || !Number.isInteger(mpc) || mpc < 200 || mpc > 100000) fail('chat.max_prompt_chars', 'Enter a whole number from 200 to 100000.', $('g-mpc'));
     const hotkey = $('g-hotkey').value.trim();
-    if (!hotkey) fail('ui.hotkey', 'Enter a hotkey, for example Ctrl+Alt+Space.', $('g-hotkey'));
+    if (!hotkey) fail('ui.hotkey', 'Enter a hotkey, for example Ctrl+Alt+C.', $('g-hotkey'));
     if (bad) { bad.focus(); return; }
 
     const patch = {

@@ -313,7 +313,7 @@ class ToolsCfg(BaseModel):
 
 class UiCfg(BaseModel):
     theme: str = "laserlloyd"
-    hotkey: str = "Ctrl+Alt+Space"
+    hotkey: str = "Ctrl+Alt+C"
     hide_on_blur: bool = True
     width: int = Field(default=420, ge=200, le=4000)  # logical px
     height: int = Field(default=620, ge=200, le=4000)

@@ -66,7 +66,7 @@ const DEFAULT_CONFIG = {
     web_search_max_results: 5, tool_result_max_chars_local: 1500, tool_result_max_chars_cloud: 6000,
     block_private_addresses: true,
   },
-  ui: { theme: 'laserlloyd', hotkey: 'Ctrl+Alt+Space', hide_on_blur: true, width: 420, height: 620, margin: 12 },
+  ui: { theme: 'laserlloyd', hotkey: 'Ctrl+Alt+C', hide_on_blur: true, width: 420, height: 620, margin: 12 },
   startup: { autostart: true },
   logging: { level: 'INFO' },
   hf: { endpoint: 'https://huggingface.co', default_author: 'OpenVINO' },

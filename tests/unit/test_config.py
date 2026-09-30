@@ -70,7 +70,7 @@ def test_defaults_match_plan(paths):
     assert cfg.local.extra_args == []
     assert cfg.tools.enabled == ["web_search", "fetch_url", "current_datetime", "calculator"]
     assert cfg.ui.theme == "laserlloyd"
-    assert cfg.ui.hotkey == "Ctrl+Alt+Space"
+    assert cfg.ui.hotkey == "Ctrl+Alt+C"
     assert cfg.startup.autostart is True
     assert cfg.logging.level == "INFO"
     assert cfg.logging.max_bytes == 5_000_000
