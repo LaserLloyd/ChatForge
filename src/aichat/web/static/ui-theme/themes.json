@@ -1,0 +1,221 @@
+{
+  "package": "unifyingTheme",
+  "version": "V26-09-16",
+  "source": "design/Theme Foundation.dc.html (Claude Design export, 2026-09-16)",
+  "notes": [
+    "One entry per theme. css = the file in src/css that holds the theme's [data-palette] block; Purple has none because it is the :root base inside theme-base.css.",
+    "ground is oled | dark | light. The runtime derives <html data-theme> from it: oled -> amoled, dark -> dark, light -> light.",
+    "family groups a dark/light pair for apps that offer a dark/light switch (laserlloyd <-> laserlloyd-light).",
+    "set is core (shipped by default) or opt-in (only where an app manifest names it).",
+    "contrastProfile (optional) names the floor set tools/check_contrast.py applies: standard (the brief's table, the default) or night (red-on-black night themes, where text gains luminance only by moving toward orange: the text floors become primary 5.5, secondary 4.5, tertiary 4, disabled 2 and md-bold 6; structure, text-ladder and colour-separation checks are added, APCA is reported, and a zero-blue audit runs).",
+    "redesign (optional, core themes only) records an owner-approved redesign: the theme's values no longer come from design/output, so sync_theme.py's core drift guard skips it. Forest was redesigned on 2026-09-25.",
+    "coreFixes (optional, core themes only) lists approved token fixes, one object per round (date, tokens as token -> value, review, note). The core theme file may differ from design/output only in those tokens (and comments), and must hold exactly the recorded values; sync_theme.py's drift guard checks both. Purple's file is theme-base.css.",
+    "swatch is the picker dot colour from the specimen board. fonts are web-font families the theme names first in its stacks; every stack falls back to system fonts, so none of them has to be installed."
+  ],
+  "themes": [
+    {
+      "slug": "purple",
+      "name": "Purple",
+      "family": "purple",
+      "ground": "dark",
+      "colorScheme": "dark",
+      "themeColor": "#0e0e1b",
+      "set": "core",
+      "swatch": "#7c3aed",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": null,
+      "tokens": "base.json",
+      "coreFixes": [
+        {
+          "date": "2026-09-25",
+          "tokens": {
+            "--text-secondary": "#a0a0bd",
+            "--rp-action": "#a0a0bd",
+            "--accent-hover": "#8250f0",
+            "--cta-hover": "#8250f0",
+            "--border-strong": "#6f6f9c"
+          },
+          "review": "reports/review-2026-09-25-themes.md",
+          "note": "The waiting fixes from design/output/contrast-report.md; --rp-action follows --text-secondary and --cta-hover follows --accent-hover."
+        }
+      ]
+    },
+    {
+      "slug": "midnight-gold",
+      "name": "Midnight Gold",
+      "family": "midnight-gold",
+      "ground": "oled",
+      "colorScheme": "dark",
+      "themeColor": "#000000",
+      "set": "core",
+      "swatch": "#e3bf5a",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": "theme-midnight-gold.css",
+      "tokens": "midnight-gold.json"
+    },
+    {
+      "slug": "glacier",
+      "name": "Glacier",
+      "family": "glacier",
+      "ground": "oled",
+      "colorScheme": "dark",
+      "themeColor": "#000000",
+      "set": "core",
+      "swatch": "#7fe0f2",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": "theme-glacier.css",
+      "tokens": "glacier.json",
+      "coreFixes": [
+        {
+          "date": "2026-09-25",
+          "tokens": {
+            "--slider-color": "var(--highlight)"
+          },
+          "review": "reports/review-2026-09-25-themes.md",
+          "note": "Slider fill in the ice highlight: the accent fill was darker than the empty track."
+        }
+      ]
+    },
+    {
+      "slug": "forest",
+      "name": "Forest",
+      "family": "forest",
+      "ground": "oled",
+      "colorScheme": "dark",
+      "themeColor": "#000000",
+      "set": "core",
+      "swatch": "#b5d59b",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": "theme-forest.css",
+      "tokens": "forest.json",
+      "redesign": {
+        "date": "2026-09-25",
+        "by": "owner request",
+        "note": "Earthy moss theme built like Glacier (pale green and browns); diverges from design/output/theme-forest.css on purpose. Revision 2 the same day: calmer (chroma toward Glacier's) and true black on every large surface for OLED.",
+        "review": "reports/review-2026-09-25-themes.md"
+      }
+    },
+    {
+      "slug": "paper",
+      "name": "Paper",
+      "family": "paper",
+      "ground": "light",
+      "colorScheme": "light",
+      "themeColor": "#e6d2a8",
+      "set": "core",
+      "swatch": "#a3241c",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": "theme-paper.css",
+      "tokens": "paper.json",
+      "coreFixes": [
+        {
+          "date": "2026-09-25",
+          "tokens": {
+            "--text-secondary": "#4a3722",
+            "--success-text": "#0e4a2e",
+            "--warning-text": "#5a3a00",
+            "--danger-text": "#8a1a15"
+          },
+          "review": "reports/review-2026-09-25-themes.md",
+          "note": "The waiting fixes from design/output/contrast-report.md; one --danger-text value clears both of its rows."
+        }
+      ]
+    },
+    {
+      "slug": "daylight",
+      "name": "Daylight",
+      "family": "daylight",
+      "ground": "light",
+      "colorScheme": "light",
+      "themeColor": "#ffffff",
+      "set": "core",
+      "swatch": "#2c56c9",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": "theme-daylight.css",
+      "tokens": "daylight.json"
+    },
+    {
+      "slug": "electric-yellow",
+      "name": "Electric Yellow",
+      "family": "electric-yellow",
+      "ground": "dark",
+      "colorScheme": "dark",
+      "themeColor": "#0a0a0b",
+      "set": "opt-in",
+      "swatch": "#e8ff00",
+      "fonts": [
+        "Archivo",
+        "JetBrains Mono"
+      ],
+      "css": "theme-electric-yellow.css",
+      "tokens": "electric-yellow.json"
+    },
+    {
+      "slug": "laserlloyd",
+      "name": "LaserLloyd",
+      "family": "laserlloyd",
+      "ground": "dark",
+      "colorScheme": "dark",
+      "themeColor": "#080a0d",
+      "set": "opt-in",
+      "swatch": "#2ea8ff",
+      "fonts": [
+        "Inter",
+        "Space Grotesk"
+      ],
+      "css": "theme-laserlloyd.css",
+      "tokens": "laserlloyd.json"
+    },
+    {
+      "slug": "laserlloyd-light",
+      "name": "LaserLloyd Light",
+      "family": "laserlloyd",
+      "ground": "light",
+      "colorScheme": "light",
+      "themeColor": "#f2f5f9",
+      "set": "opt-in",
+      "swatch": "#0b78d0",
+      "fonts": [
+        "Inter",
+        "Space Grotesk"
+      ],
+      "css": "theme-laserlloyd-light.css",
+      "tokens": "laserlloyd-light.json"
+    },
+    {
+      "slug": "night-red",
+      "name": "Night Red",
+      "family": "night-red",
+      "ground": "oled",
+      "colorScheme": "dark",
+      "themeColor": "#000000",
+      "set": "opt-in",
+      "swatch": "#ff0000",
+      "fonts": [
+        "Inter",
+        "JetBrains Mono"
+      ],
+      "css": "theme-night-red.css",
+      "tokens": "night-red.json",
+      "contrastProfile": "night"
+    }
+  ]
+}

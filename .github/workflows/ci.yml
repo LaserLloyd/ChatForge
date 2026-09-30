@@ -36,4 +36,4 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Run tests
-        run: node --test tests/js/**/*.test.mjs
+        run: node --test "tests/js/**/*.test.mjs"

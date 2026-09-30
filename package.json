@@ -7,6 +7,6 @@
     "jsdom": "latest"
   },
   "scripts": {
-    "test:js": "node --test tests/js/**/*.test.mjs"
+    "test:js": "node --test \"tests/js/**/*.test.mjs\""
   }
 }

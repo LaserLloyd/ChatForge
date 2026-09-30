@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AI Chat</title>
+  <link rel="icon" href="/static/img/icon.svg" type="image/svg+xml">
+  <!-- Theme runtime first (blocking) so the palette is set before first paint. -->
+  <script src="/static/ui-theme/ui-theme.js" data-themes="laserlloyd,laserlloyd-light,midnight-gold,glacier,forest,paper,daylight,purple" data-default="laserlloyd" data-storage-key="aichat.theme" data-families="true"></script>
+  <link rel="stylesheet" href="/static/ui-theme/ui-theme-base.css">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/ui-theme/ui-theme.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="hdr">
+      <div class="model-wrap">
+        <button type="button" id="model-chip" class="model-chip" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-menu" title="Choose model">
+          <span id="status-dot" class="status-dot" data-state="offline" aria-hidden="true"></span>
+          <span id="chip-label" class="chip-label">Loading&hellip;</span>
+          <svg class="icon icon-caret" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div id="model-menu" class="model-menu" role="listbox" aria-label="Models" hidden></div>
+      </div>
+      <div class="hdr-drag pywebview-drag-region" aria-hidden="true"></div>
+      <div class="hdr-actions">
+        <button type="button" id="btn-pin" class="icon-btn" aria-pressed="false" aria-label="Keep window open" title="Keep window open">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H7v-2l3-3-1-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" id="btn-new" class="icon-btn" aria-label="New chat" title="New chat">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+        <button type="button" id="btn-settings" class="icon-btn" aria-label="Settings" title="Settings">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
+        <button type="button" id="btn-close" class="icon-btn" aria-label="Close" title="Close (Esc)">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="status-line" class="status-line" hidden>
+      <span id="status-text" class="status-text"></span>
+      <button type="button" id="status-action" class="link-btn" hidden></button>
+      <div id="status-bar" class="status-bar" hidden><i id="status-fill"></i></div>
+    </div>
+
+    <main id="messages" class="messages" role="log" aria-live="off" tabindex="-1" aria-label="Conversation"></main>
+
+    <button type="button" id="scroll-bottom" class="scroll-bottom hidden" aria-label="Scroll to latest message" title="Scroll to latest">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span id="sb-count" class="sb-count hidden"></span>
+    </button>
+
+    <footer class="composer">
+      <div class="composer-row">
+        <textarea id="input" rows="1" dir="auto" placeholder="Message AI Chat" aria-label="Message" autocomplete="off" spellcheck="true"></textarea>
+        <button type="button" id="send" class="send-btn" aria-label="Send" title="Send (Enter)" disabled>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" id="stop" class="stop-btn hidden" aria-label="Stop" title="Stop generating">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div class="composer-foot">
+        <span id="char-count" class="char-count" hidden></span>
+      </div>
+    </footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+
+  <!-- marked and DOMPurify are classic deferred scripts, chat.js a module: deferred
+       classic scripts and modules run in document order, so both globals exist when
+       markdown.js is evaluated. There are no inline scripts (the CSP forbids them). -->
+  <script defer src="/static/vendor/marked.min.js"></script>
+  <script defer src="/static/vendor/purify.min.js"></script>
+  <script type="module" src="/static/js/chat.js"></script>
+</body>
+</html>
