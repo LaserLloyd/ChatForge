@@ -586,6 +586,12 @@ on('chat.tool_result', (e) => {
 on('chat.done', (e) => {
   if (!accept(e)) return;
   const turn = curTurn();
+  // The engine's final content is authoritative: it can differ from the streamed text
+  // (e.g. a reply with only reasoning is shown as its reasoning).
+  if (typeof e.content === 'string' && e.content && e.content !== turn.content) {
+    turn.content = e.content;
+    ensureBubble(turn);
+  }
   if (!turn.content && !turn.chips.size && !turn.reasoning) {
     ensureBubble(turn);
     turn.md.append(el('span', { class: 'muted', text: '(The model returned an empty reply.)' }));
