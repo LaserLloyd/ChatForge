@@ -113,7 +113,7 @@ test('the key field is cleared when switching tabs', () => {
 test('General tab is populated and exposes the theme picker', () => {
   assert.equal($('g-idle').value, '10');
   assert.equal($('g-mpc').value, '4000');
-  assert.equal($('g-hotkey').value, 'Ctrl+Alt+Space');
+  assert.equal($('g-hotkey').value, 'Ctrl+Alt+C');
   assert.ok($('g-theme').hasAttribute('data-ui-theme-picker'));
   assert.equal(doc.querySelectorAll('[data-tool]:checked').length, 4);
 });
