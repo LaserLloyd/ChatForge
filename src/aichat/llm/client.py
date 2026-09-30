@@ -125,6 +125,8 @@ class OpenAICompatClient:
             transport=transport,
             timeout=httpx.Timeout(t.stall_s, connect=t.connect_s),
             follow_redirects=False,
+            # A system proxy must never capture loopback traffic to the local OVMS server.
+            trust_env=not self._local,
         )
 
     def __repr__(self) -> str:  # never show the key
