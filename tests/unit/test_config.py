@@ -58,7 +58,7 @@ def test_defaults_match_plan(paths):
     cfg = load_config(paths)
     assert cfg.schema_version == 1
     assert cfg.chat.provider == "local-npu"
-    assert cfg.chat.model == "OpenVINO/Qwen3-4B-int4-ov"
+    assert cfg.chat.model == "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
     assert cfg.chat.max_prompt_chars == 4000
     assert cfg.chat.max_tool_rounds == 4
     assert cfg.chat.show_reasoning == "collapsed"

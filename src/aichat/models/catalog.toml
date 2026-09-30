@@ -8,26 +8,23 @@
 #
 # [[avoid]] entries are case-insensitive substrings of the repo id. Catalog
 # entries win over avoid patterns.
-
-[[model]]
-id = "OpenVINO/Qwen3-4B-int4-ov"
-label = "Qwen3 4B INT4"
-approx_gb = 2.29
-npu = "recommended"
-tool_parser = "hermes3"
-reasoning_parser = "qwen3"
-thinking_toggle = true
-licence = "apache-2.0"
-note = "Default. First NPU compile ~5-6 min."
+#
+# NPU gate result (2026-09-30, docs/RUNTIME-NOTES.md): Qwen3-4B-int4-ov compiles
+# on the Lunar Lake NPU but produces garbage output, so Qwen2.5-1.5B is the
+# recommended default and Qwen3-4B is on the avoid list.
 
 [[model]]
 id = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
 label = "Qwen2.5 1.5B Instruct INT4"
 approx_gb = 0.93
-npu = "supported"
+npu = "recommended"
 tool_parser = "hermes3"
 licence = "apache-2.0"
-note = "Fallback; faster, weaker."
+note = "Default. Verified on the Lunar Lake NPU: ~45 s first compile, ~3 s cached load, 42-51 tok/s, clean tool calls."
+
+[[avoid]]
+pattern = "Qwen3-4B-int4-ov"
+reason = "Compiles on the Lunar Lake NPU but produces garbage output (fine on CPU)."
 
 [[avoid]]
 pattern = "Qwen3-8B"

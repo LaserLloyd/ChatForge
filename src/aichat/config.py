@@ -268,7 +268,7 @@ def _upper(v: Any) -> Any:
 
 class ChatCfg(BaseModel):
     provider: str = "local-npu"
-    model: str = "OpenVINO/Qwen3-4B-int4-ov"
+    model: str = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
     system_prompt: str = (
         "You are AI Chat, a concise desktop assistant. Answer briefly. Use tools only when "
         "they help (current facts, web pages, dates, arithmetic)."
