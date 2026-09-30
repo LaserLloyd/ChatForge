@@ -142,8 +142,10 @@ def test_ovms_env_mirrors_setupvars_and_strips_venv(tmp_path):
     (ovms / "python" / "Scripts").mkdir(parents=True)
     (ovms / "espeak-ng-data").mkdir()
     venv = tmp_path / "venv"
+    # OS-native entries: a "C:\\Windows" literal splits on the ":" pathsep of the Linux CI leg.
+    windows, tools = str(tmp_path / "Windows"), str(tmp_path / "Tools")
     base = {
-        "Path": os.pathsep.join([str(venv / "Scripts"), "C:\\Windows", "C:\\Tools"]),
+        "Path": os.pathsep.join([str(venv / "Scripts"), windows, tools]),
         "VIRTUAL_ENV": str(venv),
         "PYTHONHOME": "C:\\wrong",
         "PYTHONPATH": "C:\\wrong\\lib",
@@ -157,7 +159,7 @@ def test_ovms_env_mirrors_setupvars_and_strips_venv(tmp_path):
     assert env["ESPEAK_DATA_PATH"] == str(ovms / "espeak-ng-data")
     parts = env["PATH"].split(os.pathsep)
     assert parts[:3] == [str(ovms), str(ovms / "python"), str(ovms / "python" / "Scripts")]
-    assert parts[3:] == ["C:\\Windows", "C:\\Tools"]  # venv Scripts removed
+    assert parts[3:] == [windows, tools]  # venv Scripts removed
     for gone in ("VIRTUAL_ENV", "PYTHONPATH", "API_KEY", "Path"):
         assert gone not in env
     assert env["USERPROFILE"] == "C:\\Users\\me"
@@ -167,8 +169,9 @@ def test_ovms_env_mirrors_setupvars_and_strips_venv(tmp_path):
 def test_ovms_env_python_off_appends_dir(tmp_path):
     ovms = tmp_path / "ovms"
     ovms.mkdir()
-    env = ovms_env(ovms, {"PATH": "C:\\Windows", "PYTHONHOME": "C:\\x"})
-    assert env["PATH"].split(os.pathsep) == ["C:\\Windows", str(ovms)]
+    windows = str(tmp_path / "Windows")  # OS-native: no ":" on the Linux CI leg
+    env = ovms_env(ovms, {"PATH": windows, "PYTHONHOME": "C:\\x"})
+    assert env["PATH"].split(os.pathsep) == [windows, str(ovms)]
     assert "PYTHONHOME" not in env and "ESPEAK_DATA_PATH" not in env
 
 
