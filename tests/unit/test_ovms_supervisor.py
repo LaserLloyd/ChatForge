@@ -286,7 +286,7 @@ async def test_readiness_transitions_starting_then_loading_when_warm(tmp_path):
         load_s=40,
     )
     ticks: list[str] = []
-    spec = _spec(tmp_path, extra_args=["--fake_rest_delay_s", "2.5", "--fake_load_s", "0.4"])
+    spec = _spec(tmp_path, extra_args=["--fake_rest_delay_s", "2.5", "--fake_load_s", "4.0"])
     try:
         await sup.start(spec, lambda phase, _el: ticks.append(phase))
     finally:
