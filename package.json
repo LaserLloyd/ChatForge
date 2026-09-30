@@ -1,0 +1,12 @@
+{
+  "name": "aichat",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "jsdom": "latest"
+  },
+  "scripts": {
+    "test:js": "node --test tests/js/**/*.test.mjs"
+  }
+}
