@@ -1,0 +1,58 @@
+# AI Chat built-in model catalog (PLAN §1.8).
+#
+# [[model]] entries are known-good OpenVINO exports; `npu` is "recommended" or
+# "supported". Exactly one entry should be "recommended". PLAN §7 (owner
+# decision 2, NPU model gate): WS1 may move the recommended flag to a
+# channel-wise (-cw-) variant or to the Qwen2.5 fallback after the first NPU
+# compile, so code must read it from here and never hard-code a model id.
+#
+# [[avoid]] entries are case-insensitive substrings of the repo id. Catalog
+# entries win over avoid patterns.
+
+[[model]]
+id = "OpenVINO/Qwen3-4B-int4-ov"
+label = "Qwen3 4B INT4"
+approx_gb = 2.29
+npu = "recommended"
+tool_parser = "hermes3"
+reasoning_parser = "qwen3"
+thinking_toggle = true
+licence = "apache-2.0"
+note = "Default. First NPU compile ~5-6 min."
+
+[[model]]
+id = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
+label = "Qwen2.5 1.5B Instruct INT4"
+approx_gb = 0.93
+npu = "supported"
+tool_parser = "hermes3"
+licence = "apache-2.0"
+note = "Fallback; faster, weaker."
+
+[[avoid]]
+pattern = "Qwen3-8B"
+reason = "Too large for 16 GB shared memory."
+
+[[avoid]]
+pattern = "Qwen3-1.7B-int4-ov"
+reason = "Asymmetric INT4 export; does not compile on NPU."
+
+[[avoid]]
+pattern = "Qwen3-0.6B-int4-ov"
+reason = "Asymmetric INT4 export; does not compile on NPU."
+
+[[avoid]]
+pattern = "Phi-4-mini"
+reason = "Asymmetric INT4 export; does not compile on NPU."
+
+[[avoid]]
+pattern = "Qwen3.5"
+reason = "Architecture not supported by the OVMS NPU pipeline."
+
+[[avoid]]
+pattern = "Qwen3.6"
+reason = "Architecture not supported by the OVMS NPU pipeline."
+
+[[avoid]]
+pattern = "LFM2"
+reason = "Architecture not supported by the OVMS NPU pipeline."
