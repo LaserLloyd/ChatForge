@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from aichat import autostart
-from aichat.config import load_config
-from aichat.desktop.bridge import Api, Services
-from aichat.paths import Paths
+from chatforge import autostart
+from chatforge.config import load_config
+from chatforge.desktop.bridge import Api, Services
+from chatforge.paths import Paths
 
 
 @pytest.fixture
@@ -20,8 +20,8 @@ def api(tmp_path: Path, fake_keyring) -> Api:
 
 
 def test_get_autostart_reports_task_scheduler_and_duplicate(api, monkeypatch, tmp_path):
-    script = tmp_path / "home" / "AIChat.vbs"
-    shim = tmp_path / "Startup" / "AIChat.vbs"
+    script = tmp_path / "home" / "ChatForge.vbs"
+    shim = tmp_path / "Startup" / "ChatForge.vbs"
     status = autostart.AutostartStatus(True, "Task Scheduler", script, "twice", duplicate=shim)
     monkeypatch.setattr(autostart, "status", lambda: status)
     reply = api.get_autostart()
@@ -31,7 +31,7 @@ def test_get_autostart_reports_task_scheduler_and_duplicate(api, monkeypatch, tm
 
 
 def test_get_autostart_reports_startup_folder(api, monkeypatch, tmp_path):
-    shim = tmp_path / "Startup" / "AIChat.vbs"
+    shim = tmp_path / "Startup" / "ChatForge.vbs"
     status = autostart.AutostartStatus(True, "Windows Startup folder", shim)
     monkeypatch.setattr(autostart, "status", lambda: status)
     reply = api.get_autostart()
@@ -44,7 +44,7 @@ def test_set_autostart_passes_the_app_home_both_ways(api, monkeypatch):
 
     def enable(argv=None, *, home=None):
         calls.append(("enable", home))
-        return autostart.AutostartStatus(True, "Task Scheduler", home / "AIChat.vbs")
+        return autostart.AutostartStatus(True, "Task Scheduler", home / "ChatForge.vbs")
 
     def disable(*, home=None):
         calls.append(("disable", home))

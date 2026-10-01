@@ -15,10 +15,10 @@ import httpx
 import psutil
 import pytest
 
-from aichat.runtime import compile_cache
-from aichat.runtime import ovms_supervisor as sup_mod
-from aichat.runtime.jobobject import describe_exit_code, tracked_pids
-from aichat.runtime.ovms_supervisor import (
+from chatforge.runtime import compile_cache
+from chatforge.runtime import ovms_supervisor as sup_mod
+from chatforge.runtime.jobobject import describe_exit_code, tracked_pids
+from chatforge.runtime.ovms_supervisor import (
     LaunchSpec,
     OvmsError,
     OvmsSupervisor,
@@ -29,7 +29,7 @@ from aichat.runtime.ovms_supervisor import (
     redact_argv,
     rotate_log,
 )
-from aichat.runtime.ports import pick_free_port
+from chatforge.runtime.ports import pick_free_port
 from tests.fakes import ovms_child
 
 MODEL = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
@@ -73,10 +73,10 @@ def _supervisor(tmp_path: Path, **kw) -> OvmsSupervisor:
 def test_build_argv_golden_npu():
     spec = LaunchSpec(
         model_id="OpenVINO/Qwen3-4B-int4-ov",
-        model_path=Path(r"C:\AIChat\models\OpenVINO\Qwen3-4B-int4-ov"),
+        model_path=Path(r"C:\ChatForge\models\OpenVINO\Qwen3-4B-int4-ov"),
         device="npu",
         max_prompt_len=4096,
-        cache_dir=Path(r"C:\AIChat\cache\ov\OpenVINO--Qwen3-4B-int4-ov\NPU-4096"),
+        cache_dir=Path(r"C:\ChatForge\cache\ov\OpenVINO--Qwen3-4B-int4-ov\NPU-4096"),
         tool_parser="hermes3",
         reasoning_parser="qwen3",
         port=18611,
@@ -86,11 +86,11 @@ def test_build_argv_golden_npu():
         "--rest_port", "18611",
         "--rest_bind_address", "127.0.0.1",
         "--model_name", "OpenVINO/Qwen3-4B-int4-ov",
-        "--model_path", str(Path(r"C:\AIChat\models\OpenVINO\Qwen3-4B-int4-ov")),
+        "--model_path", str(Path(r"C:\ChatForge\models\OpenVINO\Qwen3-4B-int4-ov")),
         "--task", "text_generation",
         "--target_device", "NPU",
         "--max_prompt_len", "4096",
-        "--cache_dir", str(Path(r"C:\AIChat\cache\ov\OpenVINO--Qwen3-4B-int4-ov\NPU-4096")),
+        "--cache_dir", str(Path(r"C:\ChatForge\cache\ov\OpenVINO--Qwen3-4B-int4-ov\NPU-4096")),
         "--tool_parser", "hermes3",
         "--reasoning_parser", "qwen3",
         "--log_level", "INFO",
@@ -259,7 +259,7 @@ async def test_start_ready_then_stop(tmp_path):
         state = json.loads((tmp_path / "state.json").read_text())
         assert state["launch"][MODEL]["hash"] == launch_hash(spec)
         log_text = (tmp_path / "logs" / "ovms.log").read_text(encoding="utf-8")
-        assert log_text.startswith("=== aichat launch")
+        assert log_text.startswith("=== chatforge launch")
         assert await sup.health() is True
         pid = sup.pid
     finally:
@@ -297,9 +297,8 @@ async def test_readiness_transitions_starting_then_loading_when_warm(tmp_path):
     assert sup.expected_s == compile_cache.CACHED_LOAD_S
 
 
-
 async def test_marker_for_other_compile_settings_reads_as_a_first_compile(tmp_path):
-    from aichat.runtime.ovms_supervisor import spec_compile_hash
+    from chatforge.runtime.ovms_supervisor import spec_compile_hash
 
     sup = _supervisor(tmp_path)
     spec = _spec(tmp_path)
@@ -323,6 +322,7 @@ async def test_marker_for_other_compile_settings_reads_as_a_first_compile(tmp_pa
     assert marker["compile_hash"] == spec_compile_hash(spec)
     assert "cached_load_s" not in marker  # this load was the compile
     assert compile_cache.is_compiled(spec.cache_dir, compile_hash=spec_compile_hash(spec))
+
 
 async def test_child_crash_while_ready_sets_exit_event(tmp_path):
     sup = _supervisor(tmp_path)

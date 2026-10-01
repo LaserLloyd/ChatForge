@@ -16,15 +16,15 @@ from typing import Any
 
 import pytest
 
-from aichat.chat import prompts
-from aichat.chat.conversation import CONTEXT_CUT_NOTICE
-from aichat.chat.engine import ChatEngine
-from aichat.chat.history import CONTEXT_NOTE, MESSAGE_CUT_NOTE, PromptBudget, estimate_tokens
-from aichat.config import validate_config
-from aichat.llm.providers import ProviderRegistry, RemoteProvider
-from aichat.paths import Paths
-from aichat.runtime.manager import LocalModelManager
-from aichat.tools.registry import LOCAL_TOOL_NAMES, ToolRegistry, ToolResult
+from chatforge.chat import prompts
+from chatforge.chat.conversation import CONTEXT_CUT_NOTICE
+from chatforge.chat.engine import ChatEngine
+from chatforge.chat.history import CONTEXT_NOTE, MESSAGE_CUT_NOTE, PromptBudget, estimate_tokens
+from chatforge.config import validate_config
+from chatforge.llm.providers import ProviderRegistry, RemoteProvider
+from chatforge.paths import Paths
+from chatforge.runtime.manager import LocalModelManager
+from chatforge.tools.registry import LOCAL_TOOL_NAMES, ToolRegistry, ToolResult
 from tests.fakes.openai_server import (
     CapturedRequest,
     Reply,
@@ -619,7 +619,7 @@ async def test_no_refusal_recovery_without_tools(tmp_path) -> None:
 
 
 async def test_local_model_gets_the_weather_before_its_first_round(tmp_path, monkeypatch) -> None:
-    from aichat.tools import weather
+    from chatforge.tools import weather
 
     seen: dict[str, Any] = {}
 
@@ -691,7 +691,7 @@ async def test_local_failure_without_a_fallback_is_an_error(tmp_path) -> None:
 async def test_fallback_after_the_local_request_failed_rolls_everything_back(
     tmp_path, monkeypatch
 ) -> None:
-    from aichat.tools import weather
+    from chatforge.tools import weather
 
     async def fake_weather(location, **kw):
         return ToolResult(True, "Weather for Porto\nNow: 28°C", "Weather")
@@ -724,7 +724,7 @@ async def test_fallback_after_the_local_request_failed_rolls_everything_back(
 
 
 async def test_eager_call_counts_for_duplicates_and_caps_temperature(tmp_path, monkeypatch) -> None:
-    from aichat.tools import weather
+    from chatforge.tools import weather
 
     calls: list[str] = []
 

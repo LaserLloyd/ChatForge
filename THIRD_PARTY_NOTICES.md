@@ -2,14 +2,14 @@
 
 ## Vendored Libraries
 
-The following libraries are vendored in `src/aichat/web/static/vendor/`:
+The following libraries are vendored in `src/chatforge/web/static/vendor/`:
 
 - **marked** 18.0.5 - MIT License
 - **DOMPurify** 3.4.9 - Apache-2.0 OR MPL-2.0 License
 - **highlight.js** 11.11.1 - BSD-3-Clause License
 - **github-dark.css** (highlight.js themes) - BSD-3-Clause License
 
-See `src/aichat/web/static/vendor/README.md` for full details.
+See `src/chatforge/web/static/vendor/README.md` for full details.
 
 ## Code Adapted From
 
@@ -25,7 +25,7 @@ Each adapted function carries an "Adapted from" comment indicating the source.
 ## UI Theme
 
 - **UnifyingTheme** (private repository) - UI design system copied verbatim
-  - `src/aichat/web/static/ui-theme/` contains the complete theme bundle
+  - `src/chatforge/web/static/ui-theme/` contains the complete theme bundle
   - Licensed under the owner's private licence; review required before public release
 
 ## Runtime Dependencies

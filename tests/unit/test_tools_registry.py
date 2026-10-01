@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from aichat.errors import AppError
-from aichat.tools import registry as reg
-from aichat.tools.registry import (
+from chatforge.errors import AppError
+from chatforge.tools import registry as reg
+from chatforge.tools.registry import (
     TOOL_NAMES,
     ToolNotAllowed,
     ToolRegistry,
@@ -193,7 +193,7 @@ async def test_disabled_known_tool_raises_tool_not_allowed():
 
 
 async def test_tool_exception_becomes_result(monkeypatch):
-    from aichat.tools import calculator
+    from chatforge.tools import calculator
 
     async def boom(expr):
         raise RuntimeError("secret internals")
@@ -212,7 +212,7 @@ async def test_content_clipped_to_max_chars():
 
 
 async def test_web_search_wired_through_registry(monkeypatch):
-    from aichat.tools import web_search
+    from chatforge.tools import web_search
 
     class Client:
         def text(self, q, max_results=5, **kw):
@@ -234,7 +234,7 @@ async def test_fetch_url_wired_through_registry_refuses_loopback():
 
 
 async def test_fetch_url_uses_config(monkeypatch):
-    from aichat.tools import fetch_url
+    from chatforge.tools import fetch_url
 
     seen = {}
 

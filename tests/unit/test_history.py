@@ -6,8 +6,8 @@ import copy
 
 import pytest
 
-from aichat.attachments import NOTE_CUT_LOCAL
-from aichat.chat.history import (
+from chatforge.attachments import NOTE_CUT_LOCAL
+from chatforge.chat.history import (
     CLOUD_CAP_TOKENS,
     CONTEXT_NOTE,
     HINT_SYSTEM,
@@ -22,9 +22,9 @@ from aichat.chat.history import (
     halve_history,
     split_groups,
 )
-from aichat.llm.errors import LLMError
+from chatforge.llm.errors import LLMError
 
-SYSTEM = {"role": "system", "content": "You are AI Chat. Today is Wednesday 30 September 2026."}
+SYSTEM = {"role": "system", "content": "You are ChatForge. Today is Wednesday 30 September 2026."}
 TOOLS = [
     {
         "type": "function",

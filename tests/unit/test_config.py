@@ -6,8 +6,8 @@ import tomllib
 import pytest
 from pydantic import ValidationError
 
-from aichat import config as config_mod
-from aichat.config import (
+from chatforge import config as config_mod
+from chatforge.config import (
     AppConfig,
     ProviderSpec,
     Timeouts,
@@ -19,12 +19,12 @@ from aichat.config import (
     update_config,
     validate_config,
 )
-from aichat.errors import ConfigError
-from aichat.paths import Paths
+from chatforge.errors import ConfigError
+from chatforge.paths import Paths
 
 
 @pytest.fixture
-def paths(aichat_home):
+def paths(chatforge_home):
     return Paths.default()
 
 
@@ -242,7 +242,7 @@ def test_unknown_keys_warn_but_do_not_crash(paths, caplog):
         '[ui]\nthemes = ["a"]\n[providers.minimax]\nbogus = 2\n[providers.minimax.timeouts]\nx = 1\n',
         encoding="utf-8",
     )
-    with caplog.at_level(logging.WARNING, logger="aichat.config"):
+    with caplog.at_level(logging.WARNING, logger="chatforge.config"):
         cfg = load_config(paths)
     assert cfg.local.device == "CPU"
     text = "\n".join(r.getMessage() for r in caplog.records)
@@ -272,9 +272,9 @@ def test_env_override(paths, monkeypatch):
     paths.config_file.write_text(
         '[local]\ndevice = "CPU"\nidle_unload_minutes = 3\n', encoding="utf-8"
     )
-    monkeypatch.setenv("AICHAT_LOCAL__DEVICE", "gpu")
-    monkeypatch.setenv("AICHAT_CHAT__MAX_TOOL_ROUNDS", "2")
-    monkeypatch.setenv("AICHAT_UI__HIDE_ON_BLUR", "false")
+    monkeypatch.setenv("CHATFORGE_LOCAL__DEVICE", "gpu")
+    monkeypatch.setenv("CHATFORGE_CHAT__MAX_TOOL_ROUNDS", "2")
+    monkeypatch.setenv("CHATFORGE_UI__HIDE_ON_BLUR", "false")
     cfg = load_config(paths)
     assert cfg.local.device == "GPU"
     assert cfg.local.idle_unload_minutes == 3  # file value still applies
@@ -283,7 +283,7 @@ def test_env_override(paths, monkeypatch):
 
 
 def test_env_override_beats_file_but_is_not_written_on_first_run(paths, monkeypatch):
-    monkeypatch.setenv("AICHAT_LOCAL__DEVICE", "CPU")
+    monkeypatch.setenv("CHATFORGE_LOCAL__DEVICE", "CPU")
     cfg = load_config(paths)
     assert cfg.local.device == "CPU"
     assert tomllib.loads(paths.config_file.read_text(encoding="utf-8"))["local"]["device"] == "NPU"
@@ -291,7 +291,7 @@ def test_env_override_beats_file_but_is_not_written_on_first_run(paths, monkeypa
 
 def test_env_override_is_not_persisted_by_update(paths, monkeypatch):
     load_config(paths)
-    monkeypatch.setenv("AICHAT_LOCAL__DEVICE", "CPU")
+    monkeypatch.setenv("CHATFORGE_LOCAL__DEVICE", "CPU")
     cfg = load_config(paths)
     new, _ = update_config(cfg, {"ui": {"theme": "glacier"}}, paths)
     assert new.local.device == "CPU"  # effective value still overridden
@@ -301,7 +301,7 @@ def test_env_override_is_not_persisted_by_update(paths, monkeypatch):
 
 
 def test_env_invalid_value_raises(paths, monkeypatch):
-    monkeypatch.setenv("AICHAT_LOCAL__DEVICE", "TPU")
+    monkeypatch.setenv("CHATFORGE_LOCAL__DEVICE", "TPU")
     with pytest.raises(ConfigError):
         load_config(paths)
 
@@ -635,14 +635,13 @@ def test_key_required_and_docs_url_fields():
         ProviderSpec(id="x", kind="openai", display_name="X", docs_url="ftp://nope")
 
 
-
 def test_local_precompile_and_npu_fallback_settings():
     cfg = validate_config({})
     assert cfg.local.precompile is True and cfg.local.npu_fallback_device == "GPU"
     cfg = validate_config({"local": {"precompile": False, "npu_fallback_device": "cpu"}})
     assert cfg.local.precompile is False and cfg.local.npu_fallback_device == "CPU"
-    assert validate_config({"local": {"npu_fallback_device": "None"}}).local.npu_fallback_device == (
-        "none"
-    )
+    assert validate_config(
+        {"local": {"npu_fallback_device": "None"}}
+    ).local.npu_fallback_device == ("none")
     with pytest.raises(ValidationError):
         validate_config({"local": {"npu_fallback_device": "TPU"}})

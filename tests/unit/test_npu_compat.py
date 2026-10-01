@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from aichat.models import npu_compat
-from aichat.models.catalog import Catalog
-from aichat.models.npu_compat import (
+from chatforge.models import npu_compat
+from chatforge.models.catalog import Catalog
+from chatforge.models.npu_compat import (
     npu_verdict,
     read_weight_compression,
     verdict_from_compression,

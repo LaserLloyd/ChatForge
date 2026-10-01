@@ -13,7 +13,7 @@ import path from 'node:path';
 import { JSDOM } from 'jsdom';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const web = path.resolve(here, '../../src/aichat/web');
+const web = path.resolve(here, '../../src/chatforge/web');
 const html = readFileSync(path.join(web, 'settings.html'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

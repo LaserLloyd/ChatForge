@@ -7,7 +7,7 @@ import datetime as dt
 import httpx
 import pytest
 
-from aichat.models.hf_search import (
+from chatforge.models.hf_search import (
     HfSearch,
     ModelError,
     _next_page_url,

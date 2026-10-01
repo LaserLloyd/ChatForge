@@ -1,11 +1,11 @@
 """Scripted launch check (PLAN §7: the UI smoke test is a manual checklist plus this).
 
-Runs ``python -m aichat --show`` with a temporary ``AICHAT_HOME`` (so no real model is
+Runs ``python -m chatforge --show`` with a temporary ``CHATFORGE_HOME`` (so no real model is
 loaded and no real config is touched), then asserts:
 
-1. the popup window "AI Chat" appears and its rect sits inside the work area at the
+1. the popup window "ChatForge" appears and its rect sits inside the work area at the
    bottom right with the configured margin, and has rounded corners;
-2. ``python -m aichat --settings`` opens the "AI Chat Settings" window;
+2. ``python -m chatforge --settings`` opens the "ChatForge Settings" window;
 3. each run quits cleanly on Ctrl+Break, leaving no ``pythonw``/``python`` process of
    ours and no ``ovms.exe``.
 
@@ -45,7 +45,7 @@ def _tasklist(name: str) -> set[int]:
 
 
 def _wait_window(title: str, timeout: float = 40.0) -> int:
-    from aichat.desktop import win32util
+    from chatforge.desktop import win32util
 
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -65,10 +65,10 @@ def _prepare_home(home: Path) -> None:
 
 def _launch(mode: str, home: Path) -> subprocess.Popen[bytes]:
     _prepare_home(home)
-    env = dict(os.environ, AICHAT_HOME=str(home), PYTHONUNBUFFERED="1")
+    env = dict(os.environ, CHATFORGE_HOME=str(home), PYTHONUNBUFFERED="1")
     env.pop("MINIMAX_API_KEY", None)
     return subprocess.Popen(  # noqa: S603
-        [str(PYTHON), "-m", "aichat", mode],
+        [str(PYTHON), "-m", "chatforge", mode],
         cwd=str(REPO),
         env=env,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
@@ -79,7 +79,7 @@ def _launch(mode: str, home: Path) -> subprocess.Popen[bytes]:
 
 def _owned_by(hwnd: int, proc: subprocess.Popen[bytes], before: set[int]) -> bool:
     """The venv ``python.exe`` is a launcher whose child owns the windows."""
-    from aichat.desktop import win32util
+    from chatforge.desktop import win32util
 
     pid = win32util.window_pid(hwnd)
     return pid == proc.pid or pid in (_tasklist("python.exe") - before)
@@ -98,7 +98,7 @@ def _quit(proc: subprocess.Popen[bytes], timeout: float = 30.0) -> str:
 
 @pytest.fixture(scope="module")
 def home(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return tmp_path_factory.mktemp("aichat-home")
+    return tmp_path_factory.mktemp("chatforge-home")
 
 
 @pytest.fixture(autouse=True)
@@ -109,19 +109,19 @@ def _windows_only() -> None:
         pytest.skip(f"{PYTHON} is missing")
     # The checks below read window rects in physical pixels; a DPI-unaware test process
     # would get virtualised (scaled) coordinates and a mismatched DPI.
-    from aichat.desktop import win32util
+    from chatforge.desktop import win32util
 
     win32util.ensure_dpi_awareness()
 
 
 def test_show_places_popup_and_quits_cleanly(home: Path) -> None:
-    from aichat.desktop import win32util
+    from chatforge.desktop import win32util
 
     before_pyw = _tasklist("pythonw.exe")
     before_py = _tasklist("python.exe")
     proc = _launch("--show", home)
     try:
-        hwnd = _wait_window("AI Chat")
+        hwnd = _wait_window("ChatForge")
         assert _owned_by(hwnd, proc, before_py)
         window_pid = win32util.window_pid(hwnd)
         time.sleep(1.0)  # let placement and the page settle
@@ -136,59 +136,59 @@ def test_show_places_popup_and_quits_cleanly(home: Path) -> None:
         assert win32util.is_window_visible(hwnd)
 
         assert (home / "config.toml").is_file()
-        assert (home / "logs" / "aichat.log").is_file()
+        assert (home / "logs" / "chatforge.log").is_file()
     finally:
         out = _quit(proc)
 
     assert proc.returncode == 0, out
-    assert win32util.find_window("AI Chat") is None
+    assert win32util.find_window("ChatForge") is None
     assert _tasklist("ovms.exe") == set()
     assert _tasklist("pythonw.exe") - before_pyw == set()
     left = _tasklist("python.exe")
     assert proc.pid not in left and window_pid not in left
-    log = (home / "logs" / "aichat.log").read_text(encoding="utf-8", errors="replace")
+    log = (home / "logs" / "chatforge.log").read_text(encoding="utf-8", errors="replace")
     assert "quitting" in log
     assert "autostart enabled" not in log
 
 
 def test_settings_opens_and_quits_cleanly(home: Path) -> None:
-    from aichat.desktop import win32util
+    from chatforge.desktop import win32util
 
     before_py = _tasklist("python.exe")
     proc = _launch("--settings", home)
     try:
-        hwnd = _wait_window("AI Chat Settings")
+        hwnd = _wait_window("ChatForge Settings")
         assert _owned_by(hwnd, proc, before_py)
         window_pid = win32util.window_pid(hwnd)
         rect = win32util.window_rect(hwnd)
         assert rect.width > 600 and rect.height > 400
         # The popup exists but stays hidden in this mode.
-        popup = win32util.find_window("AI Chat")
+        popup = win32util.find_window("ChatForge")
         assert popup is None or not win32util.is_window_visible(popup)
     finally:
         out = _quit(proc)
     assert proc.returncode == 0, out
-    assert win32util.find_window("AI Chat Settings") is None
+    assert win32util.find_window("ChatForge Settings") is None
     assert _tasklist("ovms.exe") == set()
     left = _tasklist("python.exe")
     assert proc.pid not in left and window_pid not in left
 
 
 def test_second_launch_signals_the_first(home: Path) -> None:
-    from aichat.desktop import win32util
+    from chatforge.desktop import win32util
 
     before_py = _tasklist("python.exe")
     proc = _launch("--hidden", home)
     try:
         deadline = time.time() + 40
-        while time.time() < deadline and win32util.find_window("AI Chat") is None:
+        while time.time() < deadline and win32util.find_window("ChatForge") is None:
             time.sleep(0.25)
-        hidden = win32util.find_window("AI Chat")
+        hidden = win32util.find_window("ChatForge")
         assert hidden is not None and not win32util.is_window_visible(hidden)
         first_pids = _tasklist("python.exe") - before_py
         second = _launch("--show", home)
         assert second.wait(timeout=30) == 0
-        hwnd = _wait_window("AI Chat", timeout=10)  # the SHOW signal made it visible
+        hwnd = _wait_window("ChatForge", timeout=10)  # the SHOW signal made it visible
         assert win32util.window_pid(hwnd) in first_pids | {proc.pid}
     finally:
         out = _quit(proc)

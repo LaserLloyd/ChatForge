@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from aichat.single_instance import (
+from chatforge.single_instance import (
     SINGLE_INSTANCE_PORT,
     acquire_single_instance,
     signal_existing,

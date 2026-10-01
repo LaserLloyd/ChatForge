@@ -8,11 +8,11 @@ from tests.fakes.keyring_backend import FakeKeyringBackend
 
 
 @pytest.fixture
-def aichat_home(tmp_path, monkeypatch):
-    """Set AICHAT_HOME to a temporary directory."""
-    home_dir = tmp_path / "aichat_home"
+def chatforge_home(tmp_path, monkeypatch):
+    """Set CHATFORGE_HOME to a temporary directory."""
+    home_dir = tmp_path / "chatforge_home"
     home_dir.mkdir()
-    monkeypatch.setenv("AICHAT_HOME", str(home_dir))
+    monkeypatch.setenv("CHATFORGE_HOME", str(home_dir))
     return home_dir
 
 

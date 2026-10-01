@@ -1,4 +1,4 @@
-"""aichat.attachments: text extraction per file type, limits, the pending store, blocks."""
+"""chatforge.attachments: text extraction per file type, limits, the pending store, blocks."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import zipfile
 
 import pytest
 
-from aichat import attachments as att
-from aichat.attachments import (
+from chatforge import attachments as att
+from chatforge.attachments import (
     AttachmentError,
     AttachmentStore,
     Extracted,

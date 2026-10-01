@@ -8,9 +8,9 @@ import json
 import httpx
 import pytest
 
-from aichat.chat import research
-from aichat.tools import currency, weather, web_search, wikipedia
-from aichat.tools.registry import ToolRegistry
+from chatforge.chat import research
+from chatforge.tools import currency, weather, web_search, wikipedia
+from chatforge.tools.registry import ToolRegistry
 
 GEO_LISBON = {
     "results": [

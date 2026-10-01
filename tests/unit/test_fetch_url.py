@@ -8,8 +8,8 @@ import gzip
 import httpx
 import pytest
 
-from aichat.tools import fetch_url
-from aichat.tools.fetch_url import BlockedAddress, fetch, vet_ip
+from chatforge.tools import fetch_url
+from chatforge.tools.fetch_url import BlockedAddress, fetch, vet_ip
 
 PUBLIC = "93.184.216.34"
 PUBLIC2 = "151.101.1.69"

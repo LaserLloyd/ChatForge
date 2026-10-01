@@ -1,11 +1,11 @@
 """Live NPU smoke: real OVMS + a real model on the Intel NPU.
 
-Skipped unless ``AICHAT_LIVE_NPU=1`` (and Windows). Uses the installed runtime and
-model under ``%LOCALAPPDATA%\\AIChat`` (or ``AICHAT_HOME``)::
+Skipped unless ``CHATFORGE_LIVE_NPU=1`` (and Windows). Uses the installed runtime and
+model under ``%LOCALAPPDATA%\\ChatForge`` (or ``CHATFORGE_HOME``)::
 
-    $env:AICHAT_LIVE_NPU = "1"; py -3.12 -m uv run pytest -m live_npu -s
+    $env:CHATFORGE_LIVE_NPU = "1"; py -3.12 -m uv run pytest -m live_npu -s
 
-``AICHAT_LIVE_MODEL`` overrides the model (default: the WS1-validated
+``CHATFORGE_LIVE_MODEL`` overrides the model (default: the WS1-validated
 ``OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov``). Loads, answers "What is 2+2?",
 runs one ``current_datetime`` tool round trip, unloads, and asserts that no
 ``ovms.exe`` is left running. (The idle-unload timing check belongs to the
@@ -22,14 +22,16 @@ from pathlib import Path
 import httpx
 import pytest
 
-from aichat.runtime import compile_cache
-from aichat.runtime.jobobject import find_processes
-from aichat.runtime.ovms_install import OVMS_VERSION, ovms_exe, vcredist_present
-from aichat.runtime.ovms_supervisor import LaunchSpec, OvmsSupervisor
+from chatforge.runtime import compile_cache
+from chatforge.runtime.jobobject import find_processes
+from chatforge.runtime.ovms_install import OVMS_VERSION, ovms_exe, vcredist_present
+from chatforge.runtime.ovms_supervisor import LaunchSpec, OvmsSupervisor
 
 pytestmark = [
     pytest.mark.live_npu,
-    pytest.mark.skipif(os.environ.get("AICHAT_LIVE_NPU") != "1", reason="set AICHAT_LIVE_NPU=1"),
+    pytest.mark.skipif(
+        os.environ.get("CHATFORGE_LIVE_NPU") != "1", reason="set CHATFORGE_LIVE_NPU=1"
+    ),
     pytest.mark.skipif(os.name != "nt", reason="NPU runtime is Windows-only"),
     pytest.mark.timeout(1200),
 ]
@@ -47,14 +49,14 @@ TOOLS = [
     }
 ]
 SYSTEM = (
-    "You are AI Chat, a concise desktop assistant. Answer briefly. Use tools only when "
+    "You are ChatForge, a concise desktop assistant. Answer briefly. Use tools only when "
     "they help (current facts, web pages, dates, arithmetic)."
 )
 
 
 def _home() -> Path:
-    env = os.environ.get("AICHAT_HOME")
-    return Path(env) if env else Path(os.environ["LOCALAPPDATA"]) / "AIChat"
+    env = os.environ.get("CHATFORGE_HOME")
+    return Path(env) if env else Path(os.environ["LOCALAPPDATA"]) / "ChatForge"
 
 
 async def _stream(client: httpx.AsyncClient, base_url: str, body: dict) -> dict:
@@ -100,7 +102,7 @@ async def _stream(client: httpx.AsyncClient, base_url: str, body: dict) -> dict:
 
 async def test_live_npu_load_answer_tool_unload():
     home = _home()
-    model_id = os.environ.get("AICHAT_LIVE_MODEL", DEFAULT_MODEL)
+    model_id = os.environ.get("CHATFORGE_LIVE_MODEL", DEFAULT_MODEL)
     exe = ovms_exe(home / "runtime", OVMS_VERSION)
     model_path = home / "models" / Path(model_id)
     if not exe.is_file():

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from aichat.chat import conversation as store
-from aichat.chat.conversation import Conversation
+from chatforge.chat import conversation as store
+from chatforge.chat.conversation import Conversation
 
 
 def _call(cid: str, name: str, args: str = "{}") -> dict:

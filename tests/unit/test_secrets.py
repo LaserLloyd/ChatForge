@@ -5,9 +5,9 @@ import logging
 import keyring
 import pytest
 
-from aichat import secrets
-from aichat.errors import AppError
-from aichat.secrets import (
+from chatforge import secrets
+from chatforge.errors import AppError
+from chatforge.secrets import (
     SERVICE,
     InvalidKeyError,
     delete_api_key,
@@ -26,19 +26,19 @@ def _no_env(monkeypatch):
 
 
 def test_service_name():
-    assert SERVICE == "AIChat"
+    assert SERVICE == "ChatForge"
 
 
 def test_set_and_get_from_keyring(fake_keyring):
     assert get_api_key("minimax", "MINIMAX_API_KEY") == (None, "none")
     set_api_key("minimax", FAKE_KEY)
-    assert fake_keyring.get_password("AIChat", "minimax") == FAKE_KEY
+    assert fake_keyring.get_password("ChatForge", "minimax") == FAKE_KEY
     assert get_api_key("minimax", "MINIMAX_API_KEY") == (FAKE_KEY, "keyring")
 
 
 def test_key_is_stripped(fake_keyring):
     set_api_key("minimax", f"  {FAKE_KEY}\t ")
-    assert fake_keyring.get_password("AIChat", "minimax") == FAKE_KEY
+    assert fake_keyring.get_password("ChatForge", "minimax") == FAKE_KEY
 
 
 def test_env_wins_over_keyring(fake_keyring, monkeypatch):
@@ -99,7 +99,7 @@ def test_rejects_bad_keys(fake_keyring, bad):
         set_api_key("minimax", bad)
     assert isinstance(exc.value, AppError)
     assert isinstance(exc.value, ValueError)
-    assert fake_keyring.get_password("AIChat", "minimax") is None
+    assert fake_keyring.get_password("ChatForge", "minimax") is None
     assert "x" * 20 not in str(exc.value)
 
 

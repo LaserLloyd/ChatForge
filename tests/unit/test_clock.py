@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta, timezone
 
-from aichat.tools import clock
+from chatforge.tools import clock
 
 PDT = timezone(timedelta(hours=-7), "Pacific Daylight Time")
 IST = timezone(timedelta(hours=5, minutes=30), "India Standard Time")

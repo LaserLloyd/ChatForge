@@ -1,6 +1,6 @@
 """HTML text extraction."""
 
-from aichat.tools import htmltext
+from chatforge.tools import htmltext
 
 PAGE = """<!doctype html>
 <html><head><title>  My   Page </title>

@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const STATIC = join(HERE, '..', '..', 'src', 'aichat', 'web', 'static');
+const STATIC = join(HERE, '..', '..', 'src', 'chatforge', 'web', 'static');
 const fixture = (name) => readFileSync(join(HERE, 'fixtures', name), 'utf8');
 
 const require = createRequire(import.meta.url);

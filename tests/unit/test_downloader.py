@@ -11,15 +11,15 @@ from typing import Any
 
 import pytest
 
-from aichat.models import downloader as downloader_mod
-from aichat.models.downloader import (
+from chatforge.models import downloader as downloader_mod
+from chatforge.models.downloader import (
     FREE_SPACE_MARGIN_BYTES,
     Downloader,
     _part_path,
     _PartFile,
 )
-from aichat.models.hf_search import HfSearch, ModelError
-from aichat.models.registry import Registry, read_sidecar
+from chatforge.models.hf_search import HfSearch, ModelError
+from chatforge.models.registry import Registry, read_sidecar
 from tests.fakes.hf_api import FakeFile, FakeHfApi
 
 REPO = "OpenVINO/Qwen3-4B-int4-ov"
@@ -94,8 +94,8 @@ class Env:
 
 
 @pytest.fixture
-async def env(aichat_home: Path):
-    e = Env(aichat_home)
+async def env(chatforge_home: Path):
+    e = Env(chatforge_home)
     yield e
     for dl in e.downloaders:
         for f in e.repo.files.values():
@@ -136,7 +136,7 @@ async def test_full_download_publishes_files_sidecar_and_state(env: Env) -> None
 
     sidecar = read_sidecar(env.model_dir)
     assert sidecar is not None
-    assert sidecar["source"] == "aichat-downloader"
+    assert sidecar["source"] == "chatforge-downloader"
     assert sidecar["repo_id"] == REPO
     assert sidecar["revision"] == env.repo.sha
     assert sidecar["license"] == "apache-2.0"
@@ -154,7 +154,7 @@ async def test_full_download_publishes_files_sidecar_and_state(env: Env) -> None
 
     # The registry now sees a complete, downloader-sourced model.
     rec = Registry(env.models, env.cache).get(REPO)
-    assert rec is not None and rec.complete and rec.source == "aichat-downloader"
+    assert rec is not None and rec.complete and rec.source == "chatforge-downloader"
 
 
 async def test_progress_events_carry_group_fields(env: Env) -> None:
@@ -195,7 +195,7 @@ async def test_existing_complete_files_are_adopted_without_traffic(env: Env) -> 
     group = await run(env.make())
     assert group["status"] == "completed"
     assert env.fake.resolve_requests() == []
-    assert read_sidecar(env.model_dir)["source"] == "aichat-downloader"
+    assert read_sidecar(env.model_dir)["source"] == "chatforge-downloader"
 
 
 # -- resume protocol ---------------------------------------------------------
@@ -474,7 +474,7 @@ async def test_traversal_repo_id_rejected(env: Env, bad: str) -> None:
 
 
 @pytest.mark.parametrize("bad_path", ["../../escape.bin", "sub/../../escape.bin", "C:evil.bin"])
-async def test_traversal_filename_rejected(env: Env, bad_path: str, aichat_home: Path) -> None:
+async def test_traversal_filename_rejected(env: Env, bad_path: str, chatforge_home: Path) -> None:
     env.repo.extra_tree.append({"type": "file", "path": bad_path, "size": 3})
     dl = env.make()
     await dl.start()
@@ -483,7 +483,7 @@ async def test_traversal_filename_rejected(env: Env, bad_path: str, aichat_home:
     assert info.value.code == "unsafe_filename"
     assert dl.all() == []
     assert env.fake.resolve_requests() == []
-    assert not (aichat_home.parent / "escape.bin").exists()
+    assert not (chatforge_home.parent / "escape.bin").exists()
 
 
 async def test_dest_outside_models_dir_is_refused(env: Env) -> None:

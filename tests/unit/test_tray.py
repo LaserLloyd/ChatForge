@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from aichat.desktop.tray import Tray
+from chatforge.desktop.tray import Tray
 
 pystray = pytest.importorskip("pystray")
 
@@ -147,7 +147,7 @@ def test_restart_notifies_and_blocks_a_second_quit(tray, calls):
     icon = tray.icon = FakeIcon()
     items(tray)["Restart"](None)
     assert calls.wait("restart")
-    assert icon.notes == ["Restarting AI Chat…"]
+    assert icon.notes == ["Restarting ChatForge…"]
     items(tray)["Quit"](None)  # already on its way out
     items(tray)["Restart"](None)
     assert not calls.wait("quit", timeout=0.2)

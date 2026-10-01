@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from aichat.llm.thinking import (
+from chatforge.llm.thinking import (
     StreamSplitter,
     TagRule,
     merge_reasoning,

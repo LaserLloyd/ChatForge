@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const JS = join(HERE, '..', '..', 'src', 'aichat', 'web', 'static', 'js');
+const JS = join(HERE, '..', '..', 'src', 'chatforge', 'web', 'static', 'js');
 const { JSDOM } = createRequire(import.meta.url)('jsdom');
 
 const win = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1:8765/index.html' }).window;
@@ -30,12 +30,12 @@ function collect(types, until) {
   });
 }
 
-test('on / off / emit and window.__aichat.emit', () => {
+test('on / off / emit and window.__chatforge.emit', () => {
   const got = [];
   const fn = (e) => got.push(e.n);
   on('t.one', fn);
   emit({ type: 't.one', n: 1 });
-  win.__aichat.emit({ type: 't.one', n: 2 });
+  win.__chatforge.emit({ type: 't.one', n: 2 });
   off('t.one', fn);
   emit({ type: 't.one', n: 3 });
   assert.deepEqual(got, [1, 2]);
@@ -439,7 +439,7 @@ test('"document": create_document saves a file; open/reveal accept only the docu
   assert.deepEqual(Object.keys(doc).sort(), ['kind', 'name', 'path', 'size']);
   assert.equal(doc.name, 'Meeting summary.docx');
   assert.equal(doc.kind, 'docx');
-  assert.match(doc.path, /^C:\\Users\\you\\Documents\\AI Chat\\Meeting summary\.docx$/);
+  assert.match(doc.path, /^C:\\Users\\you\\Documents\\ChatForge\\Meeting summary\.docx$/);
   assert.match(events.at(-1).content, /Meeting summary\.docx/);
 
   const { conversation } = await api.call('get_state');
@@ -458,9 +458,9 @@ test('"document": create_document saves a file; open/reveal accept only the docu
   assert.deepEqual(await api.call('reveal_document', doc.path), { ok: true, path: doc.path });
   const outside = await api.call('open_document', 'C:\\Windows\\notepad.exe');
   assert.equal(outside.error.code, 'bad_request');
-  assert.match(outside.error.message, /Only files in the AI Chat documents folder/);
+  assert.match(outside.error.message, /Only files in the ChatForge documents folder/);
   assert.equal((await api.call('reveal_document', `${doc.path}\\..\\..\\secret.txt`)).error.code, 'bad_request');
-  assert.equal((await api.call('open_document', 'C:\\Users\\you\\Documents\\AI Chat\\gone.md')).error.code, 'not_found');
+  assert.equal((await api.call('open_document', 'C:\\Users\\you\\Documents\\ChatForge\\gone.md')).error.code, 'not_found');
   assert.equal((await api.call('open_document', '')).error.code, 'bad_request');
 });
 

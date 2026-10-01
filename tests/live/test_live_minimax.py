@@ -1,6 +1,6 @@
 """Live MiniMax smoke (``pytest -m live_minimax -s``).
 
-Skips unless ``aichat.secrets.get_api_key("minimax", "MINIMAX_API_KEY")`` resolves
+Skips unless ``chatforge.secrets.get_api_key("minimax", "MINIMAX_API_KEY")`` resolves
 (env var or Windows Credential Manager). Never prints the key.
 """
 
@@ -12,10 +12,10 @@ import time
 
 import pytest
 
-from aichat import secrets
-from aichat.llm import probe
-from aichat.llm.events import Completed, ContentDelta, ReasoningDelta
-from aichat.llm.providers import SEED_PROVIDERS, RemoteProvider
+from chatforge import secrets
+from chatforge.llm import probe
+from chatforge.llm.events import Completed, ContentDelta, ReasoningDelta
+from chatforge.llm.providers import SEED_PROVIDERS, RemoteProvider
 
 pytestmark = pytest.mark.live_minimax
 

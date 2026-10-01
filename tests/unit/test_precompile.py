@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from aichat.config import validate_config
-from aichat.models.catalog import Catalog
-from aichat.paths import Paths
-from aichat.runtime import compile_cache
-from aichat.runtime.manager import LocalModelManager
-from aichat.runtime.ovms_supervisor import OvmsError, spec_compile_hash
-from aichat.runtime.precompile import (
+from chatforge.config import validate_config
+from chatforge.models.catalog import Catalog
+from chatforge.paths import Paths
+from chatforge.runtime import compile_cache
+from chatforge.runtime.manager import LocalModelManager
+from chatforge.runtime.ovms_supervisor import OvmsError, spec_compile_hash
+from chatforge.runtime.precompile import (
     MAX_ATTEMPTS,
     RETRY_FAILED_AFTER_S,
     STATE_KEY,
@@ -87,7 +87,7 @@ class FakeRegistry:
         return self.fp
 
 
-def rec(models_dir: Path, mid: str, *, used: float | None = None, source="aichat-downloader"):
+def rec(models_dir: Path, mid: str, *, used: float | None = None, source="chatforge-downloader"):
     publisher, _, name = mid.partition("/")
     return SimpleNamespace(
         id=mid,

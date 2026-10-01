@@ -5,7 +5,7 @@
 // jsdom's globals exposed. window.pywebview.api is defined by this file, so bridge.js takes
 // the real path (no dev mock) and every reply is under the test's control: send_message
 // resolves only when a test says so, which is how the round-trip races are reproduced.
-// Events are pushed through window.__aichat.emit, exactly like Python's run_js.
+// Events are pushed through window.__chatforge.emit, exactly like Python's run_js.
 // Animation frames run only when a test flushes them, so a frame queued before chat.done
 // can be run after it, as WebView2 does when both land in one event batch.
 import test, { after, mock } from 'node:test';
@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const WEB = join(HERE, '..', '..', 'src', 'aichat', 'web');
+const WEB = join(HERE, '..', '..', 'src', 'chatforge', 'web');
 const STATIC = join(WEB, 'static');
 const { JSDOM } = createRequire(import.meta.url)('jsdom');
 
@@ -54,7 +54,7 @@ const PROVIDERS = [
     region: null, base_url: 'http://localhost:1234/v1', builtin: true, docs_url: null, key: key('none', false, 'STUDIOFORGE_API_KEY') },
 ];
 const LOCAL = { provider: 'local-npu', model: 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov' };
-const DOC = { name: 'Plan.docx', path: 'C:\\Users\\you\\Documents\\AI Chat\\Plan.docx', size: 14336, kind: 'docx' };
+const DOC = { name: 'Plan.docx', path: 'C:\\Users\\you\\Documents\\ChatForge\\Plan.docx', size: 14336, kind: 'docx' };
 // The snapshot the popup boots with: a message with two files and the document its reply
 // saved, the context divider (the model no longer sees that first turn), then a message cut to
 // fit the context window and a stopped reply whose first tool call never got a result.
@@ -124,7 +124,7 @@ const view = (id, name, extra = {}) => ({ id, name, kind: 'text', chars: 1200, s
 await import(pathToFileURL(join(STATIC, 'js', 'chat.js')).href);
 const $ = (id) => win.document.getElementById(id);
 const S = () => win.__chat.S;
-const emit = (evt) => win.__aichat.emit(evt);
+const emit = (evt) => win.__chatforge.emit(evt);
 /** Let promise chains (api.call -> await ready() -> await fn()) run. Not a timer, so it
  *  still works while setTimeout is mocked. */
 async function settle(rounds = 6) { for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r)); }
@@ -673,7 +673,7 @@ test('a saved document shows as a card under the reply, with Open and Show in fo
 test('opening a document that was moved says so', async () => {
   await fresh();
   await sendAs('make notes', 'req_gone');
-  const gone = { name: 'gone.md', path: 'C:\\Users\\you\\Documents\\AI Chat\\gone.md', size: 900, kind: 'text' };
+  const gone = { name: 'gone.md', path: 'C:\\Users\\you\\Documents\\ChatForge\\gone.md', size: 900, kind: 'text' };
   emit({ type: 'chat.tool_result', request_id: 'req_gone', call_id: 'g1', name: 'create_document', ok: true, summary: 'Saved gone.md', document: gone });
   emit({ type: 'chat.done', request_id: 'req_gone', content: 'Saved.', provider: 'local-npu', model: LOCAL.model });
   const card = lastAssistant().querySelector('.doc-card');

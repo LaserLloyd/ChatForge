@@ -7,10 +7,10 @@ import copy
 import json
 from pathlib import Path
 
-from aichat.attachments import NOTE_CUT, NOTE_CUT_LOCAL, Extracted
-from aichat.chat import prompts
-from aichat.chat.engine import DOCUMENTS_SENTENCE, _with_documents_sentence
-from aichat.chat.history import PromptBudget, estimate_tokens, fit_messages
+from chatforge.attachments import NOTE_CUT, NOTE_CUT_LOCAL, Extracted
+from chatforge.chat import prompts
+from chatforge.chat.engine import DOCUMENTS_SENTENCE, _with_documents_sentence
+from chatforge.chat.history import PromptBudget, estimate_tokens, fit_messages
 from tests.fakes.openai_server import fake_openai_server, sse, text_chunks, tool_call_chunks
 from tests.unit.test_engine import Harness
 from tests.unit.test_manager import QWEN
@@ -248,7 +248,7 @@ def test_documents_sentence_with_a_custom_prompt_that_has_its_own_guidance() -> 
 
 
 def test_conversation_items_without_paths_ignore_documents(tmp_path: Path) -> None:
-    from aichat.chat.conversation import Conversation
+    from chatforge.chat.conversation import Conversation
 
     conv = Conversation(
         [

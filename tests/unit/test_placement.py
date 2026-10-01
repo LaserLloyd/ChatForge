@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from aichat.desktop.win32util import Rect, place
+from chatforge.desktop.win32util import Rect, place
 
 W, H, MARGIN = 420, 620, 12
 

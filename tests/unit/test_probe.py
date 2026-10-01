@@ -6,9 +6,9 @@ import socket
 
 import pytest
 
-from aichat.config import ProviderSpec, Timeouts
-from aichat.llm import probe
-from aichat.llm.providers import SEED_PROVIDERS
+from chatforge.config import ProviderSpec, Timeouts
+from chatforge.llm import probe
+from chatforge.llm.providers import SEED_PROVIDERS
 from tests.fakes.openai_server import (
     fake_openai_server,
     json_reply,

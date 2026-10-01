@@ -6,17 +6,17 @@ import json
 
 import pytest
 
-from aichat.config import Timeouts
-from aichat.llm.client import ChatRequest, OpenAICompatClient
-from aichat.llm.errors import LLMError
-from aichat.llm.events import AssistantMessage, Completed, ContentDelta, ToolCall
-from aichat.llm.minimax import (
+from chatforge.config import Timeouts
+from chatforge.llm.client import ChatRequest, OpenAICompatClient
+from chatforge.llm.errors import LLMError
+from chatforge.llm.events import AssistantMessage, Completed, ContentDelta, ToolCall
+from chatforge.llm.minimax import (
     MiniMaxQuirks,
     base_resp_error,
     merge_reasoning_details,
     strip_minimax_tool_call_xml,
 )
-from aichat.llm.quirks import OvmsQuirks
+from chatforge.llm.quirks import OvmsQuirks
 from tests.fakes.openai_server import chunk, fake_openai_server, sse, usage_chunk
 
 FAST = Timeouts(connect_s=2, stall_s=5, wall_s=20)

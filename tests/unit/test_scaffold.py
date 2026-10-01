@@ -4,18 +4,18 @@ import os
 
 import pytest
 
-import aichat
+import chatforge
 
 
-def test_aichat_import():
-    """Test that aichat can be imported."""
-    assert aichat is not None
+def test_chatforge_import():
+    """Test that chatforge can be imported."""
+    assert chatforge is not None
 
 
-def test_aichat_version():
-    """Test that aichat has a version."""
-    assert hasattr(aichat, "__version__")
-    assert aichat.__version__ == "0.1.0"
+def test_chatforge_version():
+    """Test that chatforge has a version."""
+    assert hasattr(chatforge, "__version__")
+    assert chatforge.__version__ == "0.1.0"
 
 
 def test_fake_keyring(fake_keyring):
@@ -62,8 +62,8 @@ async def test_fake_clock_async_sleep(fake_clock):
     assert fake_clock.now == 10.0
 
 
-def test_aichat_home(aichat_home):
-    """Test the aichat_home fixture."""
-    assert os.getenv("AICHAT_HOME") == str(aichat_home)
-    assert aichat_home.exists()
-    assert aichat_home.is_dir()
+def test_chatforge_home(chatforge_home):
+    """Test the chatforge_home fixture."""
+    assert os.getenv("CHATFORGE_HOME") == str(chatforge_home)
+    assert chatforge_home.exists()
+    assert chatforge_home.is_dir()

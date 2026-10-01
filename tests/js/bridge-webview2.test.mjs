@@ -8,10 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const JS = join(HERE, '..', '..', 'src', 'aichat', 'web', 'static', 'js');
+const JS = join(HERE, '..', '..', 'src', 'chatforge', 'web', 'static', 'js');
 const { JSDOM } = createRequire(import.meta.url)('jsdom');
 
-const win = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://aichat.localhost/index.html' }).window;
+const win = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://chatforge.localhost/index.html' }).window;
 win.chrome = { webview: { postMessage() {} } };
 Object.assign(globalThis, { window: win, document: win.document, location: win.location, sessionStorage: win.sessionStorage });
 

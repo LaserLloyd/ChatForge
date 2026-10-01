@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-from aichat.desktop import popup as popup_mod
-from aichat.desktop import win32util
-from aichat.desktop.popup import Popup
+from chatforge.desktop import popup as popup_mod
+from chatforge.desktop import win32util
+from chatforge.desktop.popup import Popup
 
 
 class FakeEvent:

@@ -3,8 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from aichat import doctor
-from aichat.doctor import Check
+from chatforge import doctor
+from chatforge.doctor import Check
 
 
 def test_python_version_threshold():
@@ -107,26 +107,26 @@ def test_hotkey_verdicts():
 
 def test_autostart_verdicts(tmp_path):
     exe = r"C:\Repo\.venv\Scripts\pythonw.exe"
-    path = tmp_path / "AIChat.vbs"
+    path = tmp_path / "ChatForge.vbs"
     assert doctor.check_autostart(False, None, "", exe).status == "warn"
-    good = doctor.check_autostart(True, path, f'shell.Run "{exe} -m aichat --hidden"', exe)
+    good = doctor.check_autostart(True, path, f'shell.Run "{exe} -m chatforge --hidden"', exe)
     assert good.status == "pass" and str(path) in good.detail
     wrong_exe = doctor.check_autostart(
         True, path, 'shell.Run "D:\\other\\pythonw.exe --hidden"', exe
     )
     assert wrong_exe.status == "warn" and "point at" in wrong_exe.detail
-    no_hidden = doctor.check_autostart(True, path, f'shell.Run "{exe} -m aichat"', exe)
+    no_hidden = doctor.check_autostart(True, path, f'shell.Run "{exe} -m chatforge"', exe)
     assert no_hidden.status == "warn" and "--hidden" in no_hidden.detail
 
 
 def test_autostart_task_scheduler_verdicts(tmp_path):
     exe = r"C:\Repo\.venv\Scripts\pythonw.exe"
-    script = tmp_path / "AIChat.vbs"
-    text = f'shell.Run "{exe} -m aichat --hidden"'
+    script = tmp_path / "ChatForge.vbs"
+    text = f'shell.Run "{exe} -m chatforge --hidden"'
     good = doctor.check_autostart(True, script, text, exe, mechanism="Task Scheduler")
     assert good.status == "pass"
     assert good.detail == f"enabled via Task Scheduler ({script})"
-    shim = tmp_path / "Startup" / "AIChat.vbs"
+    shim = tmp_path / "Startup" / "ChatForge.vbs"
     twice = doctor.check_autostart(
         True, script, text, exe, mechanism="Task Scheduler", duplicate=shim
     )
@@ -137,15 +137,15 @@ def test_autostart_task_scheduler_verdicts(tmp_path):
 
 
 def test_autostart_verdict_reads_the_task_status(tmp_path):
-    from aichat import autostart
+    from chatforge import autostart
 
-    script = tmp_path / "AIChat.vbs"
+    script = tmp_path / "ChatForge.vbs"
     exe = autostart.launch_argv()[0]
-    autostart._write_utf16(script, f'shell.Run "{exe} -m aichat --hidden"\n')
+    autostart._write_utf16(script, f'shell.Run "{exe} -m chatforge --hidden"\n')
     status = autostart.AutostartStatus(True, "Task Scheduler", script)
     good = doctor.autostart_verdict(status)
     assert good.status == "pass" and good.detail == f"enabled via Task Scheduler ({script})"
-    shim = tmp_path / "Startup" / "AIChat.vbs"
+    shim = tmp_path / "Startup" / "ChatForge.vbs"
     twice = doctor.autostart_verdict(
         autostart.AutostartStatus(True, "Task Scheduler", script, duplicate=shim)
     )
@@ -153,7 +153,7 @@ def test_autostart_verdict_reads_the_task_status(tmp_path):
 
 
 def test_disk_verdicts():
-    home = Path(r"C:\Users\x\AppData\Local\AIChat")
+    home = Path(r"C:\Users\x\AppData\Local\ChatForge")
     assert doctor.check_disk(None, home).status == "warn"
     assert doctor.check_disk(1 * 1024**3, home).status == "fail"
     assert doctor.check_disk(5 * 1024**3, home).status == "warn"
@@ -195,10 +195,10 @@ def test_safe_wraps_a_broken_probe():
     assert check.status == "warn" and "RuntimeError" in check.detail
 
 
-def test_load_config_readonly_never_writes(aichat_home):
-    from aichat.paths import Paths
+def test_load_config_readonly_never_writes(chatforge_home):
+    from chatforge.paths import Paths
 
-    paths = Paths.from_home(aichat_home)
+    paths = Paths.from_home(chatforge_home)
     cfg, check = doctor.load_config_readonly(paths)
     assert check.status == "warn" and not paths.config_file.exists()
     assert cfg.chat.provider == "local-npu"
@@ -214,7 +214,7 @@ def test_load_config_readonly_never_writes(aichat_home):
 
 
 def test_main_hook_is_wired(monkeypatch, capsys):
-    from aichat import __main__ as cli
+    from chatforge import __main__ as cli
 
     monkeypatch.setattr(doctor, "run_checks", lambda paths=None, cfg=None: [Check("X", "pass")])
     assert cli.main(["doctor"]) == 0
@@ -240,7 +240,7 @@ def test_compiled_models_verdicts():
 
 
 def test_npu_models_verdicts():
-    from aichat.models.npu_compat import NpuVerdict
+    from chatforge.models.npu_compat import NpuVerdict
 
     good = ("OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov", NpuVerdict(True))
     bad = ("OpenVINO/Qwen3-4B-int4-ov", NpuVerdict(False, "Garbage on the NPU.", "avoid"))
@@ -261,7 +261,7 @@ def test_local_target_model():
 
 
 def _install(models_dir: Path, mid: str) -> Path:
-    from aichat.models.registry import REQUIRED_FILES
+    from chatforge.models.registry import REQUIRED_FILES
 
     d = models_dir.joinpath(*mid.split("/"))
     d.mkdir(parents=True)
@@ -271,10 +271,10 @@ def _install(models_dir: Path, mid: str) -> Path:
 
 
 def test_local_model_checks_with_a_cloud_provider_selected(tmp_path):
-    from aichat.config import validate_config
-    from aichat.models.catalog import Catalog
-    from aichat.paths import Paths
-    from aichat.runtime import compile_cache
+    from chatforge.config import validate_config
+    from chatforge.models.catalog import Catalog
+    from chatforge.paths import Paths
+    from chatforge.runtime import compile_cache
 
     paths = Paths.from_home(tmp_path / "home")
     good, bad = "Test/Good-int4-ov", "Test/Broken-int4-ov"
@@ -288,7 +288,7 @@ def test_local_model_checks_with_a_cloud_provider_selected(tmp_path):
     )
     cfg = validate_config({"chat": {"provider": "minimax", "model": "MiniMax-M3"}})
     # A warm NPU cache for the good model, written with the exact compile settings.
-    from aichat.runtime.manager import LocalModelManager
+    from chatforge.runtime.manager import LocalModelManager
 
     planner = LocalModelManager(
         None, get_config=lambda: cfg, paths=paths, catalog=catalog, precompile=False

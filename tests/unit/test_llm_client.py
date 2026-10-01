@@ -8,12 +8,12 @@ import time
 
 import pytest
 
-from aichat.config import Timeouts
-from aichat.llm.client import ChatRequest, OpenAICompatClient
-from aichat.llm.errors import LLMError
-from aichat.llm.events import Completed, ContentDelta, ReasoningDelta
-from aichat.llm.minimax import MiniMaxQuirks
-from aichat.llm.quirks import GenericQuirks, OvmsQuirks
+from chatforge.config import Timeouts
+from chatforge.llm.client import ChatRequest, OpenAICompatClient
+from chatforge.llm.errors import LLMError
+from chatforge.llm.events import Completed, ContentDelta, ReasoningDelta
+from chatforge.llm.minimax import MiniMaxQuirks
+from chatforge.llm.quirks import GenericQuirks, OvmsQuirks
 from tests.fakes.openai_server import (
     chunk,
     fake_openai_server,

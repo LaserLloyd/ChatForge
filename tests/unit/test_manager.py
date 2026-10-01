@@ -10,13 +10,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from aichat.config import validate_config
-from aichat.llm.errors import LLMError
-from aichat.llm.providers import SEED_PROVIDERS, LocalOvmsProvider
-from aichat.models.catalog import Catalog
-from aichat.paths import Paths
-from aichat.runtime.manager import LocalModelManager
-from aichat.runtime.ovms_supervisor import OvmsError
+from chatforge.config import validate_config
+from chatforge.llm.errors import LLMError
+from chatforge.llm.providers import SEED_PROVIDERS, LocalOvmsProvider
+from chatforge.models.catalog import Catalog
+from chatforge.paths import Paths
+from chatforge.runtime.manager import LocalModelManager
+from chatforge.runtime.ovms_supervisor import OvmsError
 from tests.fakes.clock import FakeClock
 
 # A test-owned catalog: the packaged one changes with NPU findings (WS1 moved the
@@ -357,7 +357,7 @@ async def test_local_provider_uses_manager(tmp_path) -> None:
 
 @pytest.mark.timeout(60)
 async def test_real_supervisor_with_fake_child(tmp_path) -> None:
-    from aichat.runtime.ovms_supervisor import OvmsSupervisor
+    from chatforge.runtime.ovms_supervisor import OvmsSupervisor
     from tests.fakes import ovms_child
 
     paths = Paths.from_home(tmp_path / "home")
@@ -387,7 +387,7 @@ async def test_real_supervisor_with_fake_child(tmp_path) -> None:
 
 @pytest.mark.timeout(60)
 async def test_real_supervisor_crash_then_reload(tmp_path) -> None:
-    from aichat.runtime.ovms_supervisor import OvmsSupervisor
+    from chatforge.runtime.ovms_supervisor import OvmsSupervisor
     from tests.fakes import ovms_child
 
     paths = Paths.from_home(tmp_path / "home")
@@ -597,7 +597,7 @@ async def test_precompile_is_busy_while_the_runtime_is_in_use(tmp_path) -> None:
 
 
 async def test_precompile_skips_a_warm_cache(tmp_path) -> None:
-    from aichat.runtime import compile_cache
+    from chatforge.runtime import compile_cache
 
     mgr, sup, holder = make_manager(tmp_path)
     spec = mgr.build_spec(QWEN)

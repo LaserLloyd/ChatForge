@@ -1,4 +1,4 @@
-"""``python -m aichat --after-pid PID``: the copy Restart starts waits for the old one."""
+"""``python -m chatforge --after-pid PID``: the copy Restart starts waits for the old one."""
 
 from __future__ import annotations
 
@@ -10,17 +10,17 @@ from typing import Any
 import psutil
 import pytest
 
-from aichat import __main__ as cli
+from chatforge import __main__ as cli
 
 
 @pytest.fixture
 def started(monkeypatch) -> list[tuple]:
     """Replace the app and the wait; records what ``main`` did, in order."""
-    import aichat.app
+    import chatforge.app
 
     log: list[tuple] = []
     monkeypatch.setattr(cli, "wait_for_exit", lambda pid: log.append(("wait", pid)) or True)
-    monkeypatch.setattr(aichat.app, "main", lambda mode: log.append(("run", mode)) or 0)
+    monkeypatch.setattr(chatforge.app, "main", lambda mode: log.append(("run", mode)) or 0)
     return log
 
 
@@ -99,7 +99,7 @@ def test_wait_for_exit_really_waits_for_an_older_process():
     try:
         code = (
             "import sys\n"
-            "from aichat.__main__ import wait_for_exit\n"
+            "from chatforge.__main__ import wait_for_exit\n"
             "print('waiting', flush=True)\n"
             "print(wait_for_exit(int(sys.argv[1]), 20), flush=True)\n"
         )

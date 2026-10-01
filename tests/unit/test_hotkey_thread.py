@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from aichat.desktop import hotkey as hotkey_mod
-from aichat.desktop.hotkey import (
+from chatforge.desktop import hotkey as hotkey_mod
+from chatforge.desktop.hotkey import (
     ERROR_HOTKEY_ALREADY_REGISTERED,
     HOTKEY_ID,
     MOD_NOREPEAT,

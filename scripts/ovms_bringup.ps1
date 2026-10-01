@@ -1,17 +1,17 @@
 <#
 .SYNOPSIS
-  Reproducible OVMS NPU bring-up for AI Chat (WS1 Phase A). No admin needed.
+  Reproducible OVMS NPU bring-up for ChatForge (WS1 Phase A). No admin needed.
 
 .DESCRIPTION
   1. Downloads the OVMS 2026.4.0 python_on zip (138,798,816 bytes) into
-     %LOCALAPPDATA%\AIChat\runtime\downloads and checks the pinned SHA-256.
-  2. Extracts it to %LOCALAPPDATA%\AIChat\runtime\ovms-2026.4.0 (if not already there).
+     %LOCALAPPDATA%\ChatForge\runtime\downloads and checks the pinned SHA-256.
+  2. Extracts it to %LOCALAPPDATA%\ChatForge\runtime\ovms-2026.4.0 (if not already there).
   3. Checks the NPU (Intel AI Boost) and the VC++ x64 runtime.
   4. Applies what setupvars.ps1 sets (OVMS_DIR, PYTHONHOME, SCRIPTS, PATH,
      ESPEAK_DATA_PATH) after removing the venv's VIRTUAL_ENV/PYTHONHOME/PYTHONPATH
      and API_KEY (OVMS turns on API-key auth when API_KEY is set).
   5. Launches ovms.exe hidden on 127.0.0.1 with the validated flags, logs to
-     %LOCALAPPDATA%\AIChat\logs\ovms-bringup.log, and times readiness
+     %LOCALAPPDATA%\ChatForge\logs\ovms-bringup.log, and times readiness
      (/v2/health/ready 200 + /v1/config state AVAILABLE).
   6. Runs a chat request and a current_datetime tool call, prints tok/s, then
      stops OVMS (unless -KeepRunning) and checks no ovms.exe is left.
@@ -42,7 +42,7 @@ $AssetBytes = 138798816
 $AssetSha256 = "5A022E44E794E6A9CB0F1C6C40822167DAC53A36DAF9AF123C9411974CEF1914"
 $ReleaseBase = "https://github.com/openvinotoolkit/model_server/releases/download/v$Version"
 
-$Home_ = if ($env:AICHAT_HOME) { $env:AICHAT_HOME } else { Join-Path $env:LOCALAPPDATA "AIChat" }
+$Home_ = if ($env:CHATFORGE_HOME) { $env:CHATFORGE_HOME } else { Join-Path $env:LOCALAPPDATA "ChatForge" }
 $Downloads = Join-Path $Home_ "runtime\downloads"
 $InstallDir = Join-Path $Home_ "runtime\ovms-$Version"
 $OvmsDir = Join-Path $InstallDir "ovms"

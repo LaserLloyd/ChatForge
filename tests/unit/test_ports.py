@@ -7,7 +7,7 @@ import socket
 
 import pytest
 
-from aichat.runtime import ports
+from chatforge.runtime import ports
 
 
 def _hold(port: int = 0) -> socket.socket:

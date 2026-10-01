@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from aichat.runtime.idle import IdleReaper
+from chatforge.runtime.idle import IdleReaper
 from tests.fakes.clock import FakeClock
 from tests.unit.test_manager import QWEN, StubSupervisor, make_manager
 

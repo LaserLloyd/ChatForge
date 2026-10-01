@@ -7,8 +7,8 @@ import pytest
 from ddgs.exceptions import DDGSException, RatelimitException
 from ddgs.exceptions import TimeoutException as DDGSTimeout
 
-from aichat.tools import web_search
-from aichat.tools.web_search import WebSearch
+from chatforge.tools import web_search
+from chatforge.tools.web_search import WebSearch
 
 
 class FakeDDGS:

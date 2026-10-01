@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from aichat.config import load_config
-from aichat.desktop.bridge import (
+from chatforge.config import load_config
+from chatforge.desktop.bridge import (
     CONTRACT_METHODS,
     Api,
     Services,
@@ -19,12 +19,12 @@ from aichat.desktop.bridge import (
     runtime_install_view,
     ui_config,
 )
-from aichat.desktop.core_loop import CoreLoop
-from aichat.desktop.events import EventSink
-from aichat.paths import Paths
+from chatforge.desktop.core_loop import CoreLoop
+from chatforge.desktop.events import EventSink
+from chatforge.paths import Paths
 
 # Every method dev-mock.js implements: `async name(` inside makeApi().
-_MOCK = Path(__file__).resolve().parents[2] / "src/aichat/web/static/js/dev-mock.js"
+_MOCK = Path(__file__).resolve().parents[2] / "src/chatforge/web/static/js/dev-mock.js"
 
 SECRET = "sk-test-secret-value-0123456789"
 
@@ -65,7 +65,7 @@ def services(tmp_path: Path, fake_keyring, events, monkeypatch) -> Services:
     cfg = load_config(paths)
     s = Services(paths, cfg)
     s.events = events[0]
-    from aichat.llm.providers import ProviderRegistry
+    from chatforge.llm.providers import ProviderRegistry
 
     s.providers = ProviderRegistry(cfg.providers, settings=lambda: s.config)
     return s
@@ -141,7 +141,7 @@ def test_save_api_key_never_returns_the_key(api: Api, fake_keyring, events) -> N
     assert reply["ok"] is True
     assert reply["key"]["source"] == "keyring"
     assert SECRET not in json.dumps(reply)
-    assert fake_keyring.get_password("AIChat", "minimax") == SECRET
+    assert fake_keyring.get_password("ChatForge", "minimax") == SECRET
     evts = events[0].drain()
     assert [e["type"] for e in evts] == ["key.status"]
     assert evts[0]["provider_id"] == "minimax" and evts[0]["source"] == "keyring"
@@ -163,7 +163,7 @@ def test_remove_api_key(api: Api, fake_keyring) -> None:
     reply = api.remove_api_key("minimax")
     assert reply["ok"] and reply["removed"] is True
     assert reply["key"]["source"] == "none"
-    assert fake_keyring.get_password("AIChat", "minimax") is None
+    assert fake_keyring.get_password("ChatForge", "minimax") is None
 
 
 def test_test_provider_uses_typed_key_transiently(
@@ -184,12 +184,12 @@ def test_test_provider_uses_typed_key_transiently(
             "code": None,
         }
 
-    monkeypatch.setattr("aichat.llm.probe.test_provider", fake_probe)
+    monkeypatch.setattr("chatforge.llm.probe.test_provider", fake_probe)
     reply = api.test_provider("minimax", SECRET, None)
     assert reply["ok"] is True and reply["models"] == ["m"]
     assert seen["key"] == SECRET
     assert SECRET not in json.dumps(reply)
-    assert fake_keyring.get_password("AIChat", "minimax") is None  # not stored
+    assert fake_keyring.get_password("ChatForge", "minimax") is None  # not stored
 
     # No typed key: the saved one is resolved.
     api.save_api_key("minimax", SECRET + "saved")
@@ -210,7 +210,7 @@ def test_test_provider_failure_shape(api: Api, services: Services, loop, monkeyp
             "code": "region_or_key",
         }
 
-    monkeypatch.setattr("aichat.llm.probe.test_provider", fake_probe)
+    monkeypatch.setattr("chatforge.llm.probe.test_provider", fake_probe)
     reply = api.test_provider("minimax", None, None)
     assert reply == {
         "ok": False,
@@ -639,9 +639,9 @@ def test_load_unload_without_manager(api: Api) -> None:
 def test_logs_and_autostart_shapes(api: Api, monkeypatch) -> None:
     import logging
 
-    from aichat import autostart
+    from chatforge import autostart
 
-    logging.getLogger("aichat.test").warning("hello from the test")
+    logging.getLogger("chatforge.test").warning("hello from the test")
     reply = api.get_logs(50, "WARNING")
     assert reply["ok"] and isinstance(reply["lines"], list)
     # Never the real Task Scheduler from a test.
@@ -689,9 +689,9 @@ def test_list_models_and_downloads_without_services(api: Api) -> None:
 
 
 def test_error_payload_shapes() -> None:
-    from aichat.errors import AppError
-    from aichat.runtime.ovms_install import InstallError
-    from aichat.runtime.ovms_supervisor import OvmsError
+    from chatforge.errors import AppError
+    from chatforge.runtime.ovms_install import InstallError
+    from chatforge.runtime.ovms_supervisor import OvmsError
 
     p = error_payload(AppError("boom", code="x", hint="h", action="retry"))
     assert p == {"code": "x", "message": "boom", "hint": "h", "action": "retry"}

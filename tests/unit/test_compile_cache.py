@@ -8,7 +8,7 @@ import stat
 
 import pytest
 
-from aichat.runtime import compile_cache as cc
+from chatforge.runtime import compile_cache as cc
 
 MODEL = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
 

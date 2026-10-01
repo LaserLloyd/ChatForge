@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from aichat.models import registry as registry_mod
-from aichat.models.catalog import Catalog
-from aichat.models.hf_search import ModelError, RepoFile
-from aichat.models.registry import (
+from chatforge.models import registry as registry_mod
+from chatforge.models.catalog import Catalog
+from chatforge.models.hf_search import ModelError, RepoFile
+from chatforge.models.registry import (
     GRAPH_FILE,
     REQUIRED_FILES,
     SIDECAR_NAME,
@@ -36,9 +36,9 @@ MODEL_FILES = {
 
 
 @pytest.fixture
-def dirs(aichat_home: Path) -> tuple[Path, Path]:
-    models = aichat_home / "models"
-    cache = aichat_home / "cache"
+def dirs(chatforge_home: Path) -> tuple[Path, Path]:
+    models = chatforge_home / "models"
+    cache = chatforge_home / "cache"
     models.mkdir()
     cache.mkdir()
     return models, cache
@@ -143,7 +143,7 @@ def test_scan_attaches_catalog_and_state(dirs, tmp_path: Path) -> None:
 
 
 def test_compiled_flags_come_from_the_cache_on_disk(dirs) -> None:
-    from aichat.runtime import compile_cache
+    from chatforge.runtime import compile_cache
 
     models, cache = dirs
     make_model(models, REPO)
@@ -237,7 +237,7 @@ def test_adopt_by_size_writes_sidecar_and_keeps_graph_and_dot_dirs(dirs) -> None
     # Nothing deleted, nothing moved.
     assert (model_dir / GRAPH_FILE).read_text() == graph_before
     assert (model_dir / ".cache" / "huggingface" / "download").is_dir()
-    assert not list(model_dir.glob(".aichat-write-test-*"))
+    assert not list(model_dir.glob(".chatforge-write-test-*"))
     assert reg.unadopted() == []
 
 
@@ -432,7 +432,7 @@ def test_model_dir_and_cache_dir_helpers(dirs) -> None:
     ],
 )
 def test_delete_finds_the_compile_cache_the_runtime_wrote(dirs, repo_id) -> None:
-    from aichat.runtime import compile_cache
+    from chatforge.runtime import compile_cache
 
     models, cache = dirs
     make_model(models, repo_id)

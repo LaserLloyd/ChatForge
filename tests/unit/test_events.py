@@ -6,7 +6,7 @@ import json
 import threading
 import time
 
-from aichat.desktop.events import EventSink, batch_script, coalesce
+from chatforge.desktop.events import EventSink, batch_script, coalesce
 
 
 def _delta(rid: str, **fields: str) -> dict:
@@ -66,7 +66,7 @@ def test_coalesce_does_not_mutate_input() -> None:
 
 def test_batch_script_is_guarded_and_carries_json() -> None:
     script = batch_script([{"type": "popup.shown"}, {"type": "chat.done", "request_id": "r"}])
-    assert script.startswith("(function(evs){if(!window.__aichat")
+    assert script.startswith("(function(evs){if(!window.__chatforge")
     assert "eval" not in script
     payload = script[script.index("})(") + 3 : -1]
     assert json.loads(payload) == [

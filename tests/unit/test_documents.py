@@ -11,16 +11,16 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from aichat.attachments import extract_text
-from aichat.errors import AppError
-from aichat.tools import documents
-from aichat.tools.documents import (
+from chatforge.attachments import extract_text
+from chatforge.errors import AppError
+from chatforge.tools import documents
+from chatforge.tools.documents import (
     create_document,
     markdown_to_docx,
     resolve_document,
     sanitize_filename,
 )
-from aichat.tools.registry import TOOL_NAMES, ToolRegistry
+from chatforge.tools.registry import TOOL_NAMES, ToolRegistry
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
@@ -65,17 +65,17 @@ def test_sanitize_limits_length_and_refuses_unknown_types() -> None:
 
 def test_documents_dir_setting_and_default(tmp_path, monkeypatch) -> None:
     assert documents.documents_dir(str(tmp_path / "out")) == tmp_path / "out"
-    monkeypatch.setenv("AICHAT_TEST_DOCS", str(tmp_path))
+    monkeypatch.setenv("CHATFORGE_TEST_DOCS", str(tmp_path))
     assert documents.documents_dir(
-        "%AICHAT_TEST_DOCS%\\x" if os.name == "nt" else "$AICHAT_TEST_DOCS/x"
+        "%CHATFORGE_TEST_DOCS%\\x" if os.name == "nt" else "$CHATFORGE_TEST_DOCS/x"
     ) == (tmp_path / "x")
     import platformdirs
 
     monkeypatch.setattr(platformdirs, "user_documents_dir", lambda: str(tmp_path / "Docs"))
-    assert documents.documents_dir("") == tmp_path / "Docs" / "AI Chat"
+    assert documents.documents_dir("") == tmp_path / "Docs" / "ChatForge"
     monkeypatch.setattr(platformdirs, "user_documents_dir", lambda: "")
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "me"))
-    assert documents.documents_dir("  ") == tmp_path / "me" / "Documents" / "AI Chat"
+    assert documents.documents_dir("  ") == tmp_path / "me" / "Documents" / "ChatForge"
 
 
 # --------------------------------------------------------------------------- #

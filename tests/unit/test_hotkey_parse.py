@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from aichat.desktop.hotkey import (
+from chatforge.desktop.hotkey import (
     ERROR_HOTKEY_ALREADY_REGISTERED,
     MOD_ALT,
     MOD_CONTROL,

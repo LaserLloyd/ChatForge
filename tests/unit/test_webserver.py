@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from aichat.desktop.webserver import (
+from chatforge.desktop.webserver import (
     CSP,
     WEB_ROOT,
     StaticServer,

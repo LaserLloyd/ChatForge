@@ -11,12 +11,12 @@ from pathlib import Path
 import pytest
 import webview
 
-from aichat import attachments as att
-from aichat.config import load_config
-from aichat.desktop.bridge import Api, Services
-from aichat.desktop.core_loop import CoreLoop
-from aichat.paths import Paths
-from aichat.tools import documents
+from chatforge import attachments as att
+from chatforge.config import load_config
+from chatforge.desktop.bridge import Api, Services
+from chatforge.desktop.core_loop import CoreLoop
+from chatforge.paths import Paths
+from chatforge.tools import documents
 
 
 @pytest.fixture

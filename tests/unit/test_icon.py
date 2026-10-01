@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-from aichat.desktop.icon import (
+from chatforge.desktop.icon import (
     BUBBLE,
     DOT_COLOURS,
     ICO_SIZES,

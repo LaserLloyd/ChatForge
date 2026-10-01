@@ -1,4 +1,4 @@
-# AI Chat implementation plan
+# ChatForge implementation plan
 
 ## 0. Decisions
 
@@ -11,9 +11,9 @@
 | Default model | `OpenVINO/Qwen3-4B-int4-ov` on NPU, `enable_thinking=false`. Fallback `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov`. |
 | Default cloud | MiniMax, International region, `MiniMax-M3`. |
 | Theme | UnifyingTheme `ui-theme/` copied verbatim. Default `laserlloyd`, with `data-families="true"` for the Light partner. DisPatch `theme.css` and `clawchat-compat.css` are **not** used (measured: 9 of 55 tokens covered). The chat CSS is ported with its tokens rewritten to contract names. |
-| Keys | keyring, service `AIChat`, username = provider id. The env var (`api_key_env`) wins. Keys are never written to config, logs or JS. |
-| Config | `%LOCALAPPDATA%\AIChat\config.toml` (pydantic-settings TOML source, written with tomli-w atomically). The home folder can be overridden with `AICHAT_HOME`. |
-| Autostart | Startup-folder `AIChat.vbs` (UTF-16 LE BOM) runs `pythonw -m aichat --hidden`. On by default. No admin. |
+| Keys | keyring, service `ChatForge`, username = provider id. The env var (`api_key_env`) wins. Keys are never written to config, logs or JS. |
+| Config | `%LOCALAPPDATA%\ChatForge\config.toml` (pydantic-settings TOML source, written with tomli-w atomically). The home folder can be overridden with `CHATFORGE_HOME`. |
+| Autostart | Startup-folder `ChatForge.vbs` (UTF-16 LE BOM) runs `pythonw -m chatforge --hidden`. On by default. No admin. |
 | Web text extraction | stdlib `html.parser`, not trafilatura (too heavy). |
 | Conversation | A single current conversation, persisted to `conversation.json`, with a "New chat" button. No thread list. |
 
@@ -37,7 +37,7 @@
 ## 1. Architecture
 
 ```
-                         ┌──────────────── pythonw -m aichat (one process) ────────────────┐
+                         ┌──────────────── pythonw -m chatforge (one process) ────────────────┐
  Tray icon (pystray thread) ──┐                                                            │
  Hotkey thread (RegisterHotKey)┤──► desktop.popup  (show/hide/place, win32util)            │
  2nd-instance "SHOW" socket ───┘         │                                                  │
@@ -57,22 +57,22 @@
         │             └─► llm.client.OpenAICompatClient (+ quirks: ovms | minimax) ─────────┼─► https://api.minimax.io/v1
         ├─► models.registry / models.downloader / models.hf_search ─────────────────────────┼─► huggingface.co
         └─► config / paths / logging_setup (redaction) / autostart                           │
-  Static server thread: desktop.webserver (127.0.0.1:<rand>, serves src/aichat/web)          │
+  Static server thread: desktop.webserver (127.0.0.1:<rand>, serves src/chatforge/web)          │
                                                                                             │
- %LOCALAPPDATA%\AIChat\  config.toml  models\  runtime\  cache\  logs\  state.json  …       │
+ %LOCALAPPDATA%\ChatForge\  config.toml  models\  runtime\  cache\  logs\  state.json  …       │
 ```
 
 **Threads.** The main thread runs pywebview (it must). The core thread runs one asyncio loop that owns every service. The pystray icon runs `icon.run()` in a daemon thread (the win32 backend allows this). The hotkey thread runs a message loop. The dispatch thread drains the event queue into `window.evaluate_js`, which blocks, so it must never be called on the loop. `js_api` calls arrive on pywebview worker threads and forward to the loop with `asyncio.run_coroutine_threadsafe(...).result(timeout)` for short calls. Long work returns an id immediately and reports through events.
 
-### 1.1 Repo tree (`%USERPROFILE%\Desktop\Projects\AI Chat`)
+### 1.1 Repo tree (`%USERPROFILE%\Desktop\Projects\ChatForge`)
 
 ```
 pyproject.toml  uv.lock  package.json  package-lock.json  README.md  LICENSE (MIT)
 THIRD_PARTY_NOTICES.md  .gitignore  .github/workflows/ci.yml
 docs/  research-brief.md  SETUP.md  RUNTIME-NOTES.md
-launchers/  AI Chat.bat  AI Chat Autostart.bat          (adapted from StudioForge launchers/)
+launchers/  ChatForge.bat  ChatForge Autostart.bat          (adapted from StudioForge launchers/)
 scripts/  ovms_bringup.ps1
-src/aichat/
+src/chatforge/
   __init__.py  __main__.py  app.py  doctor.py
   paths.py  config.py  secrets.py  errors.py  logging_setup.py  logfiles.py
   autostart.py  single_instance.py
@@ -102,15 +102,15 @@ tests/
 ### 1.2 Data locations (outside the repo)
 
 ```
-%LOCALAPPDATA%\AIChat\                      (AICHAT_HOME overrides)
+%LOCALAPPDATA%\ChatForge\                      (CHATFORGE_HOME overrides)
   config.toml                               settings (no secrets)
   state.json                                last_used per model, compile markers, last unload reason
   conversation.json                         current conversation (if chat.persist_conversation)
   downloads.json                            download queue/resume state
-  models\<publisher>\<repo>\                model files (+ .aichat-model.json sidecar); dot-dirs ignored
+  models\<publisher>\<repo>\                model files (+ .chatforge-model.json sidecar); dot-dirs ignored
   runtime\ovms-2026.4.0\ovms\ovms.exe       extracted OVMS; runtime\downloads\*.zip(.part)
-  cache\ov\<model-slug>\<DEVICE>-<max_prompt_len>\   per-model OVMS --cache_dir (+ .aichat-compiled.json)
-  logs\aichat.log (+.1..3)  logs\ovms.log (+.1..3)
+  cache\ov\<model-slug>\<DEVICE>-<max_prompt_len>\   per-model OVMS --cache_dir (+ .chatforge-compiled.json)
+  logs\chatforge.log (+.1..3)  logs\ovms.log (+.1..3)
   webview\                                  WebView2 profile (storage_path)
 ```
 
@@ -127,7 +127,7 @@ Every copied or adapted file carries `# Adapted from StudioForge src/studioforge
 | `logging_setup.py` | structlog plus redaction, `RING_BUFFER`, file handler | StudioForge `logging.py` (whole file: `_SECRET_KEYS`, `register_secret`, `_scrub_text`, `_redact*`, `RingBufferHandler`, `_SafeStreamHandler`, `configure_logging`, `first_time`) | the `owner=False` guest mode, uvicorn loggers. Add `x-api-key` and `api-key` to `_SECRET_KEYS`. |
 | `logfiles.py` | rotation | StudioForge `logfiles.py` (`SafeRotatingFileHandler`, `rotate_if_large`, `prune_backups`) | `AppendFileHandler` |
 | `errors.py` | `AppError(message, code, hint, action, details)` | StudioForge `errors.py` shape (`to_payload`) | HTTP status plumbing |
-| `autostart.py` | enable, disable, status of `AIChat.vbs` | StudioForge `core/autostart.py` (`startup_dir`, `_tray_interpreter`, `_quote_for_vbs`, `_enable_windows`, `_disable_windows`, the Windows half of `status`, the UTF-16 LE BOM writer) | Linux systemd, `serve`/`open_gui` modes, `Config` coupling (argv is passed in) |
+| `autostart.py` | enable, disable, status of `ChatForge.vbs` | StudioForge `core/autostart.py` (`startup_dir`, `_tray_interpreter`, `_quote_for_vbs`, `_enable_windows`, `_disable_windows`, the Windows half of `status`, the UTF-16 LE BOM writer) | Linux systemd, `serve`/`open_gui` modes, `Config` coupling (argv is passed in) |
 | `single_instance.py` | mutex socket `127.0.0.1:47831`. A second instance sends `SHOW\n` and exits. | StudioForge `tray/tray_app.py` `acquire_single_instance` | the tkinter "already running" box (replaced by the SHOW signal) |
 | `secrets.py` | keyring get/set/delete, env precedence, `key_status` | new (DisPatch `resolve_key` idea) | none |
 | `runtime/ports.py` | free-port pick | StudioForge `core/ports.py` (`port_is_bindable`, `port_has_listener`, `find_port_holder`) | watchdog, supervisor env, adoption, LM Studio hints |
@@ -153,7 +153,7 @@ Every copied or adapted file carries `# Adapted from StudioForge src/studioforge
 
 ```python
 # paths.py
-def app_home() -> Path                      # AICHAT_HOME or %LOCALAPPDATA%\AIChat
+def app_home() -> Path                      # CHATFORGE_HOME or %LOCALAPPDATA%\ChatForge
 @dataclass(frozen=True)
 class Paths:
     home: Path; config_file: Path; state_file: Path; conversation_file: Path
@@ -171,7 +171,7 @@ def save_config(cfg: AppConfig, paths: Paths) -> None      # tmp + os.replace
 def update_config(cfg: AppConfig, patch: dict, paths: Paths) -> tuple[AppConfig, list[str]]  # (new, restart_keys)
 
 # secrets.py
-SERVICE = "AIChat"
+SERVICE = "ChatForge"
 KeySource = Literal["env", "keyring", "none"]
 def get_api_key(provider_id: str, env_name: str | None) -> tuple[str | None, KeySource]
 def set_api_key(provider_id: str, key: str) -> None        # strip; reject \n or >512 chars; register_secret
@@ -328,7 +328,7 @@ def fit_messages(system: dict, history: list[dict], tools: list[dict], budget: P
 | `set_hotkey(spec)` | settings | `{ok, error?}` (for example "Ctrl+Alt+Space is in use by another app") |
 | `disk_usage()` | settings | `{models, cache, runtime, logs, free}` in bytes |
 
-**Events (Python → JS).** `EventSink` queues `{type, ...}`. The dispatch thread runs `window.evaluate_js("window.__aichat && window.__aichat.emit(<json>)")` for each open window. `chat.delta` is coalesced per request at 50 ms, so reasoning and content text are concatenated.
+**Events (Python → JS).** `EventSink` queues `{type, ...}`. The dispatch thread runs `window.evaluate_js("window.__chatforge && window.__chatforge.emit(<json>)")` for each open window. `chat.delta` is coalesced per request at 50 ms, so reasoning and content text are concatenated.
 
 | type | fields |
 |---|---|
@@ -346,7 +346,7 @@ def fit_messages(system: dict, history: list[dict], tools: list[dict], budget: P
 | `settings.changed` | `config` (so the other window re-applies theme and limits) |
 | `popup.shown` | (JS focuses the composer) |
 
-`bridge.js` waits for `pywebviewready`, then exposes `api.call(name, ...args)` and `on(type, fn)`. When `window.pywebview` is absent it loads `dev-mock.js`, so the UI can be built in a normal browser with `py -3.12 -m http.server -d src\aichat\web 8765`.
+`bridge.js` waits for `pywebviewready`, then exposes `api.call(name, ...args)` and `on(type, fn)`. When `window.pywebview` is absent it loads `dev-mock.js`, so the UI can be built in a normal browser with `py -3.12 -m http.server -d src\chatforge\web 8765`.
 
 ### 1.6 Streaming contract (engine loop)
 
@@ -372,7 +372,7 @@ schema_version = 1
 [chat]
 provider = "local-npu"
 model = "OpenVINO/Qwen3-4B-int4-ov"
-system_prompt = "You are AI Chat, a concise desktop assistant. Answer briefly. Use tools only when they help (current facts, web pages, dates, arithmetic)."
+system_prompt = "You are ChatForge, a concise desktop assistant. Answer briefly. Use tools only when they help (current facts, web pages, dates, arithmetic)."
 max_prompt_chars = 4000        # composer limit ("max prompt length"); UI counter + server check
 max_tool_rounds = 4
 temperature = 0.7              # local; cloud uses provider value
@@ -438,7 +438,7 @@ height = 620
 margin = 12
 
 [startup]
-autostart = true               # applied on first run; the toggle writes/removes AIChat.vbs
+autostart = true               # applied on first run; the toggle writes/removes ChatForge.vbs
 
 [logging]
 level = "INFO"
@@ -450,14 +450,14 @@ endpoint = "https://huggingface.co"
 default_author = "OpenVINO"
 ```
 
-Env override: `AICHAT_<SECTION>__<KEY>`. Changes to `local.device`, `local.max_prompt_len`, `local.extra_args` and `local.ovms_variant` are reported as "reload required", and the running model is reloaded on the next use.
+Env override: `CHATFORGE_<SECTION>__<KEY>`. Changes to `local.device`, `local.max_prompt_len`, `local.extra_args` and `local.ovms_variant` are reported as "reload required", and the running model is reloaded on the next use.
 
 ### 1.8 Registry formats
 
-**Model registry.** Scan-based: a model is `models\<publisher>\<repo>\` that contains `openvino_model.xml`, `openvino_model.bin`, `openvino_tokenizer.xml` and `openvino_detokenizer.xml`. The sidecar `.aichat-model.json` is written by the downloader, or by adoption:
+**Model registry.** Scan-based: a model is `models\<publisher>\<repo>\` that contains `openvino_model.xml`, `openvino_model.bin`, `openvino_tokenizer.xml` and `openvino_detokenizer.xml`. The sidecar `.chatforge-model.json` is written by the downloader, or by adoption:
 
 ```json
-{"schema":1,"repo_id":"OpenVINO/Qwen3-4B-int4-ov","revision":"<commit sha>","source":"aichat-downloader|adopted",
+{"schema":1,"repo_id":"OpenVINO/Qwen3-4B-int4-ov","revision":"<commit sha>","source":"chatforge-downloader|adopted",
  "files":[{"path":"openvino_model.bin","size":2263625445,"sha256":"<lfs oid or null>"}],
  "total_bytes":2290000000,"downloaded_at":"2026-09-30T12:00:00Z","license":"apache-2.0"}
 ```
@@ -496,7 +496,7 @@ reason = "Too large for 16 GB shared memory"
 
 Search results that are not in the catalog get the badge "untested" and, if the name has no `int4`, a note about the symmetric-INT4 requirement. Unknown `qwen*` models default to the hermes3 tool parser. Any other unknown model runs with tools disabled and a note.
 
-**Provider registry.** The `[providers.<id>]` tables in `config.toml` (schema above). Seeds are `local-npu` and `minimax`. Settings can add `kind="openai"` custom providers with id, name, base URL, `api_key_env`, a models list (from Test, or typed) and quirks `[]`. Keys go only to keyring (`AIChat`/`<id>`).
+**Provider registry.** The `[providers.<id>]` tables in `config.toml` (schema above). Seeds are `local-npu` and `minimax`. Settings can add `kind="openai"` custom providers with id, name, base URL, `api_key_env`, a models list (from Test, or typed) and quirks `[]`. Keys go only to keyring (`ChatForge`/`<id>`).
 
 ### 1.9 Frontend: what to lift and what to strip
 
@@ -509,7 +509,7 @@ Search results that are not in the catalog get the badge "untested" and, if the 
 **How `markdown.js` loads.** It is an ES module with `import { loadScript, loadStyle, escapeHtml } from './util.js?v=13'` and `import { t } from './i18n.js?v=3'`. It expects the globals `marked` and `DOMPurify` at evaluation time (it calls `marked.setOptions` at module eval) and lazy-loads `/static/vendor/highlight.min.js` and `github-dark.min.css` from root-absolute paths. Therefore:
 
 - `index.html` order is: `ui-theme.js` (blocking, in head), `ui-theme-base.css`, `css/app.css`, `ui-theme.css`, then at the end of body `<script defer src="/static/vendor/marked.min.js">`, `<script defer src="/static/vendor/purify.min.js">`, `<script type="module" src="/static/js/chat.js">`. Deferred classic scripts and module scripts run in document order, which matches DisPatch lines 979–981.
-- Our static server roots at `src/aichat/web/`, so `/static/...` resolves unchanged. Query strings are ignored by the server.
+- Our static server roots at `src/chatforge/web/`, so `/static/...` resolves unchanged. Query strings are ignored by the server.
 - `js/i18n.js` is a **new 20-line shim** exporting `t(key, vars)`, `applyDom()` (no-op) and `hasDictionary()`. It contains the English strings markdown.js uses, taken from DisPatch `locales/en.json`: `msg.view_raw`, `msg.link_retargeted`, `msg.code_lang_detected`, `msg.code_wrap`, `msg.copy`, `msg.copied`, `msg.callout_{note,tip,important,warning,caution}`.
 - Always call `renderMarkdown(text, {noMedia: true, noLocal: true})`. That disables the `[[media:]]`, `[[doc:]]` and `/api/media` paths. After `chat.done`, run `enhanceContent(el, {noLocal: true})`. Call `installMarkdownHandlers(toast)` once.
 - Put rendered markdown inside `.bubble .ui-markdown`.
@@ -548,12 +548,12 @@ Search results that are not in the catalog get the badge "untested" and, if the 
 | `--code-inline` | `--code-bg` |
 | `--md-quote` | `--quote-bar` |
 
-Must pass `python tools/lint_colors.py src/aichat/web/static/css` from UnifyingTheme. Only contract tokens, no raw colours. Text is quieted by tier, never by opacity.
+Must pass `python tools/lint_colors.py src/chatforge/web/static/css` from UnifyingTheme. Only contract tokens, no raw colours. Text is quieted by tier, never by opacity.
 
 **ui-theme tag:**
 
 ```html
-<script src="/static/ui-theme/ui-theme.js" data-themes="laserlloyd,laserlloyd-light,midnight-gold,glacier,forest,paper,daylight,purple" data-default="laserlloyd" data-storage-key="aichat.theme" data-families="true"></script>
+<script src="/static/ui-theme/ui-theme.js" data-themes="laserlloyd,laserlloyd-light,midnight-gold,glacier,forest,paper,daylight,purple" data-default="laserlloyd" data-storage-key="chatforge.theme" data-families="true"></script>
 ```
 
 `config.ui.theme` is the source of truth. On load, JS calls `UITheme.set(cfg.theme)`. `UITheme.onChange` calls `update_settings`, and the other window re-applies on `settings.changed`.
@@ -595,21 +595,21 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS0: Scaffold and CI (general-purpose, **haiku**). Start first (short).
 
-- **Files:** `pyproject.toml`, `uv.lock`, `package.json`, `package-lock.json` (devDependency `jsdom`), `.gitignore` (`.venv/`, `node_modules/`, `*.part`, `.env`), `LICENSE`, `README.md` (skeleton), `THIRD_PARTY_NOTICES.md`, `.github/workflows/ci.yml`, `src/aichat/__init__.py`, all package `__init__.py` files, `tests/conftest.py`, `tests/fakes/{keyring_backend.py, clock.py}`.
+- **Files:** `pyproject.toml`, `uv.lock`, `package.json`, `package-lock.json` (devDependency `jsdom`), `.gitignore` (`.venv/`, `node_modules/`, `*.part`, `.env`), `LICENSE`, `README.md` (skeleton), `THIRD_PARTY_NOTICES.md`, `.github/workflows/ci.yml`, `src/chatforge/__init__.py`, all package `__init__.py` files, `tests/conftest.py`, `tests/fakes/{keyring_backend.py, clock.py}`.
 - **Steps:**
-  1. `git init -b main`, then the pyproject: hatchling, `src/aichat`, include `web/**` and `models/catalog.toml`, ruff (line length 100, py312, the StudioForge rule set), pytest markers `live_npu`, `live_minimax`, `ui`, and `addopts = "-m 'not live_npu and not live_minimax and not ui'"`, `asyncio_mode = "auto"`, `timeout = 120`.
+  1. `git init -b main`, then the pyproject: hatchling, `src/chatforge`, include `web/**` and `models/catalog.toml`, ruff (line length 100, py312, the StudioForge rule set), pytest markers `live_npu`, `live_minimax`, `ui`, and `addopts = "-m 'not live_npu and not live_minimax and not ui'"`, `asyncio_mode = "auto"`, `timeout = 120`.
   2. `py -3.12 -m uv lock`.
-  3. Write the fixtures `aichat_home` (tmp dir plus `AICHAT_HOME`), `fake_keyring` (an in-memory `KeyringBackend` set with `keyring.set_keyring`), and `fake_clock`.
+  3. Write the fixtures `chatforge_home` (tmp dir plus `CHATFORGE_HOME`), `fake_keyring` (an in-memory `KeyringBackend` set with `keyring.set_keyring`), and `fake_clock`.
   4. CI jobs:
      - `python`, a matrix of `ubuntu-latest` and `windows-latest`: `astral-sh/setup-uv`, `uv sync --locked --extra dev`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest -q`.
      - `js` on ubuntu with Node 24: `npm ci`, then `node --test tests/js`.
-- **Accept:** CI is green on an empty test suite. `py -3.12 -m uv run python -c "import aichat"` works on both OSes.
+- **Accept:** CI is green on an empty test suite. `py -3.12 -m uv run python -c "import chatforge"` works on both OSes.
 
 ### WS1: NPU runtime bring-up and OVMS supervisor (general-purpose, **opus**). **Starts immediately.** Phase A needs no repo.
 
-- **Files:** `scripts/ovms_bringup.ps1`, `docs/RUNTIME-NOTES.md`, `src/aichat/runtime/{ovms_install.py, ovms_supervisor.py, jobobject.py, ports.py, compile_cache.py}`, `tests/fakes/ovms_child.py`, `tests/unit/{test_ovms_install.py, test_ovms_supervisor.py, test_ports.py, test_compile_cache.py}`, `tests/live/test_live_npu.py`.
+- **Files:** `scripts/ovms_bringup.ps1`, `docs/RUNTIME-NOTES.md`, `src/chatforge/runtime/{ovms_install.py, ovms_supervisor.py, jobobject.py, ports.py, compile_cache.py}`, `tests/fakes/ovms_child.py`, `tests/unit/{test_ovms_install.py, test_ovms_supervisor.py, test_ports.py, test_compile_cache.py}`, `tests/live/test_live_npu.py`.
 - **Phase A (manual, about 30–45 min, including the ~5–6 min compile):**
-  1. Download `ovms_windows_2026.4.0_python_off.zip` (117,195,695 bytes) and its `.sha256` (102 bytes) from `https://github.com/openvinotoolkit/model_server/releases/download/v2026.4.0/` into `%LOCALAPPDATA%\AIChat\runtime\downloads\`. Verify with `Get-FileHash`. Extract to `runtime\ovms-2026.4.0\`.
+  1. Download `ovms_windows_2026.4.0_python_off.zip` (117,195,695 bytes) and its `.sha256` (102 bytes) from `https://github.com/openvinotoolkit/model_server/releases/download/v2026.4.0/` into `%LOCALAPPDATA%\ChatForge\runtime\downloads\`. Verify with `Get-FileHash`. Extract to `runtime\ovms-2026.4.0\`.
   2. Read `setupvars.ps1` and record exactly which environment variables it sets.
   3. Confirm VC++ (already v14.50) and the NPU device (`Get-PnpDevice -FriendlyName '*AI Boost*'`).
   4. Verify the existing model folder against `GET https://huggingface.co/api/models/OpenVINO/Qwen3-4B-int4-ov/tree/main` sizes.
@@ -628,17 +628,17 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 - **Accept:**
   - Phase A notes are committed, and a real tool-call round trip works on NPU.
   - Unit tests cover argv (golden), env, sha mismatch, extraction guard, readiness transitions, child-crash detection, and stop/kill-tree (with a fake child).
-  - `pytest -m live_npu` (with `AICHAT_LIVE_NPU=1`) loads the model, answers "What is 2+2?", and unloads, leaving no `ovms.exe` process afterwards.
+  - `pytest -m live_npu` (with `CHATFORGE_LIVE_NPU=1`) loads the model, answers "What is 2+2?", and unloads, leaving no `ovms.exe` process afterwards.
 - **Depends on:** WS0 for phase B only. **Recommended model: opus.**
 
 ### WS2: Core platform (general-purpose, **sonnet**)
 
-- **Files:** `src/aichat/{paths.py, config.py, secrets.py, errors.py, logging_setup.py, logfiles.py, autostart.py, single_instance.py}`, `tests/unit/{test_paths.py, test_config.py, test_secrets.py, test_logging_redaction.py, test_autostart.py, test_single_instance.py}`.
+- **Files:** `src/chatforge/{paths.py, config.py, secrets.py, errors.py, logging_setup.py, logfiles.py, autostart.py, single_instance.py}`, `tests/unit/{test_paths.py, test_config.py, test_secrets.py, test_logging_redaction.py, test_autostart.py, test_single_instance.py}`.
 - **Steps:**
   1. Implement §1.4 and §1.7 exactly: defaults, validation (hotkey syntax, device enum, idle ≥ 0, max_prompt_len 1024–8192, base_url via `normalize_base_url` rules), atomic save, `update_config` returning restart keys.
   2. Copy logging and logfiles per 1.3.
   3. `secrets`: env beats keyring, `register_secret` on every get and set, reject newline and oversize keys.
-  4. `autostart`: argv `[pythonw, "-m", "aichat", "--hidden"]`, shim `AIChat.vbs` with `CurrentDirectory = app_home`.
+  4. `autostart`: argv `[pythonw, "-m", "chatforge", "--hidden"]`, shim `ChatForge.vbs` with `CurrentDirectory = app_home`.
   5. `single_instance`: bind port 47831 without `SO_REUSEADDR`, an accept thread that invokes an `on_show` callback, and `signal_existing()`.
 - **Accept:**
   - The config round-trips. An unknown key produces a warning, not a crash.
@@ -648,7 +648,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS3: LLM client, providers and MiniMax (general-purpose, **opus**)
 
-- **Files:** `src/aichat/llm/*`, `tests/fakes/openai_server.py`, `tests/unit/{test_llm_client.py, test_thinking.py, test_minimax.py, test_providers.py, test_probe.py}`, `tests/live/test_live_minimax.py`.
+- **Files:** `src/chatforge/llm/*`, `tests/fakes/openai_server.py`, `tests/unit/{test_llm_client.py, test_thinking.py, test_minimax.py, test_providers.py, test_probe.py}`, `tests/live/test_live_minimax.py`.
 - **Steps:**
   1. `client.py`: an async version of CrucibleForge `stream_chat`. It yields events and treats `data: {"error":...}` frames as errors. It accepts a 200 response with non-SSE JSON: run `quirks.check_payload`, then raise `server`. Stall and wall timeouts, a cancel event, and `_merge_tool_call_deltas`. On completion: `split_thinking` on the raw content, fold inline think text into reasoning, apply the `_merge_reasoning` rule (empty content with reasoning present means show the reasoning), and parse `tool_calls` into `ToolCall` objects.
   2. `OvmsQuirks`: inject `chat_template_kwargs`, drop `n`, and use a fallback `<tool_call>\s*(\{.*?\})\s*</tool_call>` parser when `tool_calls` is empty but the content contains one. Strip it from the visible text.
@@ -672,7 +672,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS4: Model library (general-purpose, **sonnet**)
 
-- **Files:** `src/aichat/models/*`, `tests/fakes/hf_api.py`, `tests/unit/{test_registry.py, test_downloader.py, test_hf_search.py, test_catalog.py, test_diskspace.py}`.
+- **Files:** `src/chatforge/models/*`, `tests/fakes/hf_api.py`, `tests/unit/{test_registry.py, test_downloader.py, test_hf_search.py, test_catalog.py, test_diskspace.py}`.
 - **Steps:**
   1. Registry scan and completeness check, adopting the existing Qwen3 folder (write the sidecar with `source:"adopted"` after a size check against `repo_files`, when online). Delete with `_assert_inside_model_dirs`, which also removes that model's `cache\ov\<slug>`.
   2. `hf_search`: `GET /api/models?search=&author=&sort=downloads&limit=30`, and `GET /api/models/{repo}/tree/main?recursive=true` (size, `lfs.oid`) for revision and files.
@@ -686,7 +686,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS5: Tools (general-purpose, **sonnet**)
 
-- **Files:** `src/aichat/tools/*`, `tests/unit/{test_tools_registry.py, test_calculator.py, test_fetch_url.py, test_web_search.py, test_clock.py, test_htmltext.py}`.
+- **Files:** `src/chatforge/tools/*`, `tests/unit/{test_tools_registry.py, test_calculator.py, test_fetch_url.py, test_web_search.py, test_clock.py, test_htmltext.py}`.
 - **Steps:**
   - `calculator`: an `ast` whitelist. Numbers, `+ - * / // % **`, unary operators, parentheses. Functions: `sqrt sin cos tan log log10 exp abs round floor ceil`; constants `pi e`. Expressions up to 200 characters, exponent magnitude ≤ 100, results capped at 1e100. No names, attributes or calls outside the whitelist.
   - `clock` (`current_datetime`): local ISO time, weekday, timezone name, UTC offset.
@@ -697,7 +697,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS6: Chat engine and local model manager (general-purpose, **opus**)
 
-- **Files:** `src/aichat/chat/*`, `src/aichat/runtime/{manager.py, idle.py}`, `tests/unit/{test_engine.py, test_history.py, test_conversation.py, test_manager.py, test_idle.py}`.
+- **Files:** `src/chatforge/chat/*`, `src/chatforge/runtime/{manager.py, idle.py}`, `tests/unit/{test_engine.py, test_history.py, test_conversation.py, test_manager.py, test_idle.py}`.
 - **Steps:**
   1. Manager:
      - An `asyncio.Lock` serialises load, unload and switch. `ensure_loaded` switches the model (stop, then start).
@@ -721,7 +721,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS7: Desktop shell and bridge (general-purpose, **opus**)
 
-- **Files:** `src/aichat/{__main__.py, app.py}`, `src/aichat/desktop/*`, `launchers/*.bat`, `tests/unit/{test_placement.py, test_hotkey_parse.py, test_bridge.py, test_events.py, test_webserver.py, test_icon.py}`, `tests/ui/test_ui_smoke.py`.
+- **Files:** `src/chatforge/{__main__.py, app.py}`, `src/chatforge/desktop/*`, `launchers/*.bat`, `tests/unit/{test_placement.py, test_hotkey_parse.py, test_bridge.py, test_events.py, test_webserver.py, test_icon.py}`, `tests/ui/test_ui_smoke.py`.
 - **Steps:**
   1. **Day-one spike:** pywebview 6.2 with a hidden frameless on-top window, our static server, an ES-module page, a `js_api` round trip under the CSP header, `evaluate_js` from a non-UI thread, and a second window created after `start()`. Record the results in the PR.
   2. `webserver.py`: `ThreadingHTTPServer` bound to `127.0.0.1:0`, rooted at `web/`, with an explicit MIME map, `Cache-Control: no-cache`, CSP, `nosniff`, and path confinement.
@@ -744,7 +744,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
   9. `app.py` wiring:
      - `main()`: single instance, `Paths` and config, logging, apply first-run autostart, start the static server and core loop (registry scan, manager, reaper, downloader), create the popup (`hidden=True`), start the tray and hotkey threads, then `webview.start(gui="edgechromium", private_mode=False, storage_path=paths.webview_dir)`.
      - On Quit: `manager.aclose()`, `icon.stop()`, destroy the windows.
-     - `__main__` CLI: `aichat [--hidden|--show|--settings]`, `aichat runtime install|status`, `aichat autostart enable|disable|status`, `aichat doctor`.
+     - `__main__` CLI: `chatforge [--hidden|--show|--settings]`, `chatforge runtime install|status`, `chatforge autostart enable|disable|status`, `chatforge doctor`.
 - **Accept:**
   - Placement unit tests (100/150/200% DPI, taskbar at bottom/left/top, second monitor) produce a rect inside rcWork with the margin.
   - Hotkey parse tests pass.
@@ -754,7 +754,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS8a: Popup chat UI (general-purpose, **sonnet**). Can start right after WS0, against `dev-mock.js`.
 
-- **Files:** `src/aichat/web/index.html`, `web/static/{ui-theme/**, vendor/**, js/markdown.js, js/util.js, js/i18n.js, js/bridge.js, js/dev-mock.js, js/chat.js, js/keycard.js, css/app.css, img/icon.svg}`, `tests/js/**`.
+- **Files:** `src/chatforge/web/index.html`, `web/static/{ui-theme/**, vendor/**, js/markdown.js, js/util.js, js/i18n.js, js/bridge.js, js/dev-mock.js, js/chat.js, js/keycard.js, css/app.css, img/icon.svg}`, `tests/js/**`.
 - **Steps:**
   1. Copy the verbatim files (checksum-compare against the sources in the PR).
   2. Write the i18n shim, `bridge.js` and `dev-mock.js` (which simulates streaming, tool chips, a compile timer and `no_key`).
@@ -772,7 +772,7 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS8b: Settings UI (general-purpose, **sonnet**). Parallel with WS8a.
 
-- **Files:** `src/aichat/web/settings.html`, `web/static/js/settings.js`, `web/static/css/settings.css`. It consumes WS8a's `bridge.js`, `util.js` and ui-theme without editing them.
+- **Files:** `src/chatforge/web/settings.html`, `web/static/js/settings.js`, `web/static/css/settings.css`. It consumes WS8a's `bridge.js`, `util.js` and ui-theme without editing them.
 - **Tabs:**
   - **Models.** Installed list: select, load, unload, delete (confirm), clear compile cache, size, "compiled for NPU ✓", badge. Disk usage bar. Runtime card: OVMS installed/version, Install button with progress, VC++ status plus the winget instruction if missing. Search box (author filter defaulting to OpenVINO, toggleable), results with badges, and a details drawer with total size and a Download button. Downloads list with progress, speed, ETA, and Cancel/Resume.
   - **Providers.** The local-npu card (device NPU/GPU/CPU, `max_prompt_len` under an advanced section, "reload required" note). The MiniMax card:
@@ -789,13 +789,13 @@ Nobody else edits it. Requests for new dependencies go to the lead.
 
 ### WS9: Integration, docs, doctor, live verification, repo (general-purpose, **opus**). Last.
 
-- **Files:** `src/aichat/doctor.py`, `docs/SETUP.md`, `README.md` (full; WS0 wrote the skeleton), `tests/unit/test_doctor.py`, and fix-ups by coordination only.
+- **Files:** `src/chatforge/doctor.py`, `docs/SETUP.md`, `README.md` (full; WS0 wrote the skeleton), `tests/unit/test_doctor.py`, and fix-ups by coordination only.
 - **Steps:**
   1. Merge in order and resolve interface drift.
   2. `doctor`: Python, WebView2 version (registry `EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` `pv`), VC++, NPU device, OVMS, model completeness, compiled marker, keyring backend, `MINIMAX_API_KEY` present (true/false only), whether the hotkey can be registered, autostart status, and free disk.
   3. Run the live NPU smoke, the UI smoke and the full checklist (§6).
   4. Ask the owner to enter the MiniMax key, then run `live_minimax`.
-  5. **With owner confirmation**, create the private repo: `gh repo create LaserLloyd/AI-Chat --private --source . --remote origin --push`. Confirm CI is green on GitHub.
+  5. **With owner confirmation**, create the private repo: `gh repo create LaserLloyd/ChatForge --private --source . --remote origin --push`. Confirm CI is green on GitHub.
 
 ### Integration order
 
@@ -843,7 +843,7 @@ Merge order: WS0 → WS2 → WS1-B → WS3 → WS5 → WS4 → WS6 → WS8a → 
 No step needs admin (UAC) on this machine. VC++ v14.50 and WebView2 are present, and OVMS binds loopback.
 
 ```powershell
-cd "%USERPROFILE%\Desktop\Projects\AI Chat"
+cd "%USERPROFILE%\Desktop\Projects\ChatForge"
 py -3.12 -m uv venv --python 3.12 .venv
 py -3.12 -m uv sync --extra dev                      # ~100–150 MB of wheels (estimate)
 npm ci                                               # dev only: jsdom (~10 MB)
@@ -852,30 +852,30 @@ py -3.12 -m uv run pytest -q                         # unit only (markers desele
 node --test tests/js
 
 # Runtime (LARGE: 117,195,695 bytes; python_on fallback 138,798,816 bytes)
-py -3.12 -m uv run python -m aichat runtime install
-py -3.12 -m uv run python -m aichat runtime status
-py -3.12 -m uv run python -m aichat doctor
+py -3.12 -m uv run python -m chatforge runtime install
+py -3.12 -m uv run python -m chatforge runtime status
+py -3.12 -m uv run python -m chatforge doctor
 
 # Model: already on disk (2.29 GB). Fallback model, if needed (0.93 GB), via Settings → Models → Download.
 
 # First NPU compile (~5–6 min, one-off) + live smoke
-$env:AICHAT_LIVE_NPU = "1"; py -3.12 -m uv run pytest -m live_npu -s
+$env:CHATFORGE_LIVE_NPU = "1"; py -3.12 -m uv run pytest -m live_npu -s
 
 # Run the app
-py -3.12 -m uv run python -m aichat                 # shows popup
-.\.venv\Scripts\pythonw.exe -m aichat --hidden      # as autostart runs it
-py -3.12 -m uv run python -m aichat autostart enable    # writes %APPDATA%\...\Startup\AIChat.vbs (no admin)
+py -3.12 -m uv run python -m chatforge                 # shows popup
+.\.venv\Scripts\pythonw.exe -m chatforge --hidden      # as autostart runs it
+py -3.12 -m uv run python -m chatforge autostart enable    # writes %APPDATA%\...\Startup\ChatForge.vbs (no admin)
 
 # MiniMax (after the owner saves a key in Settings)
 py -3.12 -m uv run pytest -m live_minimax -s
-py -3.12 -c "import keyring; print(keyring.get_password('AIChat','minimax') is not None)"   # prints True/False only
+py -3.12 -c "import keyring; print(keyring.get_password('ChatForge','minimax') is not None)"   # prints True/False only
 
 # UI smoke (Windows desktop session)
 py -3.12 -m uv run pytest -m ui -s
 
 # Repo (after owner confirmation)
-git init -b main; git add -A; git commit -m "AI Chat: initial"
-gh repo create LaserLloyd/AI-Chat --private --source . --remote origin --push
+git init -b main; git add -A; git commit -m "ChatForge: initial"
+gh repo create LaserLloyd/ChatForge --private --source . --remote origin --push
 gh run watch
 ```
 
@@ -919,11 +919,11 @@ Only if VC++ is ever missing: `winget install --id Microsoft.VCRedist.2015+.x64 
 - `[[media:...]]` with `noMedia` does not produce `<img>`
 - `renderMarkdown('')` does not throw
 
-**Live NPU smoke** (`live_npu`, skipped unless `AICHAT_LIVE_NPU=1`; Windows): real OVMS and the model. Load (report compile vs cached time), stream "2+2", run one `current_datetime` tool round trip, time an idle unload with a 5 s TTL override, then assert no `ovms.exe` process remains.
+**Live NPU smoke** (`live_npu`, skipped unless `CHATFORGE_LIVE_NPU=1`; Windows): real OVMS and the model. Load (report compile vs cached time), stream "2+2", run one `current_datetime` tool round trip, time an idle unload with a 5 s TTL override, then assert no `ovms.exe` process remains.
 
 **Live MiniMax smoke** (`live_minimax`, skipped unless a key resolves from env or keyring): `test_provider` succeeds; stream from `MiniMax-M3`; a tool round trip with the echoed message accepted (no 2013); log which reasoning field arrived and the key region. Never prints the key.
 
-**UI smoke** (`ui`, Windows desktop). Launch the app in-process with a temp `AICHAT_HOME`, provider `fake` pointing at the fake OpenAI server, and a hidden start. Through `webview.start(func)`:
+**UI smoke** (`ui`, Windows desktop). Launch the app in-process with a temp `CHATFORGE_HOME`, provider `fake` pointing at the fake OpenAI server, and a hidden start. Through `webview.start(func)`:
 
 1. Toggle the popup.
 2. Assert its rect is inside the work area at the bottom-right with the margin, and has rounded corners.
@@ -938,8 +938,8 @@ Only if VC++ is ever missing: `winget install --id Microsoft.VCRedist.2015+.x64 
 
 ## 6. Final verification checklist
 
-- [ ] `ruff check`, `ruff format --check`, `pytest -q` and `node --test tests/js` are green locally, and CI is green on ubuntu and windows (private repo `LaserLloyd/AI-Chat`).
-- [ ] `aichat doctor` is all green: WebView2, VC++, NPU, OVMS 2026.4.0, model complete, compiled marker, keyring backend, hotkey free, autostart enabled.
+- [ ] `ruff check`, `ruff format --check`, `pytest -q` and `node --test tests/js` are green locally, and CI is green on ubuntu and windows (private repo `LaserLloyd/ChatForge`).
+- [ ] `chatforge doctor` is all green: WebView2, VC++, NPU, OVMS 2026.4.0, model complete, compiled marker, keyring backend, hotkey free, autostart enabled.
 - [ ] Tray icon appears at logon (after a reboot or sign-out) with no console window, hidden, and with no model loaded.
 - [ ] The tray click and the `Ctrl+Alt+Space` hotkey each open the popup at the lower-right above the taskbar at 200% DPI. Composer is focused, corners are rounded. Escape, blur and a second tray click hide it. Pin keeps it open.
 - [ ] Local: the first question auto-loads the model with a status countdown. The cached load takes seconds (time recorded). Answers stream with markdown. "What's today's date?" uses `current_datetime`. "Search the web for …" uses `web_search`. "Summarise <url>" uses `fetch_url`. "What is sqrt(2)*10?" uses the calculator.
@@ -949,7 +949,7 @@ Only if VC++ is ever missing: `winget install --id Microsoft.VCRedist.2015+.x64 
 - [ ] First-run: selecting MiniMax with no key shows the inline "Add your MiniMax API key" card in the popup. After saving, the pending message is sent.
 - [ ] MiniMax replies stream, reasoning is collapsed, and a tool round trip works (echo accepted).
 - [ ] General: idle timeout, max prompt length (the counter enforces it), device, hotkey change (conflict reported), theme (LaserLloyd default, the Light toggle, persists across both windows), and the autostart toggle all persist in `config.toml`.
-- [ ] Logs tab shows recent lines. `Select-String` for the key over `%LOCALAPPDATA%\AIChat\logs\*` and `config.toml` finds nothing.
+- [ ] Logs tab shows recent lines. `Select-String` for the key over `%LOCALAPPDATA%\ChatForge\logs\*` and `config.toml` finds nothing.
 - [ ] Quit from the tray leaves no `ovms.exe` or `pythonw.exe` running. Launching twice brings up the existing popup.
 - [ ] `THIRD_PARTY_NOTICES.md` and `web/static/vendor/README.md` are present. Every copied module carries an "adapted from" comment. StudioForge is unmodified (`git -C ..\StudioForge status` is clean).
 
@@ -973,7 +973,7 @@ Verdict: APPROVE WITH REQUIRED CHANGES. All required changes below are adopted. 
    - `OvmsSupervisor.start()` hashes the `LaunchSpec` fields (device, max_prompt_len, parsers, cache_dir, variant, ovms_version) and compares with `state.json`. On a difference it regenerates the graph with `ovms --configure --model_path … --task text_generation …`, or deletes `graph.pbtxt`, before serving.
    - `models/registry.py` treats `graph.pbtxt` as expected: not a completeness file, ignored in size checks, never deleted on adopt.
    - Adopt verifies that the model dir is writable.
-3. **`ProviderSpec` and `Timeouts` live in `config.py` (WS2).** `llm/*` imports them from `aichat.config`. This removes the backwards WS2→WS3 dependency.
+3. **`ProviderSpec` and `Timeouts` live in `config.py` (WS2).** `llm/*` imports them from `chatforge.config`. This removes the backwards WS2→WS3 dependency.
 4. **`__init__.py` files are empty and owned by WS0.** Nobody else edits them. `ToolResult`, `ToolNotAllowed`, `assert_tool_allowed` and `ToolRegistry` move to `tools/registry.py`. Same rule for `llm/` and `runtime/`: put shared types in named modules, never in `__init__.py`.
 5. **Frameless popup uses `easy_drag=False`.** Otherwise every text-selection drag moves the window. If a drag handle is wanted, use `webview.settings['DRAG_REGION_SELECTOR']` on the header only. Verify in the WS7 day-one spike.
 6. **Events are delivered with `window.run_js(...)`, not `evaluate_js`.** `evaluate_js` uses `eval`, which a strict CSP blocks, and it blocks the calling thread. Keep `evaluate_js` only for test DOM assertions. The WS7 spike exercises `run_js`, `evaluate_js` and a `js_api` round trip under the CSP header. Add `object-src 'none'` to the CSP.
@@ -999,7 +999,7 @@ Verdict: APPROVE WITH REQUIRED CHANGES. All required changes below are adopted. 
 - **Scope decisions (lead):**
   - KEEP the add-custom-provider form, because the owner asked to "plug in an API model".
   - The hotkey setting is a plain text field that applies on save, with registration errors shown. No capture widget.
-  - The in-process UI smoke test becomes a manual checklist item plus a minimal scripted launch check (`aichat --show` starts, the window rect is inside the work area, `aichat` quits cleanly). No pywebview-in-pytest target.
+  - The in-process UI smoke test becomes a manual checklist item plus a minimal scripted launch check (`chatforge --show` starts, the window rect is inside the work area, `chatforge` quits cleanly). No pywebview-in-pytest target.
   - The ubuntu CI leg stays.
 - **Markdown JS tests:** copy DisPatch `frontend/tests/markdown-behaviour.test.js` as the harness base.
 - **WS8a lands first:** it commits `bridge.js`, `dev-mock.js` and `i18n.js` first, so WS8b can start.
@@ -1012,10 +1012,10 @@ Verdict: APPROVE WITH REQUIRED CHANGES. All required changes below are adopted. 
 2. **NPU model gate:** Qwen3-4B-int4-ov is gs128, while OVMS docs ask for channel-wise (`--group-size -1`) on NPU. WS1 tries it first. If the compile fails or tool calls are garbage, WS1 falls back automatically: to an NPU-optimised `-cw-` variant of a ≤4B model if one exists in the OpenVINO org, else to `Qwen2.5-1.5B-Instruct-int4-ov`. It reports what happened and updates `catalog.toml`'s recommended flag.
 3. Scope cuts as listed above.
 4. **Model assignments:** WS7 and WS9 run on **fable**, WS4 on **opus**. The rest are as planned.
-5. **Repo:** private `LaserLloyd/AI-Chat`, as the owner requested. It stays private until the UnifyingTheme licence is reviewed.
+5. **Repo:** private `LaserLloyd/ChatForge`, as the owner requested. It stays private until the UnifyingTheme licence is reviewed.
 
 ### Execution rules for all agents
-- All agents share one working tree, `%USERPROFILE%\Desktop\Projects\AI Chat`. **Edit only the files your workstream owns.** Do not run repo-wide `ruff format` or `ruff check --fix`. Run them on your own files only.
+- All agents share one working tree, `%USERPROFILE%\Desktop\Projects\ChatForge`. **Edit only the files your workstream owns.** Do not run repo-wide `ruff format` or `ruff check --fix`. Run them on your own files only.
 - Use `py -3.12 -m uv run ...` from the repo root, and never bare `python`. Do not add dependencies; ask the lead to change `pyproject.toml`.
 - Do not `git commit`, create branches or push. The lead commits each workstream when it lands.
 - Never type, print or log an API key. The owner enters keys in the app.

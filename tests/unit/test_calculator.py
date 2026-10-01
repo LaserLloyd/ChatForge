@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from aichat.tools import calculator
-from aichat.tools.calculator import CalcError, evaluate
+from chatforge.tools import calculator
+from chatforge.tools.calculator import CalcError, evaluate
 
 
 @pytest.mark.parametrize(

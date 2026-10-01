@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from aichat.runtime import ovms_install as oi
+from chatforge.runtime import ovms_install as oi
 
 
 def _zip_bytes(members: dict[str, bytes], *, symlink: str | None = None) -> bytes:

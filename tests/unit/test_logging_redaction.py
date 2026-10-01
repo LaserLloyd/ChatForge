@@ -5,8 +5,8 @@ import logging
 import pytest
 import structlog
 
-from aichat import logging_setup
-from aichat.logging_setup import (
+from chatforge import logging_setup
+from chatforge.logging_setup import (
     RING_BUFFER,
     configure_logging,
     first_time,
@@ -15,7 +15,7 @@ from aichat.logging_setup import (
     register_secret,
     reset_first_time,
 )
-from aichat.secrets import set_api_key
+from chatforge.secrets import set_api_key
 
 SECRET = "sk-live-Zx9Qw8Er7Ty6Ui5Op"
 HF = "hf_AbCdEfGhIjKlMnOpQrSt"
@@ -34,7 +34,7 @@ def log_dir(tmp_path):
 
 def _log_text(directory) -> str:
     flush_logging()
-    return (directory / "aichat.log").read_text(encoding="utf-8")
+    return (directory / "chatforge.log").read_text(encoding="utf-8")
 
 
 def test_registered_secret_is_scrubbed_from_messages(log_dir):
@@ -151,7 +151,7 @@ def test_reconfigure_closes_previous_file_handler(tmp_path):
         assert handler.stream is None  # closed
         assert logging_setup._file_handler is not handler
         # the first file can be renamed (would fail on Windows if still held)
-        (first / "aichat.log").rename(first / "moved.log")
+        (first / "chatforge.log").rename(first / "moved.log")
     finally:
         configure_logging("WARNING")
         structlog.reset_defaults()
@@ -168,9 +168,9 @@ def test_rotation_keeps_backup_count(tmp_path):
     finally:
         configure_logging("WARNING")
         structlog.reset_defaults()
-    backups = [p for p in directory.iterdir() if p.name != "aichat.log"]
+    backups = [p for p in directory.iterdir() if p.name != "chatforge.log"]
     assert 1 <= len(backups) <= 2
-    assert (directory / "aichat.log").is_file()
+    assert (directory / "chatforge.log").is_file()
 
 
 def test_first_time():

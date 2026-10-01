@@ -31,11 +31,11 @@ These results were measured on 2026-09-30 on the target laptop:
 | Size | 138,798,816 bytes |
 | **SHA-256** (Get-FileHash, matches the release `.sha256`) | `5a022e44e794e6a9cb0f1c6c40822167dac53a36daf9af123c9411974cef1914` |
 | `python_off` (not downloaded) | 117,195,695 bytes. SHA-256 from the release `.sha256`: `46d03114c97abfe05f2c5a8fde772c655aeef541ee254c23f402f81a616474e3` |
-| Extracted to | `%LOCALAPPDATA%\AIChat\runtime\ovms-2026.4.0\ovms\` (a single top-level `ovms\` folder in the zip) |
+| Extracted to | `%LOCALAPPDATA%\ChatForge\runtime\ovms-2026.4.0\ovms\` (a single top-level `ovms\` folder in the zip) |
 | Extracted size | 374,683,096 bytes (357 MiB), 2,949 files |
 | Version string | `OpenVINO Model Server 2026.4.0.869b2186`, OpenVINO `2026.4.0-22959`, GenAI `2026.4.0.0-3407`, build flags `win_mp_on_py_on` |
 
-The pinned values live in `aichat.runtime.ovms_install.ASSETS`. The runtime marker `.aichat-runtime.json` is written in `ovms-2026.4.0\`.
+The pinned values live in `chatforge.runtime.ovms_install.ASSETS`. The runtime marker `.chatforge-runtime.json` is written in `ovms-2026.4.0\`.
 
 ### python_on and python_off
 
@@ -72,9 +72,9 @@ The pinned values live in `aichat.runtime.ovms_install.ASSETS`. The runtime mark
 ```
 ovms.exe --rest_port <P> --rest_bind_address 127.0.0.1
          --model_name OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov
-         --model_path %LOCALAPPDATA%\AIChat\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov
+         --model_path %LOCALAPPDATA%\ChatForge\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov
          --task text_generation --target_device NPU --max_prompt_len 4096
-         --cache_dir %LOCALAPPDATA%\AIChat\cache\ov\OpenVINO--Qwen2.5-1.5B-Instruct-int4-ov\NPU-4096
+         --cache_dir %LOCALAPPDATA%\ChatForge\cache\ov\OpenVINO--Qwen2.5-1.5B-Instruct-int4-ov\NPU-4096
          --tool_parser hermes3 --log_level INFO
 ```
 
@@ -169,7 +169,7 @@ The flag is accepted and it helps modestly, at a large one-off compile cost:
    - **None has a tool parser in OVMS 2026.4.** There is no gemma3 or phi3 parser, and their chat templates don't render `tools`. So they cannot meet the tools requirement, and I didn't use them.
 3. **Fallback `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` passes.**
    - Revision `4d14c299e35d8b74e3471f9e92bd1377fae50736`, 935,999,480 bytes. All 16 files were verified against the HF tree sizes and LFS sha256.
-   - It is downloaded to `%LOCALAPPDATA%\AIChat\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov`.
+   - It is downloaded to `%LOCALAPPDATA%\ChatForge\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov`.
    - Its output is coherent, and the system message is honoured (pirate test).
    - It makes clean hermes3 tool calls, and the tool-result round trip works.
    - **It is the working default.** `catalog.toml` should make it `recommended` and set Qwen3-4B to `avoid` with the note "NPU output corrupt on OVMS 2026.4 (gs128)". The `[chat] model` default should change to match.
@@ -257,8 +257,8 @@ The catalog entry should use `tool_parser = "hermes3"` and no `reasoning_parser`
 
 ## Files on disk after Phase A
 
-- `%LOCALAPPDATA%\AIChat\runtime\downloads\ovms_windows_2026.4.0_python_on.zip` (+ `.sha256`)
-- `%LOCALAPPDATA%\AIChat\runtime\ovms-2026.4.0\` (+ `.aichat-runtime.json`, adopted)
-- `%LOCALAPPDATA%\AIChat\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov\` (new) and `…\Qwen3-4B-int4-ov\` (kept, unusable on the NPU)
-- `%LOCALAPPDATA%\AIChat\cache\ov\OpenVINO--Qwen2.5-1.5B-Instruct-int4-ov\NPU-4096\` (warm, with `.aichat-compiled.json`, first compile 44.53 s)
-- `%LOCALAPPDATA%\AIChat\state.json`: the `compiled` and `launch` keys
+- `%LOCALAPPDATA%\ChatForge\runtime\downloads\ovms_windows_2026.4.0_python_on.zip` (+ `.sha256`)
+- `%LOCALAPPDATA%\ChatForge\runtime\ovms-2026.4.0\` (+ `.chatforge-runtime.json`, adopted)
+- `%LOCALAPPDATA%\ChatForge\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov\` (new) and `…\Qwen3-4B-int4-ov\` (kept, unusable on the NPU)
+- `%LOCALAPPDATA%\ChatForge\cache\ov\OpenVINO--Qwen2.5-1.5B-Instruct-int4-ov\NPU-4096\` (warm, with `.chatforge-compiled.json`, first compile 44.53 s)
+- `%LOCALAPPDATA%\ChatForge\state.json`: the `compiled` and `launch` keys

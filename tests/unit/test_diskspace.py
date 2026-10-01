@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aichat.models import diskspace
+from chatforge.models import diskspace
 
 
 @pytest.fixture(autouse=True)

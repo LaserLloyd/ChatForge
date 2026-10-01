@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aichat.models.catalog import NOTE_NOT_INT4, Catalog
+from chatforge.models.catalog import NOTE_NOT_INT4, Catalog
 
 CUSTOM = """
 [[model]]

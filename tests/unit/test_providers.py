@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from aichat import secrets
-from aichat.config import ProviderSpec, Timeouts
-from aichat.errors import AppError
-from aichat.llm.errors import LLMError
-from aichat.llm.events import Completed
-from aichat.llm.minimax import MiniMaxQuirks
-from aichat.llm.providers import (
+from chatforge import secrets
+from chatforge.config import ProviderSpec, Timeouts
+from chatforge.errors import AppError
+from chatforge.llm.errors import LLMError
+from chatforge.llm.events import Completed
+from chatforge.llm.minimax import MiniMaxQuirks
+from chatforge.llm.providers import (
     LOCAL_ID,
     MINIMAX_BASE,
     SEED_PROVIDERS,
@@ -24,7 +24,7 @@ from aichat.llm.providers import (
     make_quirks,
     resolve_base_url,
 )
-from aichat.llm.quirks import DeepSeekQuirks, GenericQuirks, OpenAIQuirks, OvmsQuirks
+from chatforge.llm.quirks import DeepSeekQuirks, GenericQuirks, OpenAIQuirks, OvmsQuirks
 from tests.fakes.openai_server import fake_openai_server
 
 KEY = "sk-cp-unit-test-key-0001"
@@ -143,7 +143,7 @@ def test_openai_quirks_rename_max_tokens() -> None:
 
 
 def test_deepseek_quirks_send_reasoning_only_for_this_turns_tool_calls() -> None:
-    from aichat.llm.events import AssistantMessage, ToolCall
+    from chatforge.llm.events import AssistantMessage, ToolCall
 
     q = DeepSeekQuirks()
     call = ToolCall("c1", "web_search", "{}")
@@ -239,7 +239,7 @@ def test_remote_make_request_and_budget() -> None:
 
 
 def test_context_window_reported_per_model_is_capped_by_the_setting() -> None:
-    from aichat.llm.providers import context_tokens_for, prompt_tokens_for
+    from chatforge.llm.providers import context_tokens_for, prompt_tokens_for
 
     sf = SEED_PROVIDERS["studioforge"].model_copy(
         update={"model_context": {"big": 262_144, "small": 32_768}}
@@ -298,7 +298,7 @@ def test_local_budget_and_request() -> None:
 
 
 def test_budget_object_when_history_available() -> None:
-    history = pytest.importorskip("aichat.chat.history")
+    history = pytest.importorskip("chatforge.chat.history")
     provider = LocalOvmsProvider(SEED_PROVIDERS["local-npu"], FakeManager(), settings=_settings)
     budget = provider.budget("m")
     assert isinstance(budget, history.PromptBudget)

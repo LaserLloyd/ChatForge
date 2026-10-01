@@ -17,12 +17,12 @@ from typing import Any
 
 import pytest
 
-from aichat import app as app_mod
-from aichat import autostart
-from aichat.app import App
-from aichat.config import load_config
-from aichat.desktop.core_loop import CoreLoop
-from aichat.paths import Paths
+from chatforge import app as app_mod
+from chatforge import autostart
+from chatforge.app import App
+from chatforge.config import load_config
+from chatforge.desktop.core_loop import CoreLoop
+from chatforge.paths import Paths
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def test_restart_command_prefers_pythonw_next_to_a_console_python(monkeypatch, t
     assert app_mod.restart_command(7) == [
         str(tmp_path / "pythonw.exe"),
         "-m",
-        "aichat",
+        "chatforge",
         "--hidden",
         "--after-pid",
         "7",
@@ -86,13 +86,13 @@ def test_restart_command_prefers_pythonw_next_to_a_console_python(monkeypatch, t
 def test_restart_command_keeps_an_interpreter_path_with_spaces_as_one_argument(
     monkeypatch, tmp_path
 ):
-    home = tmp_path / "AI Chat" / ".venv" / "Scripts"
+    home = tmp_path / "My Projects" / "ChatForge" / ".venv" / "Scripts"
     home.mkdir(parents=True)
     (home / "pythonw.exe").write_bytes(b"")
     monkeypatch.setattr(sys, "executable", str(home / "python.exe"))
     argv = app_mod.restart_command(7)
     assert argv[0] == str(home / "pythonw.exe")
-    assert subprocess.list2cmdline(argv).startswith(f'"{home / "pythonw.exe"}" -m aichat')
+    assert subprocess.list2cmdline(argv).startswith(f'"{home / "pythonw.exe"}" -m chatforge')
 
 
 def test_spawn_restart_is_detached_and_runs_in_the_app_home(monkeypatch, tmp_path):
@@ -138,7 +138,7 @@ def test_restart_that_cannot_start_the_copy_keeps_running(app, monkeypatch):
     app.tray = FakeTray()
     assert app.restart() is False
     assert quits == []
-    assert app.tray.notes == ["Could not restart AI Chat: pythonw.exe not found"]
+    assert app.tray.notes == ["Could not restart ChatForge: pythonw.exe not found"]
 
 
 def test_restart_while_quitting_starts_nothing(app, monkeypatch):
@@ -157,7 +157,7 @@ def test_reply_end_shows_the_popup_quietly_off_the_calling_thread(app):
     assert app.cfg.ui.show_on_reply is True
     app._on_reply_end("req_1")
     assert popup.shown.wait(2)
-    assert popup.threads == ["aichat-reply-show"]
+    assert popup.threads == ["chatforge-reply-show"]
 
 
 def test_reply_end_respects_the_setting_and_quitting(app):
@@ -195,7 +195,7 @@ def test_a_finished_reply_reaches_the_popup_through_the_bridge(app):
 
 
 def test_build_desktop_wires_the_reply_hook_and_restart(app, monkeypatch):
-    from aichat.desktop import events, hotkey, popup, settings_window, tray
+    from chatforge.desktop import events, hotkey, popup, settings_window, tray
 
     made: dict[str, dict] = {}
 
