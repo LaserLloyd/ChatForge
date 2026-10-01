@@ -221,3 +221,98 @@ def test_main_hook_is_wired(monkeypatch, capsys):
     assert "1 checks: 1 pass, 0 warn, 0 fail" in capsys.readouterr().out
     monkeypatch.setattr(doctor, "run_checks", lambda paths=None, cfg=None: [Check("X", "fail")])
     assert cli.main(["doctor"]) == 1
+
+
+def test_compiled_models_verdicts():
+    states = [
+        doctor.CompileState("OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov", "NPU", True, 11.1),
+        doctor.CompileState("OpenVINO/Qwen3-4B-int4-ov", "GPU", False, 122.7),
+    ]
+    cold = doctor.check_compiled_models(states)
+    assert cold.status == "warn" and cold.ok
+    assert "Qwen3-4B-int4-ov on GPU ~123 s" in cold.detail and "background" in cold.detail
+    assert "Qwen2.5" not in cold.detail
+    off = doctor.check_compiled_models(states, precompile=False)
+    assert "local.precompile is off" in off.detail
+    warm = doctor.check_compiled_models(states[:1])
+    assert warm.status == "pass" and "Qwen2.5-1.5B-Instruct-int4-ov on NPU ~11 s" in warm.detail
+    assert doctor.check_compiled_models([]).status == "pass"
+
+
+def test_npu_models_verdicts():
+    from aichat.models.npu_compat import NpuVerdict
+
+    good = ("OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov", NpuVerdict(True))
+    bad = ("OpenVINO/Qwen3-4B-int4-ov", NpuVerdict(False, "Garbage on the NPU.", "avoid"))
+    unknown = ("acme/x-ov", NpuVerdict(None, "no info"))
+    check = doctor.check_npu_models("NPU", [good, bad])
+    assert check.status == "warn" and "Qwen3-4B-int4-ov: Garbage on the NPU." in check.detail
+    assert "runs on GPU instead" in check.detail
+    assert "refused" in doctor.check_npu_models("NPU", [bad], "none").detail
+    passing = doctor.check_npu_models("NPU", [good, unknown])
+    assert passing.status == "pass" and "1 not verifiable" in passing.detail
+    assert doctor.check_npu_models("GPU", [bad]).status == "pass"  # not on the NPU at all
+
+
+def test_local_target_model():
+    assert doctor.local_target_model("a/x", ["a/x", "b/y"]) == "a/x"
+    assert doctor.local_target_model("MiniMax-M3", ["a/x", "b/y"]) == "a/x"
+    assert doctor.local_target_model("MiniMax-M3", []) is None
+
+
+def _install(models_dir: Path, mid: str) -> Path:
+    from aichat.models.registry import REQUIRED_FILES
+
+    d = models_dir.joinpath(*mid.split("/"))
+    d.mkdir(parents=True)
+    for name in REQUIRED_FILES:
+        (d / name).write_bytes(b"x")
+    return d
+
+
+def test_local_model_checks_with_a_cloud_provider_selected(tmp_path):
+    from aichat.config import validate_config
+    from aichat.models.catalog import Catalog
+    from aichat.paths import Paths
+    from aichat.runtime import compile_cache
+
+    paths = Paths.from_home(tmp_path / "home")
+    good, bad = "Test/Good-int4-ov", "Test/Broken-int4-ov"
+    for mid in (good, bad):
+        _install(paths.models_dir, mid)
+    catalog = Catalog.from_dict(
+        {
+            "model": [{"id": good, "label": "G", "npu": "recommended"}],
+            "avoid": [{"pattern": "Broken", "reason": "Garbage on the NPU."}],
+        }
+    )
+    cfg = validate_config({"chat": {"provider": "minimax", "model": "MiniMax-M3"}})
+    # A warm NPU cache for the good model, written with the exact compile settings.
+    from aichat.runtime.manager import LocalModelManager
+
+    planner = LocalModelManager(
+        None, get_config=lambda: cfg, paths=paths, catalog=catalog, precompile=False
+    )
+    spec = planner.build_spec(good)
+    compile_cache.mark_compiled(
+        spec.cache_dir,
+        model_id=good,
+        device="NPU",
+        max_prompt_len=4096,
+        ovms_version=cfg.local.ovms_version,
+        load_s=66.0,
+        compile_hash=planner.compile_hash(spec),
+    )
+    (spec.cache_dir / "1.blob").write_bytes(b"b")
+
+    model, npu, compiled = doctor.local_model_checks(paths, cfg, catalog=catalog)
+    # Not "MiniMax-M3 is not on disk": the cloud model is not a local model.
+    assert model.status == "pass" and model.detail.startswith("Test/Broken-int4-ov")
+    assert npu.status == "warn" and "runs on GPU instead" in npu.detail
+    assert compiled.status == "warn"
+    assert "Broken-int4-ov on GPU" in compiled.detail and "Good-int4-ov" not in compiled.detail
+
+    empty = Paths.from_home(tmp_path / "empty")
+    model, npu, compiled = doctor.local_model_checks(empty, cfg, catalog=catalog)
+    assert model.status == "pass" and "no local model installed" in model.detail
+    assert compiled.status == "pass" and npu.status == "pass"

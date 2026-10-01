@@ -7,7 +7,9 @@
 # compile, so code must read it from here and never hard-code a model id.
 #
 # [[avoid]] entries are case-insensitive substrings of the repo id. Catalog
-# entries win over avoid patterns.
+# entries win over avoid patterns. An avoid-listed model that is installed anyway
+# still loads: with local.device = "NPU" the runtime runs it on
+# local.npu_fallback_device (GPU, then CPU) instead (aichat.models.npu_compat).
 #
 # NPU gate result (2026-09-30, docs/RUNTIME-NOTES.md): Qwen3-4B-int4-ov compiles
 # on the Lunar Lake NPU but produces garbage output, so Qwen2.5-1.5B is the
@@ -24,7 +26,7 @@ note = "Default. Verified on the Lunar Lake NPU: ~45 s first compile, ~3 s cache
 
 [[avoid]]
 pattern = "Qwen3-4B-int4-ov"
-reason = "Compiles on the Lunar Lake NPU but produces garbage output (fine on CPU)."
+reason = "Compiles on the Lunar Lake NPU but produces garbage output (correct on CPU)."
 
 [[avoid]]
 pattern = "Qwen3-8B"

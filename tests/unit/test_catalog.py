@@ -136,6 +136,8 @@ def test_annotate_adds_badge_and_note_without_mutating(custom: Catalog) -> None:
     annotated = custom.annotate(results)
     assert annotated[0]["badge"] == "recommended" and annotated[0]["downloads"] == 3
     assert annotated[1]["badge"] == "avoid" and annotated[1]["note"] == "Too large."
+    assert annotated[0]["npu_ok"] is True and annotated[1]["npu_ok"] is False
+    assert all(item["npu_ok"] is None for item in annotated if item["badge"] == "untested")
     assert "badge" not in results[0]
 
 

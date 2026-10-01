@@ -33,7 +33,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from aichat import attachments, autostart, secrets
-from aichat.config import AppConfig, ProviderSpec, seed_providers, update_config
+from aichat.config import (
+    RECENT_MODELS_KEPT,
+    AppConfig,
+    ProviderSpec,
+    seed_providers,
+    update_config,
+)
 from aichat.errors import AppError, ConfigError
 from aichat.logging_setup import RING_BUFFER
 from aichat.paths import Paths
@@ -44,6 +50,7 @@ _log = logging.getLogger(__name__)
 CONTRACT_METHODS: tuple[str, ...] = (
     "get_state",
     "send_message",
+    "regenerate",
     "attach_files",
     "attach_data",
     "remove_attachment",
@@ -184,6 +191,7 @@ def ui_config(cfg: AppConfig) -> dict[str, Any]:
             "model": cfg.chat.model,
             "show_reasoning": cfg.chat.show_reasoning,
             "max_prompt_chars": cfg.chat.max_prompt_chars,
+            "recent_models": [r.model_dump() for r in cfg.chat.recent_models],
         },
         "ui": cfg.ui.model_dump(mode="json"),
         "local": {
@@ -530,6 +538,7 @@ class Api:
                 )
             files = self._s.attachments.peek(ids)  # raises not_found for a stale id
             request_id = f"req_{next(self._request_ids)}"
+            self._remember_current_model()  # before the reply's events start
             if files:
                 emit = self._report_reply_end(request_id, self._emit_then_release(ids))
                 coro = engine.send(message, request_id, emit, attachments=files)
@@ -540,6 +549,54 @@ class Api:
             return ok(request_id=request_id)
 
         return self._guard(impl, "send_message")
+
+    def regenerate(self) -> dict[str, Any]:
+        """Answer the latest message again (the Regenerate button): its reply is replaced
+        by a new one, with the usual ``chat.*`` events under the returned ``request_id``.
+        If the new reply fails or is stopped before it says anything, the old one is kept
+        (``chat.error`` with ``restored: true``)."""
+
+        def impl() -> dict[str, Any]:
+            engine = self._s.engine
+            if engine is None:
+                return fail(
+                    "server",
+                    "The chat engine is not available.",
+                    "See Settings → Logs.",
+                    "open_settings",
+                )
+            request_id = f"req_{next(self._request_ids)}"
+            self._remember_current_model()
+            emit = self._report_reply_end(request_id, self._emit)
+            self._submit(engine.regenerate(request_id, emit), f"chat:{request_id}")
+            return ok(request_id=request_id)
+
+        return self._guard(impl, "regenerate")
+
+    @staticmethod
+    def _recent_with(cfg: AppConfig, provider: str, model: str) -> list[dict[str, str]] | None:
+        """``chat.recent_models`` with ``provider``/``model`` first, or ``None`` when it
+        is first already."""
+        recent = [r.model_dump() for r in cfg.chat.recent_models]
+        entry = {"provider": provider, "model": model}
+        if recent and recent[0] == entry:
+            return None
+        return [entry, *(r for r in recent if r != entry)][:RECENT_MODELS_KEPT]
+
+    def _remember_current_model(self) -> None:
+        """Put the model a message was just sent with at the top of the model menu's
+        "Recently used" section. Never fails the send."""
+        try:
+            cfg = self._cfg
+            if not cfg.chat.provider or not cfg.chat.model:
+                return
+            recent = self._recent_with(cfg, cfg.chat.provider, cfg.chat.model)
+            if recent is None:
+                return
+            new_cfg, _restart = self._apply_patch({"chat": {"recent_models": recent}})
+            self._emit({"type": "settings.changed", "config": ui_config(new_cfg)})
+        except Exception:  # noqa: BLE001 - a settings write must not fail the message
+            _log.exception("could not record the recently used model")
 
     def _emit_then_release(self, ids: list[str]) -> Callable[[dict[str, Any]], None]:
         """An event sink that forgets the attached files ``ids`` once the message they
@@ -767,7 +824,11 @@ class Api:
                 model = wanted or view["default_model"] or ""
                 if not model:
                     return fail("bad_request", f"{spec.display_name} has no model configured.")
-            new_cfg, _restart = self._apply_patch({"chat": {"provider": spec.id, "model": model}})
+            chat: dict[str, Any] = {"provider": spec.id, "model": model}
+            recent = self._recent_with(self._cfg, spec.id, model)
+            if recent is not None:
+                chat["recent_models"] = recent
+            new_cfg, _restart = self._apply_patch({"chat": chat})
             self._emit({"type": "settings.changed", "config": ui_config(new_cfg)})
             if spec.kind == "ovms" and new_cfg.local.autoload_on_open:
                 self._warm_local_model()

@@ -35,6 +35,8 @@ from typing import Any, Final
 
 from aichat.models.catalog import Catalog, CatalogEntry
 from aichat.models.hf_search import ModelError, RepoFile, safe_relpath, validate_repo_id
+from aichat.models.npu_compat import npu_verdict
+from aichat.runtime import compile_cache
 from aichat.runtime.compile_cache import model_cache_root
 
 log = logging.getLogger(__name__)
@@ -156,9 +158,15 @@ class ModelRecord:
     missing: list[str]
     catalog: CatalogEntry | None = None
     last_used_at: float | None = None
+    #: Warm compile caches on disk: ``{"NPU": True, "NPU|4096|2026.4.0": True}``. The
+    #: plain device key is what Settings shows as "Compiled for NPU".
     compiled: dict[str, bool] = field(default_factory=dict)
     source: str | None = None
     revision: str | None = None
+    #: :class:`aichat.models.npu_compat.NpuVerdict` ``ok``: True, False (it will not
+    #: run correctly on the NPU; the runtime uses the fallback device) or None (unknown).
+    npu_ok: bool | None = None
+    npu_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +180,8 @@ class ModelRecord:
             "compiled": dict(self.compiled),
             "source": self.source,
             "revision": self.revision,
+            "npu_ok": self.npu_ok,
+            "npu_note": self.npu_note,
         }
 
 
@@ -193,6 +203,13 @@ def _local_files(model_dir: Path) -> dict[str, int]:
                 continue
             found[full.relative_to(model_dir).as_posix()] = st.st_size
     return found
+
+
+def _stat_or_none(path: Path, attr: str) -> int | None:
+    try:
+        return int(getattr(path.stat(), attr))
+    except OSError:
+        return None
 
 
 def _probe_writable(directory: Path) -> bool:
@@ -282,6 +299,24 @@ class Registry:
         log.info("registry.scan models=%d", len(records))
         return self.all()
 
+    def fingerprint(self) -> tuple[tuple[str, int | None, int | None], ...]:
+        """A cheap snapshot of the model folders, for "would :meth:`scan` change anything?".
+
+        Each ``<publisher>/<repo>`` with its sidecar's mtime (written when a download
+        completes or a model is adopted) and its weights' size. No hashing, no full
+        walk of every file, no log line; the background precompiler polls it.
+        """
+        out: list[tuple[str, int | None, int | None]] = []
+        for model_id, model_dir in self._walk():
+            out.append(
+                (
+                    model_id,
+                    _stat_or_none(model_dir / SIDECAR_NAME, "st_mtime_ns"),
+                    _stat_or_none(model_dir / "openvino_model.bin", "st_size"),
+                )
+            )
+        return tuple(out)
+
     # Adapted from StudioForge src/studioforge/core/registry.py (MIT, LaserLloyd).
     def _walk(self) -> list[tuple[str, Path]]:
         """Every ``<publisher>/<repo>`` directory with at least one real file.
@@ -331,11 +366,13 @@ class Registry:
                 elif isinstance(entry.get("size"), int) and local[rel] != entry["size"]:
                     missing.append(f"{rel} (size mismatch)")
         last_used = (state.get("last_used") or {}).get(model_id)
+        # From the cache folders, not state.json: state keeps first-compile times after a
+        # cache is cleared (they are the next ETA), so it cannot say what is warm now.
         compiled: dict[str, bool] = {}
-        prefix = f"{model_id}|"
-        for key in state.get("compiled") or {}:
-            if isinstance(key, str) and key.startswith(prefix):
-                compiled[key[len(prefix) :]] = True
+        for variant in compile_cache.warm_variants(self.cache_dir, model_id):
+            compiled[variant] = True
+            compiled[variant.partition("|")[0]] = True
+        verdict = npu_verdict(model_id, model_dir, self._catalog)
         return ModelRecord(
             id=model_id,
             path=model_dir,
@@ -347,6 +384,8 @@ class Registry:
             compiled=compiled,
             source=sidecar.get("source") if sidecar else None,
             revision=sidecar.get("revision") if sidecar else None,
+            npu_ok=verdict.ok,
+            npu_note=verdict.reason,
         )
 
     def _read_state(self) -> dict[str, Any]:

@@ -4,6 +4,7 @@ import logging
 import tomllib
 
 import pytest
+from pydantic import ValidationError
 
 from aichat import config as config_mod
 from aichat.config import (
@@ -16,6 +17,7 @@ from aichat.config import (
     parse_hotkey,
     save_config,
     update_config,
+    validate_config,
 )
 from aichat.errors import ConfigError
 from aichat.paths import Paths
@@ -631,3 +633,16 @@ def test_key_required_and_docs_url_fields():
     assert spec.key_required is None and spec.docs_url is None
     with pytest.raises(ValueError):
         ProviderSpec(id="x", kind="openai", display_name="X", docs_url="ftp://nope")
+
+
+
+def test_local_precompile_and_npu_fallback_settings():
+    cfg = validate_config({})
+    assert cfg.local.precompile is True and cfg.local.npu_fallback_device == "GPU"
+    cfg = validate_config({"local": {"precompile": False, "npu_fallback_device": "cpu"}})
+    assert cfg.local.precompile is False and cfg.local.npu_fallback_device == "CPU"
+    assert validate_config({"local": {"npu_fallback_device": "None"}}).local.npu_fallback_device == (
+        "none"
+    )
+    with pytest.raises(ValidationError):
+        validate_config({"local": {"npu_fallback_device": "TPU"}})

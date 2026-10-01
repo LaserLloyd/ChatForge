@@ -20,6 +20,25 @@ Concurrency model
 * A child that exits on its own sets state ``error``; the next request reloads once.
 * ``unload(reason)`` first fires every in-flight lease's ``on_cancel`` callback (the
   engine reports ``cancelled``), waits briefly for them to finish, then stops OVMS.
+  Switching to another model does the same for the old model's leases first, so a
+  reply that is still streaming ends as ``cancelled`` rather than a dropped connection.
+
+Device
+------
+``local.device`` is where models run, except a model that is known not to work on the
+NPU (:func:`aichat.models.npu_compat.npu_verdict`: catalog avoid list, or an export the
+NPU cannot run). With ``device = "NPU"`` such a model runs on
+``local.npu_fallback_device`` (GPU by default) and, if that load fails, on the CPU.
+``status()["device"]`` is the device in use and ``status()["device_fallback"]`` says
+why it is not the configured one. ``npu_fallback_device = "none"`` refuses instead.
+
+Background precompile
+---------------------
+:meth:`precompile` loads a model only to fill its compile cache, and only while nothing
+else is loaded, loading or in flight (``runtime.precompile.Precompiler`` drives it,
+started by :meth:`start`). A caller that asks for the same model meanwhile joins that
+load and the model then stays loaded; a caller for another model cancels it. While it
+runs, ``status()["background"]`` is true.
 """
 
 from __future__ import annotations
@@ -35,8 +54,14 @@ from typing import Any, Literal, Protocol
 
 from aichat.llm.errors import LLMError
 from aichat.logging_setup import get_logger
+from aichat.models import npu_compat
 from aichat.runtime import compile_cache
-from aichat.runtime.ovms_supervisor import OVMS_VERSION, LaunchSpec, OvmsError
+from aichat.runtime.ovms_supervisor import (
+    OVMS_VERSION,
+    LaunchSpec,
+    OvmsError,
+    spec_compile_hash,
+)
 
 log = get_logger(__name__)
 
@@ -44,6 +69,12 @@ RuntimeState = Literal[
     "not_installed", "unloaded", "starting", "compiling", "ready", "unloading", "error"
 ]
 LOADING_STATES = frozenset({"starting", "compiling"})
+#: Where an NPU-incompatible model goes when the configured fallback fails too.
+LAST_RESORT_DEVICE = "CPU"
+#: Load failures after which a fallback device is given up for the next one.
+FALLBACK_RETRY_CODES = frozenset({"exited", "model_failed"})
+#: ``unload()`` reason after a background precompile.
+PRECOMPILED = "precompiled"
 
 StatusCallback = Callable[[dict], None]
 
@@ -107,6 +138,7 @@ class LocalModelManager:
         health_check: bool = True,
         unload_grace_s: float = 5.0,
         stop_timeout_s: float = 10.0,
+        precompile: bool = True,
     ) -> None:
         self.supervisor = supervisor
         self._get_config = get_config
@@ -144,6 +176,16 @@ class LocalModelManager:
         self._idle_event = asyncio.Event()
         self._idle_event.set()
         self._subscribers: list[StatusCallback] = []
+        #: ``{"from", "to", "reason"}`` while the loaded/loading model is not on the
+        #: configured device (see "Device" above).
+        self.device_fallback: dict[str, str] | None = None
+        #: (model id, device) pairs whose fallback load failed in this run.
+        self._failed_devices: set[tuple[str, str]] = set()
+        #: The ``_key`` of a background precompile no caller has asked for yet.
+        self._precompile_key: tuple | None = None
+        self._precompile_enabled = precompile
+        self._precompile_task: asyncio.Task[None] | None = None
+        self.precompiler: Any = None
 
     # ------------------------------------------------------------------ #
     # Config helpers
@@ -201,11 +243,67 @@ class LocalModelManager:
         publisher, _, name = model_id.partition("/")
         return Path(self.paths.models_dir) / publisher / name
 
+    def setting(self, dotted: str, default: Any) -> Any:
+        """A value of the live config (``"local.precompile"``), or ``default``."""
+        return _cfg(self._get_config, dotted, default)
+
     def build_spec(self, model_id: str) -> LaunchSpec:
         """The ``LaunchSpec`` for ``model_id`` under the current config and catalog."""
+        return self.plan(model_id)[0]
+
+    def _resolve_device(self, model_id: str, model_path: Path) -> tuple[str, dict[str, str] | None]:
+        """The device to run ``model_id`` on, and why it is not the configured one."""
         device = str(_cfg(self._get_config, "local.device", "NPU")).upper()
+        if "NPU" not in device:
+            return device, None
+        verdict = npu_compat.npu_verdict(model_id, model_path, self._catalog_safe())
+        if verdict.ok is not False:
+            return device, None
+        short = model_id.rpartition("/")[2]
+        wanted = str(_cfg(self._get_config, "local.npu_fallback_device", "GPU"))
+        if wanted.lower() == "none":
+            raise LLMError(
+                f"{short} does not run correctly on the NPU",
+                code="model_loading_failed",
+                hint=f"{verdict.reason} {self._npu_alternative_hint()}".strip(),
+                action="open_settings",
+                details={"npu": verdict.to_dict()},
+            )
+        order = [wanted.upper()]
+        if LAST_RESORT_DEVICE not in order:
+            order.append(LAST_RESORT_DEVICE)
+        for candidate in order:
+            if (model_id, candidate) not in self._failed_devices:
+                return candidate, {"from": device, "to": candidate, "reason": verdict.reason}
+        raise LLMError(
+            f"{short} does not run correctly on the NPU and failed on {' and '.join(order)}",
+            code="model_loading_failed",
+            hint=f"{verdict.reason} {self._npu_alternative_hint()}".strip(),
+            action="open_settings",
+            details={"npu": verdict.to_dict(), "failed_devices": order},
+        )
+
+    def _catalog_safe(self) -> Any:
+        try:
+            return self.catalog
+        except Exception:  # noqa: BLE001 - a broken catalog must not block a load
+            return None
+
+    def _npu_alternative_hint(self) -> str:
+        try:
+            entry = self.catalog.recommended()
+        except Exception:  # noqa: BLE001
+            entry = None
+        if entry is None:
+            return "Pick a model marked for the NPU in Settings → Models."
+        return f"{entry.id} runs on the NPU; pick it in Settings → Models."
+
+    def plan(self, model_id: str) -> tuple[LaunchSpec, dict[str, str] | None]:
+        """``build_spec`` plus the device fallback that applies (``None`` if none)."""
         max_len = int(_cfg(self._get_config, "local.max_prompt_len", 4096))
         extra = list(_cfg(self._get_config, "local.extra_args", []) or [])
+        model_path = self._model_path(model_id)
+        device, fallback = self._resolve_device(model_id, model_path)
         badge = self.catalog.badge(model_id)
         cache_dir = compile_cache.cache_dir_for(
             Path(self.paths.cache_dir), model_id, device, max_len
@@ -213,9 +311,9 @@ class LocalModelManager:
         log_path = getattr(self.paths, "ovms_log", None)
         if log_path is None and getattr(self.paths, "logs_dir", None) is not None:
             log_path = Path(self.paths.logs_dir) / "ovms.log"
-        return LaunchSpec(
+        spec = LaunchSpec(
             model_id=model_id,
-            model_path=self._model_path(model_id),
+            model_path=model_path,
             device=device,
             max_prompt_len=max_len,
             cache_dir=cache_dir,
@@ -224,6 +322,23 @@ class LocalModelManager:
             port=0,
             extra_args=extra,
             log_path=log_path,
+        )
+        return spec, fallback
+
+    def compile_hash(self, spec: LaunchSpec) -> str:
+        return spec_compile_hash(spec, ovms_version=self._ovms_version())
+
+    def cache_key(self, spec: LaunchSpec) -> str:
+        """``state.json`` key of one compile: ``<id>|NPU|4096|2026.4.0|<compile hash>``."""
+        base = compile_cache.compile_key(
+            spec.model_id, spec.device, spec.max_prompt_len, self._ovms_version()
+        )
+        return f"{base}|{self.compile_hash(spec)}"
+
+    def is_warm(self, spec: LaunchSpec) -> bool:
+        """Whether loading ``spec`` reuses a compiled blob (no first-time compile)."""
+        return compile_cache.is_compiled(
+            spec.cache_dir, ovms_version=self._ovms_version(), compile_hash=self.compile_hash(spec)
         )
 
     def _key(self, spec: LaunchSpec) -> tuple:
@@ -265,6 +380,11 @@ class LocalModelManager:
         unload_at = None
         if state == "ready" and ttl > 0 and self.in_flight == 0:
             unload_at = round(self._wall() + max(0.0, ttl - (now - self.last_activity)), 1)
+        background = (
+            self._precompile_key is not None
+            and self._precompile_key == self._loading_key
+            and state in (*LOADING_STATES, "ready")
+        )
         return {
             "state": state,
             "model_id": self.model_id,
@@ -277,6 +397,8 @@ class LocalModelManager:
             "in_flight": self.in_flight,
             "error": self.error,
             "last_unload": self.last_unload,
+            "background": background,
+            "device_fallback": dict(self.device_fallback) if self.device_fallback else None,
         }
 
     def subscribe(self, cb: StatusCallback) -> Callable[[], None]:
@@ -306,12 +428,29 @@ class LocalModelManager:
     # ------------------------------------------------------------------ #
 
     async def start(self) -> None:
-        """Initial state (``not_installed`` or ``unloaded``). Nothing is loaded."""
+        """Initial state (``not_installed`` or ``unloaded``). Nothing is loaded.
+
+        With a registry, also starts the background precompiler (it waits a while,
+        then compiles cold models whenever the runtime is idle).
+        """
         self.state = "unloaded" if self.installed() else "not_installed"
         self._emit()
+        if self._precompile_enabled and self.registry is not None and self._precompile_task is None:
+            from aichat.runtime.precompile import Precompiler
+
+            self.precompiler = Precompiler(self)
+            self._precompile_task = asyncio.create_task(
+                self.precompiler.run(), name="ovms-precompiler"
+            )
 
     async def aclose(self) -> None:
-        """Unload (reason ``shutdown``) and close the supervisor."""
+        """Stop the precompiler, unload (reason ``shutdown``) and close the supervisor."""
+        task = self._precompile_task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+            self._precompile_task = None
         with contextlib.suppress(Exception):
             await self.unload("shutdown")
         if self._watch_task is not None:
@@ -353,8 +492,11 @@ class LocalModelManager:
                 hint="Install it in Settings → Models → Runtime.",
                 action="open_settings",
             )
-        spec = self.build_spec(model_id)
+        spec, fallback = self.plan(model_id)
         key = self._key(spec)
+        if self._precompile_key is not None and self._precompile_key == key:
+            # Someone wants the model a background precompile is loading: keep it loaded.
+            self._precompile_key = None
 
         task = self._load_task
         if task is not None and not task.done():
@@ -371,6 +513,7 @@ class LocalModelManager:
 
         if self.state in ("ready", "error", "unloading") or self._spec is not None:
             # switch model, apply a reload-required setting, or clean up after a crash
+            await self._drain_other_leases(model_id)
             self._generation += 1
             with contextlib.suppress(Exception):
                 await self.supervisor.stop(self.stop_timeout_s)
@@ -378,10 +521,87 @@ class LocalModelManager:
             self.base_url = None
 
         self._loading_key = key
-        task = asyncio.create_task(self._load(spec, key), name="ovms-load")
+        task = asyncio.create_task(self._load(spec, key, fallback=fallback), name="ovms-load")
         task.add_done_callback(_consume_result)  # a failure nobody awaits is still "retrieved"
         self._load_task = task
         return await self._await_load(task)
+
+    async def _drain_other_leases(self, model_id: str) -> None:
+        """Cancel the leases of other models (a switch) and give them a moment to end.
+
+        Their ``on_cancel`` makes the engine report ``cancelled``; without this the
+        stop below would cut a streaming reply off mid-way. Leases on ``model_id``
+        itself are left alone (the crash/reload path runs inside one of them).
+        """
+        others = [lease for lease in self._leases.values() if lease.model_id != model_id]
+        if not others:
+            return
+        log.info("model_switch_cancels_leases", count=len(others), to_model=model_id)
+        for lease in others:
+            self._cancel_lease(lease)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.unload_grace_s
+        while loop.time() < deadline and any(
+            lease.model_id != model_id for lease in self._leases.values()
+        ):
+            await asyncio.sleep(0.02)
+
+    # ------------------------------------------------------------------ #
+    # Background precompile
+    # ------------------------------------------------------------------ #
+
+    def idle_for_background(self) -> bool:
+        """Nothing loaded, loading or in flight: a background compile disturbs no one."""
+        task = self._load_task
+        return (
+            self.state == "unloaded"
+            and self.in_flight == 0
+            and self._spec is None
+            and (task is None or task.done())
+        )
+
+    async def precompile(self, model_id: str) -> str:
+        """Fill ``model_id``'s compile cache without anyone waiting on it.
+
+        Returns ``"warm"`` (nothing to do), ``"busy"`` (the runtime is in use),
+        ``"cancelled"`` (a caller took the runtime over meanwhile) or ``"compiled"``.
+        The model is unloaded afterwards unless a caller asked for it meanwhile.
+        Raises :class:`LLMError` when the load fails.
+        """
+        async with self.lock:
+            if not self.installed() or not self.idle_for_background():
+                return "busy"
+            spec, fallback = self.plan(model_id)
+            if self.is_warm(spec):
+                return "warm"
+            key = self._key(spec)
+            self._precompile_key = key
+            self._loading_key = key
+            task = asyncio.create_task(
+                self._load(spec, key, fallback=fallback), name="ovms-precompile"
+            )
+            task.add_done_callback(_consume_result)
+            self._load_task = task
+        try:
+            # Not under the lock: a chat request must be able to join or cancel it.
+            await asyncio.wait({task})
+            if task.cancelled():
+                return "cancelled"
+            exc = task.exception()
+            if exc is not None:
+                raise exc
+            async with self.lock:
+                if (
+                    self._precompile_key == key
+                    and self._spec_key == key
+                    and self.state == "ready"
+                    and self.in_flight == 0
+                ):
+                    await self.unload_locked(PRECOMPILED)
+            return "compiled"
+        finally:
+            if self._precompile_key == key:
+                self._precompile_key = None
 
     async def _await_load(self, task: asyncio.Task[str]) -> str:
         try:
@@ -406,15 +626,21 @@ class LocalModelManager:
         self.state = state
         self._emit()  # the supervisor ticks about once a second while loading
 
-    async def _load(self, spec: LaunchSpec, key: tuple) -> str:
+    async def _load(
+        self, spec: LaunchSpec, key: tuple, *, fallback: dict[str, str] | None = None
+    ) -> str:
         version = self._ovms_version()
+        chash = self.compile_hash(spec)
         self._generation += 1
         gen = self._generation
         self.model_id = spec.model_id
         self.device = spec.device
+        self.device_fallback = dict(fallback) if fallback else None
         self.base_url = None
         self._load_started = self._clock()
-        self.first_compile = not compile_cache.is_compiled(spec.cache_dir, ovms_version=version)
+        self.first_compile = not compile_cache.is_compiled(
+            spec.cache_dir, ovms_version=version, compile_hash=chash
+        )
         self.expected_s = round(
             compile_cache.expected_load_s(
                 spec.cache_dir,
@@ -423,16 +649,27 @@ class LocalModelManager:
                     spec.model_id, spec.device, spec.max_prompt_len, version
                 ),
                 ovms_version=version,
+                compile_hash=chash,
+                model_path=spec.model_path,
             ),
             1,
         )
         self._set_state("compiling" if self.first_compile else "starting")
+        if fallback:
+            log.warning(
+                "npu_incompatible_model_fallback",
+                model_id=spec.model_id,
+                configured=fallback.get("from"),
+                device=spec.device,
+                reason=fallback.get("reason"),
+            )
         log.info(
             "model_load_start",
             model_id=spec.model_id,
             device=spec.device,
             first_compile=self.first_compile,
             expected_s=self.expected_s,
+            background=self._precompile_key == key,
         )
         try:
             base = await self.supervisor.start(spec, on_tick=self._on_tick)
@@ -442,18 +679,42 @@ class LocalModelManager:
             raise
         except OvmsError as exc:
             self._load_started = None
-            state: RuntimeState = "not_installed" if exc.code == "not_installed" else "error"
-            self._set_state(state, error=exc.message)
+            background = self._precompile_key == key
+            if fallback and exc.code in FALLBACK_RETRY_CODES:
+                # The fallback device cannot run it either: the next plan skips it.
+                self._failed_devices.add((spec.model_id, spec.device))
+                log.warning(
+                    "fallback_device_failed",
+                    model_id=spec.model_id,
+                    device=spec.device,
+                    ovms_code=exc.code,
+                )
+                if not background:
+                    retry = self._retry_plan(spec)
+                    if retry is not None:
+                        next_spec, next_fallback = retry
+                        next_key = self._key(next_spec)
+                        self._loading_key = next_key
+                        return await self._load(next_spec, next_key, fallback=next_fallback)
+            if background:
+                # Nobody asked for this load: no error banner, the precompiler logs it.
+                self._set_state("unloaded")
+            else:
+                state: RuntimeState = "not_installed" if exc.code == "not_installed" else "error"
+                self._set_state(state, error=exc.message)
             raise LLMError(
                 "The local model failed to load",
                 code="model_loading_failed",
                 hint=(exc.hint or "See Settings → Logs.") + f" ({exc.code})",
                 action="open_settings" if exc.code == "not_installed" else "retry",
-                details={"ovms_code": exc.code},
+                details={"ovms_code": exc.code, "device": spec.device},
             ) from exc
         except Exception as exc:  # noqa: BLE001
             self._load_started = None
-            self._set_state("error", error=f"{type(exc).__name__}: {str(exc)[:300]}")
+            if self._precompile_key == key:
+                self._set_state("unloaded")
+            else:
+                self._set_state("error", error=f"{type(exc).__name__}: {str(exc)[:300]}")
             raise LLMError(
                 "The local model failed to load",
                 code="model_loading_failed",
@@ -463,11 +724,22 @@ class LocalModelManager:
         self._spec, self._spec_key = spec, key
         self.base_url = base
         self.touch()
-        self._record_last_used(spec.model_id)
+        if self._precompile_key != key:
+            self._record_last_used(spec.model_id)
         self._set_state("ready")
-        log.info("model_ready", model_id=spec.model_id, base_url=base)
+        log.info("model_ready", model_id=spec.model_id, device=spec.device, base_url=base)
         self._start_watch(gen)
         return base
+
+    def _retry_plan(self, failed: LaunchSpec) -> tuple[LaunchSpec, dict[str, str] | None] | None:
+        """The plan after ``failed``'s device was given up, if it picks another device."""
+        try:
+            spec, fallback = self.plan(failed.model_id)
+        except LLMError:
+            return None
+        if spec.device == failed.device:
+            return None
+        return spec, fallback
 
     def _start_watch(self, gen: int) -> None:
         if self._watch_task is not None and not self._watch_task.done():
@@ -551,14 +823,18 @@ class LocalModelManager:
 
     def _cancel_leases(self) -> None:
         for lease in list(self._leases.values()):
-            if lease.cancelled:
-                continue
-            lease.cancelled = True
-            if lease.on_cancel is not None:
-                try:
-                    lease.on_cancel()
-                except Exception:  # noqa: BLE001
-                    log.exception("lease_cancel_callback_failed")
+            self._cancel_lease(lease)
+
+    @staticmethod
+    def _cancel_lease(lease: _Lease) -> None:
+        if lease.cancelled:
+            return
+        lease.cancelled = True
+        if lease.on_cancel is not None:
+            try:
+                lease.on_cancel()
+            except Exception:  # noqa: BLE001
+                log.exception("lease_cancel_callback_failed")
 
     async def unload_locked(self, reason: str) -> None:
         """Unload while the caller holds ``lock`` (``IdleReaper`` uses this)."""
@@ -580,7 +856,7 @@ class LocalModelManager:
                 await self.supervisor.stop(self.stop_timeout_s)
             except Exception as exc:  # noqa: BLE001
                 log.warning("ovms_stop_failed", error=str(exc)[:200])
-        if self._spec is not None:
+        if self._spec is not None and reason != PRECOMPILED:
             self._record_last_used(self._spec.model_id)
         self._spec = self._spec_key = None
         self.base_url = None
@@ -619,4 +895,10 @@ class LocalModelManager:
                 compile_cache.update_state(self._state_file(), mutate)
 
 
-__all__ = ["LOADING_STATES", "LocalModelManager", "RuntimeState", "SupervisorLike"]
+__all__ = [
+    "LOADING_STATES",
+    "PRECOMPILED",
+    "LocalModelManager",
+    "RuntimeState",
+    "SupervisorLike",
+]

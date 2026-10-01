@@ -360,6 +360,15 @@ OLD_DEFAULT_PROMPTS: frozenset[str] = frozenset(
 )
 
 
+#: How many models the model menu's "Recently used" section lists.
+RECENT_MODELS_KEPT = 3
+
+
+class RecentModel(BaseModel):
+    provider: str
+    model: str
+
+
 class ChatCfg(BaseModel):
     provider: str = "local-npu"
     model: str = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
@@ -378,6 +387,21 @@ class ChatCfg(BaseModel):
     fallback_model: str = ""
     #: Re-read the remote providers' model lists (``GET /models``) once a day.
     auto_refresh_models: bool = True
+    #: The models last chosen or chatted with, newest first (the model menu's "Recently
+    #: used" section). Kept up to date by the app.
+    recent_models: list[RecentModel] = Field(default_factory=list)
+
+    @field_validator("recent_models")
+    @classmethod
+    def _recent_unique(cls, v: list[RecentModel]) -> list[RecentModel]:
+        seen: set[tuple[str, str]] = set()
+        out: list[RecentModel] = []
+        for item in v:
+            key = (item.provider, item.model)
+            if item.provider and item.model and key not in seen:
+                seen.add(key)
+                out.append(item)
+        return out[:RECENT_MODELS_KEPT]
 
     @field_validator("system_prompt")
     @classmethod
@@ -397,6 +421,14 @@ class LocalCfg(BaseModel):
     max_prompt_len: int = Field(default=4096, ge=1024, le=8192)
     enable_thinking: bool = False
     autoload_on_open: bool = True
+    #: Compile installed models for the NPU in the background while the runtime is idle
+    #: (after start, after a download, after a reload-required setting changed), so a
+    #: chat never waits on a first-time compile. Off: models compile on first use.
+    precompile: bool = True
+    #: Where a model that is known not to work on the NPU (catalog avoid list, or an
+    #: export the NPU cannot run correctly) runs when ``device`` is NPU. If it fails
+    #: there, the CPU is tried. "none": refuse to load it, with an explanation.
+    npu_fallback_device: Literal["GPU", "CPU", "none"] = "GPU"
     load_timeout_s: int = Field(default=900, ge=1)
     ovms_version: str = "2026.4.0"
     ovms_variant: Literal["python_on", "python_off"] = "python_on"
@@ -405,6 +437,13 @@ class LocalCfg(BaseModel):
     @field_validator("device", mode="before")
     @classmethod
     def _device_upper(cls, v: Any) -> Any:
+        return _upper(v)
+
+    @field_validator("npu_fallback_device", mode="before")
+    @classmethod
+    def _fallback_case(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip().lower() == "none":
+            return "none"
         return _upper(v)
 
 

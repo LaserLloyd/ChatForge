@@ -172,6 +172,18 @@ def launch_hash(
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
+def spec_compile_hash(spec: LaunchSpec, *, ovms_version: str = OVMS_VERSION) -> str:
+    """:func:`compile_cache.compile_hash` of the fields of ``spec`` that change the blob."""
+    return compile_cache.compile_hash(
+        model_path=spec.model_path,
+        device=spec.device,
+        max_prompt_len=spec.max_prompt_len,
+        ovms_version=ovms_version,
+        extra_args=spec.extra_args,
+        enable_prefix_caching=spec.enable_prefix_caching,
+    )
+
+
 def build_argv(exe: Path, spec: LaunchSpec) -> list[str]:
     """The exact OVMS command line for ``spec``. Pure; ``spec.port`` must be set."""
     if spec.port <= 0:
@@ -497,11 +509,17 @@ class OvmsSupervisor:
         key = compile_cache.compile_key(
             spec.model_id, spec.device, spec.max_prompt_len, self.ovms_version
         )
+        chash = spec_compile_hash(spec, ovms_version=self.ovms_version)
         self.first_compile = not compile_cache.is_compiled(
-            cache_dir, ovms_version=self.ovms_version
+            cache_dir, ovms_version=self.ovms_version, compile_hash=chash
         )
         self.expected_s = compile_cache.expected_load_s(
-            cache_dir, state_file=self.state_file, key=key, ovms_version=self.ovms_version
+            cache_dir,
+            state_file=self.state_file,
+            key=key,
+            ovms_version=self.ovms_version,
+            compile_hash=chash,
+            model_path=spec.model_path,
         )
         digest = launch_hash(spec, variant=self.variant, ovms_version=self.ovms_version)
         self._prepare_graph(spec, digest)
@@ -567,6 +585,8 @@ class OvmsSupervisor:
                 ovms_version=self.ovms_version,
                 load_s=elapsed,
                 launch_hash=digest,
+                compile_hash=chash,
+                cold=self.first_compile,
                 state_file=self.state_file,
             )
         self._record_launch(spec.model_id, digest)

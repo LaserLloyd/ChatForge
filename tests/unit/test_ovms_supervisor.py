@@ -297,6 +297,33 @@ async def test_readiness_transitions_starting_then_loading_when_warm(tmp_path):
     assert sup.expected_s == compile_cache.CACHED_LOAD_S
 
 
+
+async def test_marker_for_other_compile_settings_reads_as_a_first_compile(tmp_path):
+    from aichat.runtime.ovms_supervisor import spec_compile_hash
+
+    sup = _supervisor(tmp_path)
+    spec = _spec(tmp_path)
+    Path(spec.cache_dir).mkdir(parents=True, exist_ok=True)
+    (Path(spec.cache_dir) / "1.blob").write_bytes(b"x")
+    compile_cache.mark_compiled(
+        spec.cache_dir,
+        model_id=MODEL,
+        device="NPU",
+        max_prompt_len=4096,
+        ovms_version="2026.4.0",
+        load_s=40,
+        compile_hash="0123456789abcdef",  # e.g. written with another --plugin_config
+    )
+    try:
+        await sup.start(spec)
+    finally:
+        await sup.aclose()
+    assert sup.first_compile is True  # the blob for these settings does not exist yet
+    marker = compile_cache.read_marker(spec.cache_dir)
+    assert marker["compile_hash"] == spec_compile_hash(spec)
+    assert "cached_load_s" not in marker  # this load was the compile
+    assert compile_cache.is_compiled(spec.cache_dir, compile_hash=spec_compile_hash(spec))
+
 async def test_child_crash_while_ready_sets_exit_event(tmp_path):
     sup = _supervisor(tmp_path)
     spec = _spec(tmp_path, extra_args=["--fake_load_s", "0.1", "--fake_crash_after_s", "0.5"])

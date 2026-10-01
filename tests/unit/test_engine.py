@@ -944,3 +944,116 @@ async def test_a_later_round_that_drops_more_reports_again(tmp_path, monkeypatch
     # The tool call and its result are never dropped.
     assert [m["role"] for m in reqs[1][-3:]] == ["user", "assistant", "tool"]
     assert h.engine.conversation.context_start_ts == ctx[1]["first_kept_ts"]
+
+
+# --------------------------------------------------------------------------- #
+# Regenerate
+# --------------------------------------------------------------------------- #
+
+
+async def regenerate(h: Harness, rid: str = "rg") -> list[dict]:
+    start = len(h.events)
+    await h.engine.regenerate(rid, h.events.append)
+    return h.events[start:]
+
+
+async def test_regenerate_replaces_the_last_reply(tmp_path) -> None:
+    replies = [sse(text_chunks(t, 2)) for t in ("First answer.", "Two.", "Another two.")]
+    with fake_openai_server(*replies) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        await h.send("Hi", "r1")
+        await h.send("And again?", "r2")
+        h.engine._clock = lambda: 1_700_000_500.0  # later than the original message
+        events = await regenerate(h)
+        sent = srv.chat_requests[-1].json["messages"]
+    assert [e["type"] for e in events][0] == "chat.start" and events[-1]["type"] == "chat.done"
+    assert events[0]["user_ts"] == 1_700_000_000.0  # the message keeps its time
+    assert events[-1]["content"] == "Another two."
+    # The model is asked the same message, without the reply being replaced.
+    assert sent[-1] == {"role": "user", "content": "And again?"}
+    assert "Two." not in json.dumps(sent)
+    items = h.engine.conversation_items()
+    assert [(i["role"], i["content"]) for i in items] == [
+        ("user", "Hi"),
+        ("assistant", "First answer."),
+        ("user", "And again?"),
+        ("assistant", "Another two."),
+    ]
+    assert items[2]["ts"] == 1_700_000_000.0
+    saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))
+    assert [m["content"] for m in saved["messages"]][-1] == "Another two."
+
+
+async def test_regenerate_sends_the_attached_files_again(tmp_path) -> None:
+    files = [
+        {"name": "notes.txt", "kind": "text", "chars": 9, "truncated": False, "text": "the notes"}
+    ]
+    with fake_openai_server(sse(text_chunks("Summary.", 1)), sse(text_chunks("Better.", 1))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        await h.engine.send("Summarize", "r1", h.events.append, attachments=files)
+        await regenerate(h)
+        first, again = (r.json["messages"][-1] for r in srv.chat_requests)
+    assert again == first and '<file name="notes.txt">' in again["content"]
+    items = h.engine.conversation_items()
+    assert len(items) == 2 and items[0]["attachments"][0]["name"] == "notes.txt"
+    assert items[1]["content"] == "Better."
+
+
+async def test_a_failed_regenerate_puts_the_old_reply_back(tmp_path) -> None:
+    boom = json_reply({"error": {"message": "boom"}}, status=500)
+    with fake_openai_server(sse(text_chunks("Keep me.", 1)), boom) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        await h.send("Hi")
+        before = h.engine.conversation_items()
+        saved = h.paths.conversation_file.read_text(encoding="utf-8")
+        events = await regenerate(h)
+    err = events[-1]
+    assert err["type"] == "chat.error" and err["code"] == "server" and err["restored"] is True
+    assert h.engine.conversation_items() == before
+    assert h.paths.conversation_file.read_text(encoding="utf-8") == saved
+
+
+async def test_a_regenerate_stopped_before_any_text_keeps_the_old_reply(tmp_path) -> None:
+    waiting = sse(text_chunks("Never seen.", 1), delay_s=5)
+    with fake_openai_server(sse(text_chunks("Keep me.", 1)), waiting) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        await h.send("Hi")
+        before = h.engine.conversation_items()
+        task = asyncio.create_task(h.engine.regenerate("rg", h.events.append))
+        async with asyncio.timeout(10):
+            while not [e for e in h.of("chat.phase") if e["request_id"] == "rg"]:
+                await asyncio.sleep(0.01)
+        h.engine.cancel("rg")
+        await task
+    err = h.events[-1]
+    assert err["code"] == "cancelled" and err["partial"] is False and err["restored"] is True
+    assert h.engine.conversation_items() == before
+    assert h.engine.snapshot()["busy"] is False
+
+
+async def test_a_regenerate_stopped_mid_reply_keeps_the_new_partial(tmp_path) -> None:
+    slow = sse(text_chunks("one two three four five six seven eight", 8), event_delay_s=0.15)
+    with fake_openai_server(sse(text_chunks("Old reply.", 1)), slow) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        await h.send("Count")
+        task = asyncio.create_task(h.engine.regenerate("rg", h.events.append))
+        async with asyncio.timeout(10):
+            while not [e for e in h.of("chat.delta") if e["request_id"] == "rg"]:
+                await asyncio.sleep(0.01)
+        h.engine.cancel("rg")
+        await task
+    err = h.events[-1]
+    assert err["code"] == "cancelled" and err["partial"] is True and "restored" not in err
+    items = h.engine.conversation_items()
+    assert [i["role"] for i in items] == ["user", "assistant"]
+    assert items[1]["stopped"] is True and "Old reply." not in items[1]["content"]
+
+
+async def test_regenerate_without_a_message_is_refused(tmp_path) -> None:
+    with fake_openai_server() as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await regenerate(h)
+        assert srv.chat_requests == []
+    assert [e["type"] for e in events] == ["chat.error"]
+    assert events[0]["code"] == "bad_request" and "restored" not in events[0]
+    assert h.engine.conversation_items() == []

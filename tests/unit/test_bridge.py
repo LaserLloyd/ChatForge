@@ -239,7 +239,14 @@ def test_get_state_shape(api: Api, services: Services) -> None:
         "theme",
     }
     assert set(st["config"]) == {"chat", "ui", "local"}
-    assert set(st["config"]["chat"]) == {"provider", "model", "show_reasoning", "max_prompt_chars"}
+    assert set(st["config"]["chat"]) == {
+        "provider",
+        "model",
+        "show_reasoning",
+        "max_prompt_chars",
+        "recent_models",
+    }
+    assert st["config"]["chat"]["recent_models"] == []
     assert st["selected"] == {
         "provider": services.config.chat.provider,
         "model": services.config.chat.model,
@@ -441,6 +448,78 @@ def test_send_message_dispatches_to_engine(api: Api, services: Services, loop) -
     assert api.new_chat()["ok"]
     assert ("cancel", reply["request_id"]) in calls and ("new",) in calls
     assert api.get_state()["conversation"] == [{"role": "user", "content": "hi", "ts": 1}]
+
+
+def test_regenerate_dispatches_to_engine(api: Api, services: Services, loop, events) -> None:
+    import asyncio
+
+    services.loop = loop
+    calls: list[str] = []
+    done = asyncio.Event()
+    ended: list[str] = []
+    services.on_reply_end = ended.append
+
+    class Engine:
+        async def regenerate(self, request_id, emit):
+            calls.append(request_id)
+            emit({"type": "chat.done", "request_id": request_id})
+            done.set()
+
+    assert api.regenerate()["error"]["code"] == "server"  # no engine wired
+    services.engine = Engine()
+    reply = api.regenerate()
+    assert reply["ok"] and reply["request_id"].startswith("req_")
+    loop.run(asyncio.wait_for(done.wait(), 2))
+    assert calls == [reply["request_id"]] and ended == [reply["request_id"]]
+
+
+def test_recent_models_newest_first_unique_and_capped(api: Api, services: Services) -> None:
+    def recent() -> list[tuple[str, str]]:
+        return [
+            (r["provider"], r["model"]) for r in ui_config(services.config)["chat"]["recent_models"]
+        ]
+
+    assert recent() == []
+    api.select_model("minimax", "MiniMax-M2.7")
+    api.select_model("openai", "gpt-5-mini")
+    api.select_model("minimax", "MiniMax-M2.7")
+    assert recent() == [("minimax", "MiniMax-M2.7"), ("openai", "gpt-5-mini")]
+    api.select_model("deepseek", "deepseek-chat")
+    api.select_model("openai", "gpt-5")
+    assert recent() == [
+        ("openai", "gpt-5"),
+        ("deepseek", "deepseek-chat"),
+        ("minimax", "MiniMax-M2.7"),
+    ]
+    # Kept in config.toml, so the menu survives a restart.
+    assert load_config(services.paths).chat.recent_models[0].model == "gpt-5"
+
+
+def test_sending_records_the_model_used(api: Api, services: Services, loop, events) -> None:
+    import asyncio
+
+    services.loop = loop
+    done = asyncio.Event()
+
+    class Engine:
+        async def send(self, text, request_id, emit):
+            done.set()
+
+    services.engine = Engine()
+    assert services.config.chat.recent_models == []
+    events[0].drain()
+    assert api.send_message("hi")["ok"]
+    loop.run(asyncio.wait_for(done.wait(), 2))
+    first = services.config.chat.recent_models[0]
+    assert (first.provider, first.model) == (
+        services.config.chat.provider,
+        services.config.chat.model,
+    )
+    changed = [e for e in events[0].drain() if e["type"] == "settings.changed"]
+    assert changed and changed[0]["config"]["chat"]["recent_models"][0]["model"] == first.model
+    # Already first: the next message writes nothing.
+    assert api.send_message("again")["ok"]
+    assert not [e for e in events[0].drain() if e["type"] == "settings.changed"]
 
 
 class EndingEngine:

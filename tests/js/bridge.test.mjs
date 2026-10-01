@@ -60,7 +60,7 @@ test('without pywebview the dev mock supplies every contract method', async () =
   const state = await api.call('get_state');
   assert.equal(state.ok, true);
   assert.ok(win.pywebview && win.pywebview.__mock, 'dev-mock was not installed');
-  const methods = ['get_state', 'send_message', 'attach_files', 'attach_data', 'remove_attachment', 'open_document',
+  const methods = ['get_state', 'send_message', 'regenerate', 'attach_files', 'attach_data', 'remove_attachment', 'open_document',
     'reveal_document', 'stop_generation', 'new_chat', 'select_model', 'load_model', 'unload_model',
     'hide_popup', 'set_pinned', 'open_settings', 'open_external', 'save_api_key', 'remove_api_key', 'test_provider', 'refresh_models',
     'get_settings', 'update_settings', 'list_providers', 'upsert_provider', 'remove_provider', 'list_models',

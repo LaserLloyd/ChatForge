@@ -135,8 +135,60 @@ def test_scan_attaches_catalog_and_state(dirs, tmp_path: Path) -> None:
     rec = Registry(models, cache, catalog=catalog, state_file=state).scan()[0]
     assert rec.catalog is not None and rec.catalog.id == REPO
     assert rec.last_used_at == 1234.5
-    assert rec.compiled == {"NPU|4096|2026.4.0": True}
+    # state.json keeps first-compile times after a cache clear: it does not mean "warm".
+    assert rec.compiled == {}
+    assert rec.npu_ok is True  # a catalog entry is verified for the NPU
     assert rec.to_dict()["catalog"]["npu"] == "recommended"
+    assert rec.to_dict()["npu_ok"] is True
+
+
+def test_compiled_flags_come_from_the_cache_on_disk(dirs) -> None:
+    from aichat.runtime import compile_cache
+
+    models, cache = dirs
+    make_model(models, REPO)
+    warm = compile_cache.cache_dir_for(cache, REPO, "NPU", 4096)
+    compile_cache.mark_compiled(
+        warm, model_id=REPO, device="NPU", max_prompt_len=4096, ovms_version="2026.4.0", load_s=60
+    )
+    (warm / "123.blob").write_bytes(b"blob")
+    cold = compile_cache.cache_dir_for(cache, REPO, "GPU", 4096)  # marker but no blob
+    compile_cache.mark_compiled(
+        cold, model_id=REPO, device="GPU", max_prompt_len=4096, ovms_version="2026.4.0", load_s=9
+    )
+    rec = Registry(models, cache).scan()[0]
+    # The plain device key is what Settings reads ("Compiled for NPU").
+    assert rec.compiled == {"NPU": True, "NPU|4096|2026.4.0": True}
+    compile_cache.clear(cache, REPO)
+    assert Registry(models, cache).scan()[0].compiled == {}
+
+
+def test_npu_verdict_on_records(dirs) -> None:
+    models, cache = dirs
+    xml = (
+        b"<net><rt_info><nncf><weight_compression>"
+        b'<group_size value="128" /><mode value="int4_asym" /><ratio value="1.0" />'
+        b"</weight_compression></nncf></rt_info></net>"
+    )
+    make_model(models, "Acme/asym-int4-ov", {**MODEL_FILES, "openvino_model.xml": xml})
+    make_model(models, REPO)
+    catalog = Catalog.from_dict({"avoid": [{"pattern": "Qwen3-4B-int4-ov", "reason": "Garbage."}]})
+    recs = {r.id: r for r in Registry(models, cache, catalog=catalog).scan()}
+    asym = recs["Acme/asym-int4-ov"]
+    assert asym.npu_ok is False and "INT4_ASYM" in asym.npu_note
+    assert recs[REPO].npu_ok is False and recs[REPO].npu_note == "Garbage."
+
+
+def test_fingerprint_changes_when_a_download_completes(dirs) -> None:
+    models, cache = dirs
+    registry = Registry(models, cache)
+    empty = registry.fingerprint()
+    target = make_model(models, REPO)
+    with_model = registry.fingerprint()
+    assert with_model != empty and with_model[0][0] == REPO
+    (target / SIDECAR_NAME).write_text("{}")
+    assert registry.fingerprint() != with_model
+    assert registry.fingerprint() == registry.fingerprint()
 
 
 def test_scan_missing_models_dir_is_empty(tmp_path: Path) -> None:

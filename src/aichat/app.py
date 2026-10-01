@@ -39,7 +39,7 @@ QUIT_TIMEOUT_S = 20.0
 #: The taskbar identity (groups AI Chat's windows apart from other Python programs).
 APP_USER_MODEL_ID = "LaserLloyd.AIChat"
 #: Bump the version when the artwork changes, so the new icon is written.
-APP_ICON_FILE = "app-icon-v1.ico"
+APP_ICON_FILE = "app-icon-v2.ico"
 MODEL_REFRESH_FIRST_DELAY_S = 60.0
 MODEL_REFRESH_INTERVAL_S = 24 * 3600.0
 #: ``CreateProcess`` flags for the copy that Restart starts: no visible console, and not in

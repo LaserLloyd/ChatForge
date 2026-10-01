@@ -142,6 +142,70 @@ def check_compiled(model_id: str, device: str, compiled: bool, expected_s: float
     )
 
 
+@dataclass(frozen=True)
+class CompileState:
+    """One installed local model's compile cache, for the device it would load on."""
+
+    model_id: str
+    device: str
+    warm: bool
+    expected_s: float | None = None
+
+
+def check_compiled_models(states: list[CompileState], *, precompile: bool = True) -> Check:
+    """Every installed local model's cache: pass when all are warm."""
+    name = "Compiled for NPU"
+    if not states:
+        return Check(name, "pass", "no local models installed")
+
+    def label(s: CompileState) -> str:
+        short = s.model_id.rpartition("/")[2]
+        eta = f" ~{s.expected_s:.0f} s" if s.expected_s else ""
+        return f"{short} on {s.device}{eta}"
+
+    cold = [s for s in states if not s.warm]
+    if not cold:
+        return Check(name, "pass", "warm (cached load): " + ", ".join(label(s) for s in states))
+    then = (
+        "the app compiles them in the background when idle"
+        if precompile
+        else "their first load compiles (local.precompile is off)"
+    )
+    return Check(
+        name, "warn", "not compiled yet (first load): " + ", ".join(map(label, cold)) + f"; {then}"
+    )
+
+
+def check_npu_models(
+    device: str, verdicts: list[tuple[str, Any]], fallback_device: str = "GPU"
+) -> Check:
+    """Installed models that will not run correctly on the NPU (``NpuVerdict.ok is False``)."""
+    name = "NPU-ready models"
+    if "NPU" not in device.upper():
+        return Check(name, "pass", f"local.device is {device}; not checked")
+    if not verdicts:
+        return Check(name, "pass", "no local models installed")
+    bad = [(mid, v) for mid, v in verdicts if getattr(v, "ok", None) is False]
+    if not bad:
+        unknown = sum(getattr(v, "ok", None) is None for _mid, v in verdicts)
+        extra = f" ({unknown} not verifiable from their files)" if unknown else ""
+        return Check(name, "pass", f"all {len(verdicts)} can run on the NPU{extra}")
+    where = (
+        "refused (local.npu_fallback_device = none)"
+        if fallback_device.lower() == "none"
+        else f"runs on {fallback_device.upper()} instead"
+    )
+    parts = [f"{mid.rpartition('/')[2]}: {v.reason} -> {where}" for mid, v in bad]
+    return Check(name, "warn", "; ".join(parts))
+
+
+def local_target_model(chat_model: str, installed: list[str]) -> str | None:
+    """The local model the app loads: ``chat.model`` when installed, else the first one."""
+    if chat_model in installed:
+        return chat_model
+    return installed[0] if installed else None
+
+
 def check_keyring(backend_name: str, usable: bool) -> Check:
     if usable:
         return Check("Keyring backend", "pass", backend_name)
@@ -397,11 +461,95 @@ def load_config_readonly(paths: Any) -> tuple[Any, Check]:
         return validate_config({}), Check("Config", "fail", f"{paths.config_file}: {exc}")
 
 
+def local_model_checks(paths: Any, cfg: Any, *, catalog: Any = None) -> list[Check]:
+    """The "Model", "NPU-ready models" and "Compiled for NPU" rows.
+
+    They describe the *local* models even when a cloud provider is selected (then
+    ``chat.model`` names a cloud model, which is never on disk). The device, spec and
+    compile hash come from :class:`LocalModelManager`'s own planning, so the doctor
+    sees exactly what a load would use; nothing is started.
+    """
+    from aichat.models.npu_compat import npu_verdict
+    from aichat.runtime import compile_cache
+
+    shared: dict[str, Any] = {}
+
+    def local() -> tuple[Any, Any, list[Any]]:
+        if not shared:
+            from aichat.models.catalog import Catalog
+            from aichat.models.registry import Registry
+            from aichat.runtime.manager import LocalModelManager
+
+            cat = catalog if catalog is not None else Catalog.load()
+            registry = Registry(
+                paths.models_dir, paths.cache_dir, catalog=cat, state_file=paths.state_file
+            )
+            registry.scan()
+            manager = LocalModelManager(
+                None,  # type: ignore[arg-type] - planning only, never started
+                get_config=lambda: cfg,
+                paths=paths,
+                registry=registry,
+                catalog=cat,
+                is_installed=lambda: True,
+                precompile=False,
+            )
+            records = [r for r in registry.all() if r.complete]
+            shared.update(registry=registry, manager=manager, records=records)
+        return shared["registry"], shared["manager"], shared["records"]
+
+    def model_check() -> Check:
+        registry, _manager, records = local()
+        provider = cfg.providers.get(cfg.chat.provider)
+        if provider is None or provider.kind == "ovms":
+            target: str | None = cfg.chat.model
+        else:
+            target = local_target_model(cfg.chat.model, [r.id for r in records])
+            if target is None:
+                return Check(
+                    "Model", "pass", f"no local model installed (chat uses {cfg.chat.provider})"
+                )
+        return check_model(str(target), registry.get(str(target)))
+
+    def npu_check() -> Check:
+        _registry, manager, records = local()
+        verdicts = [(r.id, npu_verdict(r.id, r.path, manager.catalog)) for r in records]
+        return check_npu_models(cfg.local.device, verdicts, cfg.local.npu_fallback_device)
+
+    def compiled_check() -> Check:
+        _registry, manager, records = local()
+        version = cfg.local.ovms_version
+        states: list[CompileState] = []
+        for rec in records:
+            try:
+                spec = manager.build_spec(rec.id)
+            except Exception:  # noqa: BLE001 - e.g. refused on the NPU: nothing to compile
+                continue
+            expected = compile_cache.expected_load_s(
+                spec.cache_dir,
+                state_file=paths.state_file,
+                key=compile_cache.compile_key(rec.id, spec.device, spec.max_prompt_len, version),
+                ovms_version=version,
+                compile_hash=manager.compile_hash(spec),
+                model_path=spec.model_path,
+            )
+            states.append(
+                CompileState(rec.id, spec.device, manager.is_warm(spec), round(expected, 1))
+            )
+        return check_compiled_models(states, precompile=cfg.local.precompile)
+
+    return [
+        _safe("Model", model_check),
+        _safe("NPU-ready models", npu_check),
+        _safe("Compiled for NPU", compiled_check),
+    ]
+
+
 def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
     from aichat import autostart, secrets
     from aichat.models.diskspace import free_bytes
     from aichat.paths import Paths
-    from aichat.runtime import compile_cache, ovms_install
+    from aichat.runtime import ovms_install
     from aichat.runtime.jobobject import find_processes
     from aichat.single_instance import SINGLE_INSTANCE_PORT
 
@@ -411,31 +559,6 @@ def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
     else:
         config_check = Check("Config", "pass", "provided")
     running = app_is_running(SINGLE_INSTANCE_PORT)
-    model_id = cfg.chat.model
-    device = cfg.local.device
-
-    def model_check() -> Check:
-        from aichat.models.catalog import Catalog
-        from aichat.models.registry import Registry
-
-        registry = Registry(
-            paths.models_dir, paths.cache_dir, catalog=Catalog.load(), state_file=paths.state_file
-        )
-        registry.scan()
-        return check_model(model_id, registry.get(model_id))
-
-    def compiled_check() -> Check:
-        cache_dir = compile_cache.cache_dir_for(
-            paths.cache_dir, model_id, device, cfg.local.max_prompt_len
-        )
-        key = compile_cache.compile_key(
-            model_id, device, cfg.local.max_prompt_len, cfg.local.ovms_version
-        )
-        compiled = compile_cache.is_compiled(cache_dir, ovms_version=cfg.local.ovms_version)
-        expected = compile_cache.expected_load_s(
-            cache_dir, state_file=paths.state_file, key=key, ovms_version=cfg.local.ovms_version
-        )
-        return check_compiled(model_id, device, compiled, expected)
 
     def minimax_check() -> Check:
         spec = cfg.providers.get(MINIMAX_PROVIDER)
@@ -456,8 +579,7 @@ def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
         ),
         _safe("NPU device", lambda: check_npu(list_npu_devices())),
         _safe("OVMS runtime", lambda: check_ovms(ovms_install.runtime_status(paths, cfg.local))),
-        _safe("Model", model_check),
-        _safe("Compiled for NPU", compiled_check),
+        *local_model_checks(paths, cfg),
         _safe("Keyring backend", lambda: check_keyring(*keyring_backend_status())),
         _safe("MiniMax key", minimax_check),
         _safe("Hotkey", lambda: check_hotkey(cfg.ui.hotkey, probe_hotkey(cfg.ui.hotkey), running)),

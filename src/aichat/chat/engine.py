@@ -45,6 +45,11 @@ conversation back to where it was, so Retry re-sends cleanly. A cancel keeps the
 message and the partial reply (marked ``stopped``) and answers any unanswered tool
 call with "Not run (stopped).".
 
+Regenerate (``regenerate(request_id, emit)``) runs the latest user message again, with
+its attached files and original time, in place of the reply that followed it; the same
+events follow. If the new reply fails, or is stopped before it says anything, the old
+reply is put back and ``chat.error`` carries ``restored: true``.
+
 Attached files (``send(..., attachments=[Extracted, ...])``) are stored on the user
 message as ``_attachments`` with their text, next to the typed text; ``chat.history``
 adds them to the prompt as ``<file name="...">`` blocks, cut to fit each model's budget.
@@ -135,6 +140,10 @@ class _Request:
     context: dict[str, Any] | None = None
     #: What the latest round's prompt left out.
     fitted: Fitted | None = None
+    #: Regenerate: the turn taken out of the conversation (user message first) and the
+    #: index it came from, put back if the new reply fails or says nothing.
+    restore: list[dict] | None = None
+    restore_at: int = 0
 
 
 #: What OVMS says (HTTP 400) when the prompt is over ``--max_prompt_len``.
@@ -284,9 +293,23 @@ class ChatEngine:
         ``attachments`` are ``attachments.Extracted`` files (or ``{name, kind, chars,
         truncated, text}`` dicts). Never raises (except when the task itself is cancelled
         from outside)."""
+        await self._execute(request_id, emit, text, [as_record(f) for f in attachments or []])
+
+    async def regenerate(self, request_id: str, emit: Emit) -> None:
+        """Answer the latest user message again (Regenerate): its reply is replaced by a
+        new one, asked with the same text and attached files. The old reply comes back if
+        the new one fails, or is stopped before it says anything (``chat.error`` then
+        carries ``restored: true``). With no user message: ``chat.error`` ``bad_request``.
+        Never raises, like :meth:`send`."""
+        await self._execute(request_id, emit, None, [])
+
+    async def _execute(
+        self, request_id: str, emit: Emit, text: str | None, files: list[dict[str, Any]]
+    ) -> None:
+        """``send`` (``text`` given) or ``regenerate`` (``text`` None)."""
         loop = asyncio.get_running_loop()
         req = _Request(id=request_id, emit=emit, task=asyncio.current_task(), loop=loop)
-        req.files = [as_record(f) for f in attachments or []]
+        req.files = files
         self._active[request_id] = req
         # The conversation and its rollback mark are taken only once this request holds
         # the lock: a request still queued behind another must never roll back, repair or
@@ -299,6 +322,9 @@ class ChatEngine:
                 conv = self._conv
                 mark = len(conv)
                 started = True
+                if text is None:
+                    text = self._take_last_turn(req, conv)
+                    mark = len(conv)
                 await self._run(req, conv, text, self._mono())
         except asyncio.CancelledError:
             if not req.cancelled:
@@ -308,14 +334,14 @@ class ChatEngine:
                 while task.cancelling():
                     task.uncancel()
             if started:
-                self._finish_cancelled(req, conv, text)
+                self._finish_cancelled(req, conv, text or "")
             else:
                 self._emit_queued_cancel(req)
         except LLMError as exc:
             if not started:
                 self._fail(req, conv, len(conv), exc)  # nothing of ours to roll back
             elif exc.code == "cancelled" or req.cancelled:
-                self._finish_cancelled(req, conv, text)
+                self._finish_cancelled(req, conv, text or "")
             else:
                 self._fail(req, conv, mark, exc)
         except Exception as exc:  # noqa: BLE001 - every failure becomes chat.error
@@ -366,10 +392,41 @@ class ChatEngine:
             msg["_attachments"] = [dict(f) for f in req.files]
         return msg
 
+    def _take_last_turn(self, req: _Request, conv: Conversation) -> str:
+        """Regenerate: take the latest user message and everything after it out of
+        ``conv`` (kept in ``req.restore``); its text is returned, its files and time go on
+        ``req`` so ``_run`` records the message as it was."""
+        idx = next(
+            (i for i in range(len(conv) - 1, -1, -1) if conv.messages[i].get("role") == "user"),
+            None,
+        )
+        if idx is None:
+            raise LLMError("There is no message to answer again", code="bad_request")
+        user = conv.messages[idx]
+        req.files = [dict(f) for f in user.get("_attachments") or [] if isinstance(f, dict)]
+        ts = user.get("_ts")
+        req.user_ts = float(ts) if isinstance(ts, int | float) else None
+        req.restore, req.restore_at = conv.messages[idx:], idx
+        conv.rollback(idx)
+        log.info("regenerate", request_id=req.id, dropped=len(req.restore) - 1)
+        content = user.get("content")
+        return content if isinstance(content, str) else ""
+
+    def _restore(self, req: _Request, conv: Conversation) -> bool:
+        """Put back the turn a failed or empty regenerate took out. True if it did."""
+        if req.restore is None or conv is not self._conv:
+            return False
+        conv.rollback(req.restore_at)
+        conv.messages.extend(req.restore)
+        req.restore = None
+        return True
+
     def _fail(self, req: _Request, conv: Conversation, mark: int, exc: LLMError) -> None:
         if conv is self._conv and len(conv) > mark:
             conv.rollback(mark)
+        restored = self._restore(req, conv)
         log.info("chat_error", request_id=req.id, code=exc.code)
+        fields: dict[str, Any] = {"restored": True} if restored else {}
         self._emit(
             req,
             "chat.error",
@@ -380,6 +437,7 @@ class ChatEngine:
             # After a fallback this is the fallback provider, so a "no key" error asks
             # for the right key.
             provider=req.provider,
+            **fields,
         )
 
     def _emit_queued_cancel(self, req: _Request) -> None:
@@ -397,6 +455,21 @@ class ChatEngine:
 
     def _finish_cancelled(self, req: _Request, conv: Conversation, text: str) -> None:
         partial = bool(req.round_content or req.round_reasoning)
+        unloaded = req.cancel_reason == "unloaded"
+        # A regenerate stopped before it said anything keeps the reply it was replacing.
+        if not (partial or req.turn_parts) and self._restore(req, conv):
+            self._persist()
+            self._emit(
+                req,
+                "chat.error",
+                code="cancelled",
+                message="Stopped: the local model was unloaded." if unloaded else "Stopped.",
+                hint=None,
+                action=None,
+                partial=False,
+                restored=True,
+            )
+            return
         if conv is self._conv:
             if not req.user_recorded:
                 conv.append(self._user_message(req, text))
@@ -448,7 +521,8 @@ class ChatEngine:
         provider = self._providers.get(pid)
         model = _model_for(cfg.chat.model, provider.spec)
         req.provider, req.model = pid, model
-        req.user_ts = self._clock()
+        if req.user_ts is None:  # a regenerate keeps the message's original time
+            req.user_ts = self._clock()
         req.shown_start = conv.context_start_ts
         self._emit(req, "chat.start", provider=pid, model=model, user_ts=req.user_ts)
 

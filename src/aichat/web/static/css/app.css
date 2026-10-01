@@ -98,6 +98,8 @@ button:disabled { cursor: not-allowed; }
 .mm-item:disabled { color: var(--text-disabled); }
 .mm-check { width: 14px; flex: none; color: var(--text-link); text-align: center; }
 .mm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* "Recently used": the provider after the model name. */
+.mm-sub { margin-left: auto; flex: none; padding-left: 8px; font-size: var(--fs-xs); color: var(--text-tertiary); }
 .mm-action { padding-left: 32px; }
 .mm-sep { height: 1px; margin: 4px 6px; background: var(--divider); }
 
@@ -161,7 +163,8 @@ button:disabled { cursor: not-allowed; }
 .ctx-divider::before, .ctx-divider::after { content: ""; flex: 1 1 0; min-width: 16px; border-top: 1px solid var(--border-subtle); }
 .ctx-divider-text { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 
-.msg-actions { display: flex; margin-top: 2px; }
+.msg-actions { display: flex; gap: 2px; margin-top: 2px; }
+.msg-act-btn[hidden], .msg[hidden] { display: none; }
 .msg-act-btn {
   display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; background: transparent;
   border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-tertiary); font-size: var(--fs-micro);

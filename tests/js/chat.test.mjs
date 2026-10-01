@@ -76,6 +76,7 @@ const SNAPSHOT = [
 
 const calls = [];   // [method, ...args]
 const sends = [];   // pending send_message replies: {text, ids, resolve}
+const regens = [];  // pending regenerate replies: {resolve}
 const picks = [];   // pending attach_files replies (the native dialog): {resolve}
 const datas = [];   // pending attach_data replies: {name, data, resolve}
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -92,6 +93,7 @@ win.pywebview = {
       calls.push(['send_message', ...args]);
       sends.push({ text: args[0], ids: args[1], resolve });
     }),
+    regenerate: () => new Promise((resolve) => { calls.push(['regenerate']); regens.push({ resolve }); }),
     attach_files: () => new Promise((resolve) => { calls.push(['attach_files']); picks.push({ resolve }); }),
     attach_data: (name, data) => new Promise((resolve) => { calls.push(['attach_data', name, data]); datas.push({ name, data, resolve }); }),
     remove_attachment: async (id) => { calls.push(['remove_attachment', id]); return ok({ removed: true }); },
@@ -146,6 +148,7 @@ async function fresh(selected = LOCAL) {
   await settle();
   calls.length = 0;
   sends.length = 0;
+  regens.length = 0;
   picks.length = 0;
   datas.length = 0;
   frames = [];
@@ -756,4 +759,165 @@ test('a failed request puts the divider back where it was; New chat removes it',
   $('btn-new').click();
   await settle();
   assert.equal(dividers().length, 0);
+});
+
+
+// ---------------------------------------------------------------- regenerate ----
+
+/** Send `text` and finish its reply `answer` under request `id`. */
+async function answered(text, id, answer) {
+  await sendAs(text, id);
+  emit({ type: 'chat.start', request_id: id, provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.delta', request_id: id, content: answer });
+  emit({ type: 'chat.done', request_id: id, content: answer, model: LOCAL.model, provider: 'local-npu' });
+  await settle();
+}
+
+const visibleRegen = () => [...$('messages').querySelectorAll('.act-regen')].filter((b) => !b.hidden);
+const visibleReplies = () => [...$('messages').querySelectorAll('.msg.assistant')].filter((r) => !r.hidden);
+
+/** Click Regenerate on the latest reply and answer the call with `id`. */
+async function regenerateAs(id) {
+  visibleRegen()[0].click();
+  await settle();
+  regens.shift().resolve(ok({ request_id: id }));
+  await settle();
+}
+
+test('Regenerate is offered on the latest reply only, and replaces it', async () => {
+  await fresh();
+  await answered('first', 'req_r1', 'One.');
+  await answered('second', 'req_r2', 'Two.');
+  const offered = visibleRegen();
+  assert.equal(offered.length, 1);
+  assert.ok(lastAssistant().contains(offered[0]), 'Regenerate is not on the latest reply');
+  assert.equal(offered[0].textContent, 'Regenerate');
+
+  await regenerateAs('req_r3');
+  assert.deepEqual(calls.filter((c) => c[0] === 'regenerate'), [['regenerate']]);
+  assert.equal(S().busy, true);
+  assert.equal(visibleRegen().length, 0, 'Regenerate is offered while a reply runs');
+  const hidden = [...$('messages').querySelectorAll('.msg.assistant')].filter((r) => r.hidden);
+  assert.equal(hidden.length, 1, 'the old reply should be hidden while the new one streams');
+  assert.equal(hidden[0].querySelector('.bubble').textContent.trim(), 'Two.');
+  assert.ok(visibleReplies().at(-1).classList.contains('streaming'));
+
+  emit({ type: 'chat.start', request_id: 'req_r3', provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.delta', request_id: 'req_r3', content: 'Two, again.' });
+  emit({ type: 'chat.done', request_id: 'req_r3', content: 'Two, again.', model: LOCAL.model, provider: 'local-npu' });
+  await settle();
+  const replies = [...$('messages').querySelectorAll('.msg.assistant')];
+  assert.deepEqual(replies.map((r) => r.querySelector('.bubble').textContent.trim()), ['One.', 'Two, again.']);
+  assert.equal([...$('messages').querySelectorAll('.msg.user')].length, 2, 'Regenerate must not repeat the message');
+  assert.ok(composerIdle());
+  assert.equal(visibleRegen().length, 1);
+});
+
+test('a failed Regenerate brings the old reply back, and Retry regenerates again', async () => {
+  await fresh();
+  await answered('question', 'req_f1', 'Keep me.');
+  await regenerateAs('req_f2');
+  emit({ type: 'chat.start', request_id: 'req_f2', provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.delta', request_id: 'req_f2', content: 'half' });
+  emit({ type: 'chat.error', request_id: 'req_f2', code: 'server', message: 'The model server failed.', hint: '',
+    action: 'retry', restored: true });
+  await settle();
+  assert.deepEqual(visibleReplies().map((r) => r.querySelector('.bubble').textContent.trim()), ['Keep me.']);
+  const error = $('messages').querySelector('.msg.error');
+  assert.ok(error, 'no error row');
+  assert.equal(visibleRegen().length, 0, 'Regenerate under an error row');
+  [...error.querySelectorAll('button')].find((b) => b.textContent === 'Retry').click();
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'regenerate').length, 2);
+  assert.equal(sends.length, 0, 'Retry after a Regenerate must not send a new message');
+});
+
+test('a Regenerate stopped before any text keeps the old reply', async () => {
+  await fresh();
+  await answered('question', 'req_s1', 'Old answer.');
+  await regenerateAs('req_s2');
+  emit({ type: 'chat.start', request_id: 'req_s2', provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.tool_call', request_id: 'req_s2', call_id: 'c9', name: 'web_search', arguments: '{}' });
+  emit({ type: 'chat.error', request_id: 'req_s2', code: 'cancelled', message: 'Stopped.', partial: false, restored: true });
+  await settle();
+  const replies = [...$('messages').querySelectorAll('.msg.assistant')];
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].hidden, false);
+  assert.equal(replies[0].querySelector('.bubble').textContent.trim(), 'Old answer.');
+  assert.equal(visibleRegen().length, 1);
+});
+
+test('an empty reply says so, and offers Regenerate', async () => {
+  await fresh();
+  await sendAs('status', 'req_e1');
+  emit({ type: 'chat.start', request_id: 'req_e1', provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.delta', request_id: 'req_e1', content: '\n\n' });
+  emit({ type: 'chat.done', request_id: 'req_e1', content: '', model: LOCAL.model, provider: 'local-npu' });
+  await settle();
+  const row = lastAssistant();
+  assert.equal(row.querySelector('.bubble').textContent, '(The model returned an empty reply.)');
+  assert.equal(row.querySelectorAll('.msg-act-btn').length, 1, 'nothing to copy, but Regenerate');
+  assert.equal(visibleRegen().length, 1);
+});
+
+// ------------------------------------------------------------ recently used ----
+
+test('the model menu starts with the recently used models that can still be chosen', async () => {
+  await fresh();
+  emit({ type: 'settings.changed', config: { chat: { ...LOCAL, recent_models: [
+    { provider: 'studioforge', model: 'qwen-27b' },
+    { provider: 'minimax', model: 'MiniMax-M3' },          // no key: not offered
+    { provider: 'local-npu', model: LOCAL.model },
+    { provider: 'local-npu', model: 'OpenVINO/Deleted-int4-ov' },   // not installed any more
+  ] } } });
+  await settle();
+  $('model-chip').click();
+  await settle();
+  const menu = $('model-menu');
+  const first = menu.querySelector('.mm-group');
+  assert.ok(first.classList.contains('mm-recent'), 'the first group is not Recently used');
+  assert.equal(first.querySelector('.mm-head').textContent, 'Recently used');
+  const items = [...first.querySelectorAll('.mm-item')];
+  assert.deepEqual(items.map((b) => [b.querySelector('.mm-name').textContent, b.querySelector('.mm-sub').textContent]),
+    [['qwen-27b', 'StudioForge'], ['Qwen2.5-1.5B-Instruct-int4-ov', 'Local (NPU)']]);
+  assert.equal(items[1].getAttribute('aria-selected'), 'true');
+  assert.equal(win.document.activeElement, items[1], 'the selected model gets the focus');
+  // The provider groups follow, unchanged.
+  const heads = [...menu.querySelectorAll('.mm-group:not(.mm-recent) .mm-head')].map((h) => h.textContent);
+  assert.deepEqual(heads, ['Local (NPU)', 'StudioForge']);
+  items[0].click();
+  await settle();
+  assert.deepEqual(S().selected, { provider: 'studioforge', model: 'qwen-27b' });
+  assert.equal(menu.hidden, true);
+});
+
+test('no Recently used section before any model was used', async () => {
+  await fresh();
+  emit({ type: 'settings.changed', config: { chat: { ...LOCAL, recent_models: [] } } });
+  await settle();
+  $('model-chip').click();
+  await settle();
+  assert.equal($('model-menu').querySelector('.mm-recent'), null);
+  $('model-chip').click();
+  await settle();
+});
+
+// ------------------------------------------------------------- runtime status ----
+
+test('the status line says when a model compiles in the background or runs off the NPU', async () => {
+  await fresh();
+  emit({ type: 'runtime.status', state: 'compiling', model_id: LOCAL.model, device: 'NPU', elapsed_s: 30,
+    expected_s: 90, first_compile: true, background: true, device_fallback: null });
+  await settle();
+  assert.match($('status-text').textContent, /^Preparing Qwen2\.5-1\.5B-Instruct-int4-ov for NPU in the background/);
+  emit({ type: 'runtime.status', state: 'ready', model_id: LOCAL.model, device: 'GPU', idle_timeout_s: 600,
+    unload_at: Date.now() / 1000 + 600, background: false,
+    device_fallback: { from: 'NPU', to: 'GPU', reason: 'This model gives wrong output on the NPU.' } });
+  await settle();
+  assert.match($('status-text').textContent, /^Unloads in 10 min · on GPU$/);
+  assert.match($('status-line').title, /Runs on GPU instead of NPU: This model gives wrong output/);
+  emit({ type: 'runtime.status', state: 'ready', model_id: LOCAL.model, device: 'NPU', idle_timeout_s: 0,
+    unload_at: null, background: false, device_fallback: null });
+  await settle();
+  assert.equal($('status-line').hidden, true);
 });

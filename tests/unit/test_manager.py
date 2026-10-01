@@ -430,3 +430,212 @@ async def test_external_stop_is_not_a_crash(tmp_path) -> None:
     assert st["last_unload"]["reason"] == "stopped"
     async with mgr.lease(QWEN):
         assert sup.is_alive()
+
+
+# --------------------------------------------------------------------------- #
+# NPU-incompatible models: device fallback
+# --------------------------------------------------------------------------- #
+
+BROKEN = "Test/Broken-int4-ov"  # matches TEST_CATALOG's avoid pattern
+
+
+class DeviceStub(StubSupervisor):
+    """Fails ``start()`` on the devices in ``fail_on`` (like OVMS exiting while loading)."""
+
+    def __init__(self, fail_on: tuple[str, ...] = (), **kw):
+        super().__init__(**kw)
+        self.fail_on = fail_on
+
+    async def start(self, spec, on_tick=None) -> str:
+        if spec.device in self.fail_on:
+            self.starts.append(spec)
+            self.log.append(f"fail:{spec.device}")
+            raise OvmsError("exited with code 1 while loading", code="exited", hint="See logs")
+        return await super().start(spec, on_tick)
+
+
+async def test_npu_incompatible_model_runs_on_the_fallback_device(tmp_path) -> None:
+    mgr, sup, _ = make_manager(tmp_path)
+    await mgr.ensure_loaded(BROKEN)
+    spec = sup.starts[0]
+    assert spec.device == "GPU"
+    assert spec.cache_dir.name == "GPU-4096"
+    st = mgr.status()
+    assert st["state"] == "ready" and st["device"] == "GPU"
+    assert st["device_fallback"] == {"from": "NPU", "to": "GPU", "reason": "garbage output"}
+    # A verified model on the same manager stays on the NPU, with no fallback flag.
+    await mgr.ensure_loaded(QWEN)
+    assert sup.starts[-1].device == "NPU" and mgr.status()["device_fallback"] is None
+
+
+async def test_fallback_device_failure_moves_on_to_the_cpu(tmp_path) -> None:
+    sup = DeviceStub(fail_on=("GPU",))
+    mgr, _, _ = make_manager(tmp_path, sup)
+    base = await mgr.ensure_loaded(BROKEN)  # one call: GPU fails, CPU loads
+    assert base and [s.device for s in sup.starts] == ["GPU", "CPU"]
+    st = mgr.status()
+    assert st["state"] == "ready" and st["device"] == "CPU" and st["error"] is None
+    assert st["device_fallback"]["to"] == "CPU"
+    # Later calls go straight to the CPU (the same key: no reload).
+    assert await mgr.ensure_loaded(BROKEN) == base and len(sup.starts) == 2
+
+
+async def test_every_fallback_failing_is_a_clear_error(tmp_path) -> None:
+    sup = DeviceStub(fail_on=("GPU", "CPU"))
+    mgr, _, _ = make_manager(tmp_path, sup)
+    with pytest.raises(LLMError) as ei:
+        await mgr.ensure_loaded(BROKEN)
+    assert ei.value.code == "model_loading_failed" and mgr.status()["state"] == "error"
+    with pytest.raises(LLMError) as ei:
+        await mgr.ensure_loaded(BROKEN)  # nothing left to try: refused without a start
+    assert "does not run correctly on the NPU" in ei.value.message
+    assert len(sup.starts) == 2
+
+
+async def test_fallback_none_refuses_and_names_an_npu_model(tmp_path) -> None:
+    mgr, sup, _ = make_manager(tmp_path, local={"npu_fallback_device": "none"})
+    with pytest.raises(LLMError) as ei:
+        await mgr.ensure_loaded(BROKEN)
+    assert ei.value.action == "open_settings"
+    assert "garbage output" in ei.value.hint and QWEN in ei.value.hint  # the recommended one
+    assert not sup.starts
+
+
+async def test_fallback_only_applies_when_the_device_is_npu(tmp_path) -> None:
+    mgr, sup, _ = make_manager(tmp_path, local={"device": "CPU"})
+    await mgr.ensure_loaded(BROKEN)
+    assert sup.starts[0].device == "CPU" and mgr.status()["device_fallback"] is None
+
+
+async def test_switching_models_cancels_the_old_models_leases_first(tmp_path) -> None:
+    mgr, sup, _ = make_manager(tmp_path)
+    inside = asyncio.Event()
+    events: list[str] = []
+
+    async def request() -> None:
+        me = asyncio.current_task()
+
+        def on_cancel() -> None:
+            events.append(f"cancel(stops={sup.stops})")
+            me.cancel()
+
+        async with mgr.lease(QWEN, on_cancel=on_cancel):
+            inside.set()
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(request())
+    await inside.wait()
+    await mgr.ensure_loaded(SMALL)  # the user picked another model mid-reply
+    assert events == ["cancel(stops=0)"]  # the reply was told before OVMS stopped
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert mgr.in_flight == 0 and sup.log == ["start", "stop", "start"]
+    assert mgr.status()["model_id"] == SMALL
+
+
+# --------------------------------------------------------------------------- #
+# Background precompile
+# --------------------------------------------------------------------------- #
+
+
+async def test_precompile_compiles_then_unloads(tmp_path) -> None:
+    import json
+
+    sup = StubSupervisor(ticks=("compiling",))
+    sup.gate = asyncio.Event()
+    mgr, _, _ = make_manager(tmp_path, sup)
+    task = asyncio.create_task(mgr.precompile(QWEN))
+    await sup.started.wait()
+    st = mgr.status()
+    assert st["state"] == "compiling" and st["background"] is True and st["first_compile"]
+    sup.gate.set()
+    assert await task == "compiled"
+    st = mgr.status()
+    assert st["state"] == "unloaded" and st["background"] is False
+    assert st["last_unload"]["reason"] == "precompiled"
+    assert sup.log == ["start", "stop"]
+    state = json.loads((tmp_path / "home" / "state.json").read_text(encoding="utf-8"))
+    assert QWEN not in (state.get("last_used") or {})  # nobody used it
+
+
+async def test_precompile_joined_by_a_request_keeps_the_model(tmp_path) -> None:
+    sup = StubSupervisor()
+    sup.gate = asyncio.Event()
+    mgr, _, _ = make_manager(tmp_path, sup)
+    background = asyncio.create_task(mgr.precompile(QWEN))
+    await sup.started.wait()
+    chat = asyncio.create_task(mgr.ensure_loaded(QWEN))  # the user asks meanwhile
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert mgr.status()["background"] is False
+    sup.gate.set()
+    base = await chat
+    assert await background == "compiled"
+    assert mgr.status()["state"] == "ready" and mgr.base_url == base
+    assert len(sup.starts) == 1 and sup.stops == 0
+
+
+async def test_request_for_another_model_cancels_the_precompile(tmp_path) -> None:
+    sup = StubSupervisor()
+    sup.gate = asyncio.Event()
+    mgr, _, _ = make_manager(tmp_path, sup)
+    background = asyncio.create_task(mgr.precompile(QWEN))
+    await sup.started.wait()
+    chat = asyncio.create_task(mgr.ensure_loaded(SMALL))
+    assert await background == "cancelled"
+    sup.gate.set()
+    await chat
+    assert mgr.status()["state"] == "ready" and mgr.status()["model_id"] == SMALL
+
+
+async def test_precompile_is_busy_while_the_runtime_is_in_use(tmp_path) -> None:
+    mgr, sup, _ = make_manager(tmp_path)
+    await mgr.ensure_loaded(QWEN)
+    assert mgr.idle_for_background() is False
+    assert await mgr.precompile(SMALL) == "busy"
+    assert len(sup.starts) == 1 and mgr.status()["model_id"] == QWEN
+
+
+async def test_precompile_skips_a_warm_cache(tmp_path) -> None:
+    from aichat.runtime import compile_cache
+
+    mgr, sup, holder = make_manager(tmp_path)
+    spec = mgr.build_spec(QWEN)
+    compile_cache.mark_compiled(
+        spec.cache_dir,
+        model_id=QWEN,
+        device="NPU",
+        max_prompt_len=4096,
+        ovms_version="2026.4.0",
+        load_s=60.0,
+        compile_hash=mgr.compile_hash(spec),
+    )
+    (spec.cache_dir / "1.blob").write_bytes(b"b")
+    assert mgr.is_warm(spec)
+    assert await mgr.precompile(QWEN) == "warm" and not sup.starts
+    # Other compile settings (a plugin_config in extra_args) make it cold again.
+    holder["cfg"] = validate_config({"local": {"extra_args": ["--plugin_config", "{}"]}})
+    assert not mgr.is_warm(mgr.build_spec(QWEN))
+
+
+async def test_failed_precompile_leaves_no_error_banner(tmp_path) -> None:
+    sup = StubSupervisor(fail=OvmsError("exited while loading", code="exited", hint="See logs"))
+    mgr, _, _ = make_manager(tmp_path, sup)
+    with pytest.raises(LLMError):
+        await mgr.precompile(QWEN)
+    st = mgr.status()
+    assert st["state"] == "unloaded" and st["error"] is None and st["background"] is False
+
+
+async def test_start_runs_the_precompiler_only_with_a_registry(tmp_path) -> None:
+    mgr, _, _ = make_manager(tmp_path)
+    await mgr.start()
+    assert mgr.precompiler is None  # no registry: nothing to compile
+    mgr2, _, _ = make_manager(tmp_path, registry=object())
+    await mgr2.start()
+    assert mgr2.precompiler is not None
+    await mgr2.aclose()
+    assert mgr2._precompile_task is None  # noqa: SLF001 - cancelled on close
+    mgr3, _, _ = make_manager(tmp_path, registry=object(), precompile=False)
+    await mgr3.start()
+    assert mgr3.precompiler is None

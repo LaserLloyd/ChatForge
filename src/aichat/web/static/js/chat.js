@@ -32,12 +32,14 @@ const MD_OPTS = { noMedia: true, noLocal: true };
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const TOO_MANY_FILES = `Only ${MAX_FILES} files can be attached to one message.`;
+const EMPTY_REPLY = '(The model returned an empty reply.)';
 
 const ICON = {
   wrench: ['M14.7 6.3a4 4 0 0 0 5 5L13 18a2.1 2.1 0 0 1-3-3z', 'M14.7 6.3l3-3 3 3'],
   brain: ['M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 3 4 3 3 0 0 0 5 1V5a2 2 0 0 0-3-1z', 'M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-3 4 3 3 0 0 1-5 1'],
   warn: ['M12 4l10 17H2z', 'M12 10v4', 'M12 17.5v.01'],
   copy: ['M8 8h11v11H8z', 'M5 16V5h11'],
+  regen: ['M20 11a8 8 0 0 0-14.3-4.9L4 8', 'M4 3.5V8h4.5', 'M4 13a8 8 0 0 0 14.3 4.9L20 16', 'M20 20.5V16h-4.5'],
   close: ['M6 6l12 12', 'M18 6L6 18'],
   file: RAIL_ICONS['viewer-file'],
   folder: RAIL_ICONS.folder,
@@ -58,6 +60,8 @@ const S = {
   lastText: '',           // last text sent (for Retry)
   lastFiles: [],          // ...and the files sent with it: their ids stay valid after an error
   lastUserEl: null,
+  retryRegen: false,      // the last request was a Regenerate: Retry regenerates again
+  regen: null,            // a running Regenerate: {old}, the reply it replaces (hidden meanwhile)
   ctxBefore: null,        // where the context divider was when this request started (for errors)
   files: [],              // composer attachments: the bridge's view + {key, state: loading|ready}
   picking: false,         // the native file dialog is open (attach_files in flight)
@@ -210,6 +214,7 @@ function addRow(node, { assistant = false } = {}) {
   clearEmpty();
   messagesBox().append(node);
   stickOrBadge(assistant);
+  syncRegenerate();
 }
 
 /** A user message: its attached files as chips over the bubble. A files-only message
@@ -439,10 +444,14 @@ function finishMeta(turn, { ts, model, tokPerS, note } = {}) {
   if (tokPerS) bits.push(`${Number(tokPerS).toFixed(1)} tok/s`);
   if (note) bits.push(note);
   turn.col.append(el('div', { class: 'msg-time', text: bits.join(' · ') }));
-  if (turn.content) turn.col.append(copyAction(() => turn.content));
+  turn.col.append(el('div', { class: 'msg-actions' }, [
+    turn.content ? copyButton(() => turn.content) : null,
+    regenerateButton(),
+  ]));
+  syncRegenerate();
 }
 
-function copyAction(getText) {
+function copyButton(getText) {
   const b = el('button', { class: 'msg-act-btn', type: 'button', title: 'Copy the reply' }, [
     railIcon(ICON.copy), el('span', { text: t('msg.copy') }),
   ]);
@@ -454,7 +463,24 @@ function copyAction(getText) {
       setTimeout(() => { label.textContent = t('msg.copy'); b.classList.remove('ok'); }, 1200);
     } catch { toast('Copy is not available here.'); }
   });
-  return el('div', { class: 'msg-actions' }, [b]);
+  return b;
+}
+
+function regenerateButton() {
+  const b = el('button', { class: 'msg-act-btn act-regen', type: 'button', title: 'Ask again for a new reply' }, [
+    railIcon(ICON.regen), el('span', { text: t('msg.regenerate') }),
+  ]);
+  b.addEventListener('click', regenerate);
+  return b;
+}
+
+/** Regenerate is offered on the latest reply only (the last row, so not under an error or a
+ *  key card), and not while a reply is running. */
+function syncRegenerate() {
+  const box = messagesBox();
+  const rows = [...box.querySelectorAll('.msg')].filter((r) => !r.hidden);
+  const last = rows[rows.length - 1] || null;
+  for (const b of box.querySelectorAll('.act-regen')) b.hidden = S.busy || !last || !last.contains(b);
 }
 
 /** A finished assistant message from the conversation snapshot. */
@@ -473,6 +499,9 @@ function assistantRowFromData(m) {
     turn.content = m.content;
     turn.md.innerHTML = renderMarkdown(m.content, MD_OPTS);
     enhanceContent(turn.md, { noLocal: true });
+  } else if (!m.reasoning && !(m.tools || []).length && !(m.documents || []).length && !m.stopped) {
+    ensureBubble(turn);
+    turn.md.append(el('span', { class: 'muted', text: EMPTY_REPLY }));
   }
   for (const d of (m.documents || [])) addDocCard(turn, d);
   finishMeta(turn, { ts: m.ts, model: m.model, note: m.stopped ? 'stopped' : undefined });
@@ -558,7 +587,7 @@ function finalizeTurn(turn, meta) {
   if (turn.cursor) { turn.cursor.remove(); turn.cursor = null; }
   turn.node.classList.remove('streaming');
   paintThinkLabel(turn, false);
-  if (turn.content || turn.chips.size || turn.reasoning) finishMeta(turn, meta);
+  finishMeta(turn, meta);   // also under an empty reply: Regenerate is most useful there
 }
 
 // ===================================================================== errors ====
@@ -579,7 +608,7 @@ function errorRow(err) {
     btn('Add key', () => { row.remove(); showKeyCard(S.selected.provider, S.lastText, S.lastFiles); });
   } else if (err.action === 'open_settings') {
     btn('Open settings', openSettings);
-    if (S.lastText || S.lastFiles.length) btn('Retry', () => { row.remove(); retry(); });
+    if (S.lastText || S.lastFiles.length || S.retryRegen) btn('Retry', () => { row.remove(); retry(); });
   } else if (err.action === 'retry') {
     btn('Retry', () => { row.remove(); retry(); });
   }
@@ -633,6 +662,7 @@ function closeKeyCard() {
   S.keyCard.row.remove();
   S.keyCard = null;
   renderEmpty();
+  syncRegenerate();
 }
 
 async function refreshProviders() {
@@ -876,6 +906,7 @@ function updateSendEnabled() {
 }
 
 function reflectComposer() {
+  syncRegenerate();
   $('send').classList.toggle('hidden', S.busy);
   $('stop').classList.toggle('hidden', !S.busy);
   const stop = $('stop');
@@ -910,7 +941,7 @@ async function send(text, { showUser = true, files = [] } = {}) {
   files = files.map(fileView);
   if ((!text && !files.length) || S.busy) return;
   if (text.length > maxChars()) { toast(`Message is longer than ${maxChars().toLocaleString()} characters.`); return; }
-  S.busy = true; S.reqId = null; S.stopping = false; S.lastText = text; S.lastFiles = files;
+  S.busy = true; S.reqId = null; S.stopping = false; S.lastText = text; S.lastFiles = files; S.retryRegen = false;
   S.ctxBefore = dividerAnchor();
   const mine = ++S.sendSeq;
   if (showUser) { S.lastUserEl = userRow(text, undefined, files); addRow(S.lastUserEl); scrollToBottom(true); }   // your own message always follows you down
@@ -919,7 +950,34 @@ async function send(text, { showUser = true, files = [] } = {}) {
   // Without files send_message is called exactly as before attachments existed.
   const ids = files.map((f) => f.id);
   const r = ids.length ? await api.call('send_message', text, ids) : await api.call('send_message', text);
-  // Abandoned while send_message was in flight (New chat, the Stop safety net, or a reply
+  adoptRequest(r, mine, 'Could not send the message.');
+}
+
+/** Regenerate: ask again for a new reply to the latest message. The old reply is hidden
+ *  meanwhile; it is removed when the new one is done, and shown again if the new one fails
+ *  or is stopped before it says anything (the engine then keeps it: chat.error restored). */
+async function regenerate() {
+  if (S.busy) return;
+  const rows = [...messagesBox().querySelectorAll('.msg')].filter((r) => !r.hidden);
+  const old = rows[rows.length - 1];
+  if (!old || !old.classList.contains('assistant')) return;
+  const users = rows.filter((r) => r.classList.contains('user'));
+  S.busy = true; S.reqId = null; S.stopping = false;
+  S.lastText = ''; S.lastFiles = []; S.retryRegen = true;
+  S.lastUserEl = users[users.length - 1] || null;
+  S.ctxBefore = dividerAnchor();
+  S.regen = { old };
+  old.hidden = true;
+  const mine = ++S.sendSeq;
+  startTurn();
+  reflectComposer();
+  const r = await api.call('regenerate');
+  adoptRequest(r, mine, 'Could not regenerate the reply.');
+}
+
+/** The bridge answered send_message / regenerate with `r`: take its request id. */
+function adoptRequest(r, mine, failMessage) {
+  // Abandoned while the call was in flight (New chat, the Stop safety net, or a reply
   // that already finished and a newer send): the engine may still be generating for this
   // id, so stop it and ignore its events, or the next send would adopt them. (Not S.cur:
   // chat.reset / chat.fallback can replace the turn before this reply arrives.)
@@ -929,8 +987,9 @@ async function send(text, { showUser = true, files = [] } = {}) {
   }
   if (!r || !r.ok) {
     dropTurn();
+    keepOldReply();
     endRequest();
-    showError((r && r.error) || { message: 'Could not send the message.', action: 'retry' });
+    showError((r && r.error) || { message: failMessage, action: 'retry' });
     return;
   }
   // This reply's id is authoritative: an id accept() picked up from a stray event of an
@@ -941,7 +1000,18 @@ async function send(text, { showUser = true, files = [] } = {}) {
   if (S.stopping) api.call('stop_generation', S.reqId);
 }
 
+/** A Regenerate that failed or said nothing: the reply it was replacing comes back. */
+function keepOldReply() {
+  if (S.regen) { S.regen.old.hidden = false; S.regen = null; }
+}
+
+/** A Regenerate that produced a reply: the one it replaces goes. */
+function dropOldReply() {
+  if (S.regen) { S.regen.old.remove(); S.regen = null; }
+}
+
 function retry() {
+  if (S.retryRegen) { regenerate(); return; }
   // The files' ids are still valid: the backend forgets them only when a reply finishes
   // or is stopped.
   if (S.lastText || S.lastFiles.length) send(S.lastText, { showUser: false, files: S.lastFiles });
@@ -969,17 +1039,20 @@ async function stopGeneration() {
   }, 8000);
 }
 
-/** End a stopped request. `message` is the engine's reason (chat.error{cancelled}). */
-function finishCancelled(message) {
+/** End a stopped request. `message` is the engine's reason (chat.error{cancelled});
+ *  `restored`: a Regenerate stopped before it said anything, so the old reply stays. */
+function finishCancelled(message, restored = false) {
   const turn = S.cur;
   const note = stoppedNote(message);
+  const empty = !turn || turnIsEmpty(turn) || restored;
   if (turn) {
-    if (turnIsEmpty(turn)) turn.node.remove();
+    if (empty) turn.node.remove();
     else finalizeTurn(turn, { model: turn.fallbackModel || S.selected.model, note });
   }
+  if (empty) keepOldReply(); else dropOldReply();
   endRequest();
   // Nothing on screen says why when the engine stopped an empty reply on its own.
-  if ((!turn || turnIsEmpty(turn)) && note !== 'stopped') toast(String(message));
+  if (empty && note !== 'stopped') toast(String(message));
 }
 
 async function newChat() {
@@ -991,7 +1064,7 @@ async function newChat() {
   closeKeyCard();
   await api.call('new_chat');
   messagesBox().replaceChildren();
-  S.lastText = ''; S.lastFiles = []; S.lastUserEl = null;
+  S.lastText = ''; S.lastFiles = []; S.lastUserEl = null; S.retryRegen = false; S.regen = null;
   showScrollButton(false);
   renderEmpty();
   $('input').focus();
@@ -1092,15 +1165,15 @@ on('chat.done', (e) => {
   if (!accept(e)) return;
   const turn = curTurn();
   // The engine's final content is authoritative: it can differ from the streamed text
-  // (e.g. a reply with only reasoning is shown as its reasoning).
-  if (typeof e.content === 'string' && e.content && e.content !== turn.content) {
+  // (e.g. a reply with only reasoning is shown as its reasoning, and text the stream showed
+  // can turn out to be hidden markup, leaving nothing).
+  if (typeof e.content === 'string' && e.content !== turn.content) {
     turn.content = e.content;
     ensureBubble(turn);
   }
-  if (!turn.content && !turn.chips.size && !turn.reasoning) {
-    ensureBubble(turn);
-    turn.md.append(el('span', { class: 'muted', text: '(The model returned an empty reply.)' }));
-  }
+  if (!turn.content.trim()) turn.content = '';
+  const empty = !turn.content && !turn.chips.size && !turn.reasoning.trim();
+  if (empty) ensureBubble(turn);
   // chat.done names the provider and model that actually answered; a provider other than
   // the selected one means the fallback answered (even if its chat.fallback was missed).
   const provider = e.provider || turn.fallbackProvider || S.selected.provider;
@@ -1110,14 +1183,26 @@ on('chat.done', (e) => {
     tokPerS: e.tok_per_s,
     note: fellBack ? `via ${providerName(provider) || 'the fallback provider'}` : undefined,
   });
+  if (empty) turn.md.replaceChildren(el('span', { class: 'muted', text: EMPTY_REPLY }));
+  dropOldReply();
   announce((turn.content || 'Reply finished').slice(0, 300));
   endRequest();
 });
 
 on('chat.error', (e) => {
   if (!accept(e)) return;
-  if (e.code === 'cancelled') { finishCancelled(e.message); return; }
+  if (e.code === 'cancelled') { finishCancelled(e.message, !!e.restored); return; }
   const turn = S.cur;
+  if (S.regen) {
+    // A failed Regenerate: the engine put the old reply back, and so does the popup.
+    dropTurn();
+    keepOldReply();
+    restoreDivider(S.ctxBefore);
+    endRequest();
+    const action = e.action === 'add_key' ? 'open_settings' : e.action;
+    showError({ message: e.message, hint: e.hint, action, code: e.code });
+    return;
+  }
   const hadOutput = turn && !turnIsEmpty(turn);
   if (turn) {
     if (hadOutput) finalizeTurn(turn, { model: turn.fallbackModel || S.selected.model });
@@ -1232,11 +1317,19 @@ function statusInfo() {
   const p = selectedProvider();
   if (!isLocalProvider(p)) return null;
   const r = S.runtime;
+  // A model the NPU cannot run correctly runs on the GPU (or CPU) instead.
+  const fb = r.device_fallback;
+  const onOther = fb && fb.to ? ` · on ${fb.to}` : '';
+  const fbTitle = fb && fb.reason ? `Runs on ${fb.to} instead of ${fb.from || 'the NPU'}: ${fb.reason}` : '';
   switch (r.state) {
     case 'starting':
     case 'compiling': {
       const exp = Number(r.expected_s) || 0;
       const pct = exp ? Math.min(95, ((Number(r.elapsed_s) || 0) / exp) * 100) : 5;
+      if (r.background) {
+        return { text: `Preparing ${shortModel(r.model_id)} for ${r.device || 'NPU'} in the background ${fmtClock(r.elapsed_s)} / ~${fmtClock(exp)}`,
+          title: 'A one-time compile, done while the app is idle so this model loads in seconds later.', pct };
+      }
       if (r.first_compile) {
         return { text: `Compiling for ${r.device || 'NPU'} ${fmtClock(r.elapsed_s)} / ~${fmtClock(exp)}`,
           title: 'First-time compile for this model and device. It is cached afterwards.', pct };
@@ -1247,10 +1340,10 @@ function statusInfo() {
     case 'ready': {
       if (r.unload_at && r.idle_timeout_s > 0) {
         const left = r.unload_at - Date.now() / 1000;
-        if (left <= 0) return { text: 'Unloading soon' };
-        return { text: left >= 90 ? `Unloads in ${Math.ceil(left / 60)} min` : `Unloads in ${Math.ceil(left)} s` };
+        if (left <= 0) return { text: `Unloading soon${onOther}`, title: fbTitle };
+        return { text: (left >= 90 ? `Unloads in ${Math.ceil(left / 60)} min` : `Unloads in ${Math.ceil(left)} s`) + onOther, title: fbTitle };
       }
-      return null;
+      return onOther ? { text: `Running${onOther}`, title: fbTitle } : null;
     }
     case 'error':
       return { text: `Model failed to load${r.error ? `: ${r.error}` : ''}`, tone: 'bad',
@@ -1321,6 +1414,7 @@ function renderConversation(items) {
     else if (m.role === 'notice' && m.kind === 'context_cut') box.append(contextDivider(m.content || CONTEXT_CUT_TEXT));
   }
   renderEmpty();
+  syncRegenerate();
   scrollToBottom(true);
 }
 
@@ -1330,27 +1424,60 @@ function menuItems() {
   return [...$('model-menu').querySelectorAll('[role="option"], [role="menuitem"]')];
 }
 
+function offeredInMenu(p) { return isConfigured(p) || p.id === S.selected.provider; }
+
+function menuModels(p) {
+  return p.models && p.models.length ? p.models : (p.default_model ? [p.default_model] : []);
+}
+
+/** The "Recently used" entries (config chat.recent_models, newest first) that can still be
+ *  chosen: the provider is offered and, when it lists models, still lists this one (a local
+ *  model must still be installed). */
+function recentModels() {
+  const out = [];
+  for (const r of (S.config.chat && S.config.chat.recent_models) || []) {
+    const p = providerById(r.provider);
+    if (!p || !r.model || !offeredInMenu(p)) continue;
+    const listed = menuModels(p);
+    const current = S.selected.provider === p.id && S.selected.model === r.model;
+    if ((isLocalProvider(p) || listed.length) && !listed.includes(r.model) && !current) continue;
+    out.push({ p, m: r.model });
+  }
+  return out;
+}
+
+function menuItem(p, m, { withProvider = false } = {}) {
+  const sel = S.selected.provider === p.id && S.selected.model === m;
+  const b = el('button', { class: 'mm-item', type: 'button', role: 'option', 'aria-selected': String(sel), tabindex: '-1',
+    dataset: { provider: p.id, model: m } }, [
+    el('span', { class: 'mm-check', 'aria-hidden': 'true', text: sel ? '✓' : '' }),
+    el('span', { class: 'mm-name', text: shortModel(m) }),
+    withProvider ? el('span', { class: 'mm-sub', text: p.display_name }) : null,
+  ]);
+  b.addEventListener('click', () => chooseModel(p.id, m));
+  return b;
+}
+
 function buildMenu() {
   const menu = $('model-menu');
   menu.replaceChildren();
+  const recent = recentModels();
+  if (recent.length) {
+    const group = el('div', { class: 'mm-group mm-recent', role: 'group', 'aria-label': t('menu.recent') }, [
+      el('div', { class: 'mm-head', text: t('menu.recent') }),
+    ]);
+    for (const { p, m } of recent) group.append(menuItem(p, m, { withProvider: true }));
+    menu.append(group, el('div', { class: 'mm-sep', role: 'separator' }));
+  }
   // Only configured providers are offered; the selected one stays visible even without a
   // key, so the menu never hides what is in use. Keys are added in Settings → Providers.
-  for (const p of S.providers.filter((x) => isConfigured(x) || x.id === S.selected.provider)) {
-    const models = p.models && p.models.length ? p.models : (p.default_model ? [p.default_model] : []);
+  for (const p of S.providers.filter(offeredInMenu)) {
+    const models = menuModels(p);
     const group = el('div', { class: 'mm-group', role: 'group', 'aria-label': p.display_name }, [
       el('div', { class: 'mm-head', text: p.display_name }),
     ]);
     if (!models.length) group.append(el('div', { class: 'mm-empty', text: isLocalProvider(p) ? 'No installed models' : 'No models listed' }));
-    for (const m of models) {
-      const sel = S.selected.provider === p.id && S.selected.model === m;
-      const b = el('button', { class: 'mm-item', type: 'button', role: 'option', 'aria-selected': String(sel), tabindex: '-1',
-        dataset: { provider: p.id, model: m } }, [
-        el('span', { class: 'mm-check', 'aria-hidden': 'true', text: sel ? '✓' : '' }),
-        el('span', { class: 'mm-name', text: shortModel(m) }),
-      ]);
-      b.addEventListener('click', () => chooseModel(p.id, m));
-      group.append(b);
-    }
+    for (const m of models) group.append(menuItem(p, m));
     menu.append(group);
   }
   const p = selectedProvider();

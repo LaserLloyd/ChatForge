@@ -11,6 +11,8 @@ const DICT = {
   'msg.code_wrap': 'Wrap long lines',
   'msg.copy': 'Copy',
   'msg.copied': 'Copied',
+  'msg.regenerate': 'Regenerate',
+  'menu.recent': 'Recently used',
   'msg.callout_note': 'Note',
   'msg.callout_tip': 'Tip',
   'msg.callout_important': 'Important',

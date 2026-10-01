@@ -111,6 +111,7 @@ const DEFAULT_CONFIG = {
     fallback_provider: '',
     fallback_model: '',
     auto_refresh_models: true,
+    recent_models: [],
     temperature: 0.7,
     max_output_tokens: 1024,
     show_reasoning: 'collapsed',
@@ -279,7 +280,7 @@ function uiConfig() {
   const c = S.config;
   return {
     chat: { provider: c.chat.provider, model: c.chat.model, show_reasoning: c.chat.show_reasoning,
-      max_prompt_chars: c.chat.max_prompt_chars },
+      max_prompt_chars: c.chat.max_prompt_chars, recent_models: clone(c.chat.recent_models || []) },
     ui: clone(c.ui),
     local: { device: c.local.device, idle_unload_minutes: c.local.idle_unload_minutes,
       autoload_on_open: c.local.autoload_on_open },
@@ -287,6 +288,18 @@ function uiConfig() {
 }
 
 function isLocal(pid) { return (S.config.providers[pid] || {}).kind === 'ovms'; }
+
+const RECENT_MODELS_KEPT = 3;
+
+/** Like the bridge: put provider/model first in chat.recent_models (newest first, unique,
+ *  at most three). False when it is first already. */
+function rememberModel(provider, model) {
+  const recent = S.config.chat.recent_models || [];
+  if (recent[0] && recent[0].provider === provider && recent[0].model === model) return false;
+  S.config.chat.recent_models = [{ provider, model },
+    ...recent.filter((r) => r.provider !== provider || r.model !== model)].slice(0, RECENT_MODELS_KEPT);
+  return true;
+}
 
 // autostart.task_script(): the .vbs the "AI Chat" logon task in Task Scheduler runs.
 const AUTOSTART_SCRIPT = 'C:\\Users\\you\\AppData\\Local\\AIChat\\AIChat.vbs';
@@ -719,6 +732,16 @@ function unrecord(text) {
   if (last && last.role === 'user' && last.content === text) S.conversation.pop();
 }
 
+/** A failed message is taken back out; a failed regenerate puts the reply it was replacing
+ *  back instead. The extra chat.error fields: `{restored: true}` for the latter. */
+function undo(req, text) {
+  if (!req.restore) { unrecord(text); return {}; }
+  S.conversation.push(...req.restore);
+  req.restore = null;
+  persist();
+  return { restored: true };
+}
+
 async function runChat(text, req) {
   let pid = S.config.chat.provider;
   let model = S.config.chat.model;
@@ -743,10 +766,10 @@ async function runChat(text, req) {
 
   const spec = S.config.providers[pid];
   if (!local && keyRequired(spec) && keyStatus(pid).source === 'none') {
-    unrecord(text);
+    const extra = undo(req, text);
     const env = spec.api_key_env ? ` (or set ${spec.api_key_env})` : '';
     emit({ type: 'chat.error', request_id: req.id, code: 'no_key', message: `Add your ${spec.display_name} API key`,
-      hint: `Paste the key in the card below or in Settings → Providers${env}.`, action: 'add_key', provider: pid });
+      hint: `Paste the key in the card below or in Settings → Providers${env}.`, action: 'add_key', provider: pid, ...extra });
     return;
   }
 
@@ -758,9 +781,9 @@ async function runChat(text, req) {
 
   if (script === 'error') {
     await sleep(500);
-    unrecord(text);
+    const extra = undo(req, text);
     emit({ type: 'chat.error', request_id: req.id, code: 'server', message: 'The model server returned an error.',
-      hint: 'See the logs for details.', action: 'retry', provider: pid });
+      hint: 'See the logs for details.', action: 'retry', provider: pid, ...extra });
     return;
   }
 
@@ -840,13 +863,23 @@ async function runChat(text, req) {
   persist();
 }
 
+function startChat(text, req) {
+  setTimeout(() => runChat(text, req).catch((e) => {
+    console.error('[dev-mock] chat failed', e);
+    emit({ type: 'chat.error', request_id: req.id, code: 'server', message: 'Mock failure: ' + e.message, hint: '',
+      action: 'retry', ...undo(req, text) });
+  }).finally(() => requests.delete(req.id)), 0);
+}
+
 function finishCancelled(req, record) {
   const partial = !!(record && (record.content || record.reasoning));
   if (partial) S.conversation.push({ ...record, stopped: true });
+  // A regenerate stopped before it said anything keeps the reply it was replacing.
+  const extra = partial || !req.restore ? {} : undo(req, '');
   releaseAttachments(req);
   const unloaded = req.cancelReason === 'unloaded';
   emit({ type: 'chat.error', request_id: req.id, code: 'cancelled',
-    message: unloaded ? 'Stopped: the local model was unloaded.' : 'Stopped.', hint: null, action: null, partial });
+    message: unloaded ? 'Stopped: the local model was unloaded.' : 'Stopped.', hint: null, action: null, partial, ...extra });
 }
 
 // ------------------------------------------------------------ downloads ----
@@ -932,11 +965,34 @@ function makeApi() {
       // conversation.items(): {name, kind, chars, truncated} per file, only when there are some.
       if (files.length) user.attachments = files.map(({ name, kind, chars, truncated }) => ({ name, kind, chars, truncated }));
       S.conversation.push(user);
+      if (rememberModel(S.config.chat.provider, S.config.chat.model)) emit({ type: 'settings.changed', config: uiConfig() });
       persist();
-      setTimeout(() => runChat(text, req).catch((e) => {
-        console.error('[dev-mock] chat failed', e);
-        emit({ type: 'chat.error', request_id: req.id, code: 'server', message: 'Mock failure: ' + e.message, hint: '', action: 'retry' });
-      }).finally(() => requests.delete(req.id)), 0);
+      startChat(text, req);
+      return ok({ request_id: req.id });
+    },
+
+    // Answer the latest user message again: its reply is replaced; a failed or empty
+    // regenerate puts the old reply back (chat.error restored: true).
+    async regenerate() {
+      const req = { id: `req_${++rid}`, cancelled: false, files: [], attachmentIds: [] };
+      requests.set(req.id, req);
+      let at = S.conversation.length - 1;
+      while (at >= 0 && S.conversation[at].role !== 'user') at -= 1;
+      if (at < 0) {
+        setTimeout(() => {
+          requests.delete(req.id);
+          emit({ type: 'chat.error', request_id: req.id, code: 'bad_request', message: 'There is no message to answer again',
+            hint: null, action: null });
+        }, 0);
+        return ok({ request_id: req.id });
+      }
+      const user = S.conversation[at];
+      req.restore = S.conversation.splice(at + 1);
+      req.userTs = user.ts;
+      req.files = (user.attachments || []).map(clone);
+      if (rememberModel(S.config.chat.provider, S.config.chat.model)) emit({ type: 'settings.changed', config: uiConfig() });
+      persist();
+      startChat(user.content || '', req);
       return ok({ request_id: req.id });
     },
 
@@ -994,6 +1050,7 @@ function makeApi() {
       if (!S.config.providers[provider_id]) return fail('not_found', `Unknown provider ${provider_id}.`);
       S.config.chat.provider = provider_id;
       S.config.chat.model = model_id || providerView(provider_id).default_model;
+      rememberModel(S.config.chat.provider, S.config.chat.model);
       persist();
       emit({ type: 'settings.changed', config: uiConfig() });
       if (isLocal(provider_id) && S.config.local.autoload_on_open && S.runtime.state === 'unloaded') {

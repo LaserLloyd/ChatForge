@@ -187,9 +187,14 @@ class Catalog:
         )
 
     def annotate(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Copy search results, adding ``badge`` and ``note`` to each."""
+        """Copy search results, adding ``badge``, ``note`` and ``npu_ok`` to each.
+
+        ``npu_ok`` is True for catalog entries, False for avoid-listed ids (the runtime
+        runs those on the fallback device) and None when unknown before download.
+        """
         out: list[dict[str, Any]] = []
         for item in results:
             verdict = self.badge(str(item.get("id", "")))
-            out.append({**item, "badge": verdict.badge, "note": verdict.note})
+            npu_ok = {"recommended": True, "supported": True, "avoid": False}.get(verdict.badge)
+            out.append({**item, "badge": verdict.badge, "note": verdict.note, "npu_ok": npu_ok})
         return out
