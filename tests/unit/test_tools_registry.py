@@ -19,7 +19,26 @@ ALL = list(TOOL_NAMES)
 
 
 def test_tool_names():
-    assert TOOL_NAMES == ("web_search", "fetch_url", "current_datetime", "calculator")
+    assert TOOL_NAMES == (
+        "web_search",
+        "news_search",
+        "fetch_url",
+        "weather",
+        "wikipedia",
+        "exchange_rate",
+        "current_datetime",
+        "calculator",
+        "create_document",
+    )
+    assert reg.LOCAL_TOOL_NAMES == (
+        "web_search",
+        "fetch_url",
+        "weather",
+        "current_datetime",
+        "calculator",
+    )
+    assert [t["name"] for t in reg.tool_catalog()] == list(TOOL_NAMES)
+    assert all(t["label"] for t in reg.tool_catalog())
 
 
 def test_toolresult_shape():
@@ -36,7 +55,10 @@ def test_schemas_are_openai_shaped_and_small():
         assert fn["parameters"]["type"] == "object"
         assert set(fn["parameters"]["required"]) <= set(fn["parameters"]["properties"])
         assert len(fn["description"]) < 60
-    assert len(json.dumps(schemas)) < 1300  # ~400 tokens at 3 chars/token
+    # What the 4096-token NPU model sees stays small (~500 tokens at 3 chars/token).
+    local = ToolRegistry().schemas(ALL, local=True)
+    assert [s["function"]["name"] for s in local] == list(reg.LOCAL_TOOL_NAMES)
+    assert len(json.dumps(local)) < 1500
 
 
 def test_schemas_filter_and_ignore_unknown():
@@ -142,6 +164,9 @@ async def test_bad_json_returns_error_not_raise():
         ("web_search", {"query": ["a"]}),
         ("fetch_url", {}),
         ("fetch_url", {"url": None}),
+        ("news_search", {}),
+        ("wikipedia", {"topic": "  "}),
+        ("weather", {"location": 5}),
     ],
 )
 async def test_missing_or_mistyped_arguments(name, args):

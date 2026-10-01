@@ -56,11 +56,13 @@ def test_provider_spec_defaults_and_env_name_rule():
 
 def test_defaults_match_plan(paths):
     cfg = load_config(paths)
-    assert cfg.schema_version == 1
+    assert cfg.schema_version == 3
     assert cfg.chat.provider == "local-npu"
     assert cfg.chat.model == "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
     assert cfg.chat.max_prompt_chars == 4000
-    assert cfg.chat.max_tool_rounds == 4
+    assert cfg.chat.max_tool_rounds == 6
+    assert cfg.chat.fallback_provider == ""
+    assert cfg.chat.fallback_model == ""
     assert cfg.chat.show_reasoning == "collapsed"
     assert cfg.local.device == "NPU"
     assert cfg.local.idle_unload_minutes == 10
@@ -68,9 +70,24 @@ def test_defaults_match_plan(paths):
     assert cfg.local.ovms_variant == "python_on"
     assert cfg.local.ovms_version == "2026.4.0"
     assert cfg.local.extra_args == []
-    assert cfg.tools.enabled == ["web_search", "fetch_url", "current_datetime", "calculator"]
+    assert cfg.tools.enabled == [
+        "web_search",
+        "news_search",
+        "fetch_url",
+        "weather",
+        "wikipedia",
+        "exchange_rate",
+        "current_datetime",
+        "calculator",
+        "create_document",
+    ]
+    assert cfg.tools.attachment_max_chars == 200_000
+    assert cfg.tools.documents_dir == ""
+    assert cfg.tools.location == ""
+    assert cfg.tools.units == "metric"
     assert cfg.ui.theme == "laserlloyd"
     assert cfg.ui.hotkey == "Ctrl+Alt+C"
+    assert cfg.ui.show_on_reply is True
     assert cfg.startup.autostart is True
     assert cfg.logging.level == "INFO"
     assert cfg.logging.max_bytes == 5_000_000
@@ -88,7 +105,23 @@ def test_removed_keys_are_gone():
 
 def test_seed_providers(paths):
     cfg = load_config(paths)
-    assert set(cfg.providers) == {"local-npu", "minimax"}
+    assert set(cfg.providers) == {"local-npu", "minimax", "studioforge", "openai", "deepseek"}
+    sf = cfg.providers["studioforge"]
+    assert (sf.kind, sf.base_url, sf.key_required) == ("openai", "http://localhost:1234/v1", False)
+    assert sf.api_key_env == "STUDIOFORGE_API_KEY"
+    oa = cfg.providers["openai"]
+    assert (oa.base_url, oa.models, oa.quirks) == (
+        "https://api.openai.com/v1",
+        ["gpt-4o-mini", "gpt-4o"],
+        ["openai"],
+    )
+    ds = cfg.providers["deepseek"]
+    assert (ds.base_url, ds.models, ds.quirks) == (
+        "https://api.deepseek.com/v1",
+        ["deepseek-chat", "deepseek-reasoner"],
+        ["deepseek"],
+    )
+    assert ds.docs_url == "https://platform.deepseek.com/api_keys"
     local = cfg.providers["local-npu"]
     assert (local.kind, local.display_name, local.builtin, local.quirks) == (
         "ovms",
@@ -124,7 +157,7 @@ def test_load_creates_file_with_defaults(paths):
     cfg = load_config(paths)
     assert paths.config_file.is_file()
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 1
+    assert raw["schema_version"] == 3
     assert raw["providers"]["minimax"]["base_url"] == "https://api.minimax.io/v1"
     assert "id" not in raw["providers"]["minimax"]
     assert "themes" not in raw["ui"]
@@ -419,6 +452,14 @@ def test_update_config_persists_and_returns_new(paths):
     assert load_config(paths) == new
 
 
+def test_show_on_reply_is_saved_without_a_restart(paths):
+    cfg = load_config(paths)
+    new, restart = update_config(cfg, {"ui": {"show_on_reply": False}}, paths)
+    assert restart == []
+    assert new.ui.show_on_reply is False
+    assert load_config(paths).ui.show_on_reply is False
+
+
 @pytest.mark.parametrize(
     ("patch", "expected"),
     [
@@ -489,3 +530,104 @@ def test_update_config_without_existing_file(paths):
     assert restart == ["local.device"]
     assert paths.config_file.is_file()
     assert load_config(paths).local.device == "GPU"
+
+
+# --- schema migrations -------------------------------------------------------
+
+
+def _write_raw(paths, data):
+    import tomli_w
+
+    paths.home.mkdir(parents=True, exist_ok=True)
+    paths.config_file.write_text(tomli_w.dumps(data), encoding="utf-8")
+
+
+def test_migrate_v1_turns_on_new_tools_and_moves_the_default_prompt(paths):
+    _write_raw(
+        paths,
+        {
+            "schema_version": 1,
+            "chat": {"system_prompt": config_mod.LEGACY_SYSTEM_PROMPT, "max_tool_rounds": 4},
+            "tools": {"enabled": ["web_search", "calculator"]},
+        },
+    )
+    cfg = load_config(paths)
+    assert cfg.schema_version == 3
+    assert cfg.tools.enabled == [
+        "web_search",
+        "calculator",
+        "news_search",
+        "weather",
+        "wikipedia",
+        "exchange_rate",
+        "create_document",
+    ]
+    assert cfg.chat.system_prompt == config_mod.DEFAULT_SYSTEM_PROMPT
+    assert cfg.chat.max_tool_rounds == 6
+    raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 3
+    assert "weather" in raw["tools"]["enabled"]
+    assert load_config(paths) == cfg  # a second load changes nothing
+
+
+def test_migrate_v1_keeps_user_choices(paths):
+    _write_raw(
+        paths,
+        {
+            "schema_version": 1,
+            "chat": {"system_prompt": "You are a pirate.", "max_tool_rounds": 2},
+            "tools": {"enabled": []},
+        },
+    )
+    cfg = load_config(paths)
+    assert cfg.tools.enabled == []  # "no tools" stays "no tools"
+    assert cfg.chat.system_prompt == "You are a pirate."
+    assert cfg.chat.max_tool_rounds == 2
+
+
+def test_migrate_v2_turns_on_create_document_once(paths):
+    # A v2 file was written before create_document existed, and Settings had no box for it.
+    enabled = ["web_search", "news_search", "fetch_url", "weather", "calculator"]
+    _write_raw(paths, {"schema_version": 2, "tools": {"enabled": enabled}})
+    cfg = load_config(paths)
+    assert cfg.schema_version == 3
+    assert cfg.tools.enabled == [*enabled, "create_document"]
+    raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 3
+    assert raw["tools"]["enabled"] == [*enabled, "create_document"]
+    # Switched off again after the migration, it stays off.
+    update_config(cfg, {"tools": {"enabled": enabled}}, paths)
+    assert load_config(paths).tools.enabled == enabled
+
+
+def test_migrate_v2_keeps_no_tools_and_an_existing_create_document():
+    out, changed = config_mod.migrate_raw({"schema_version": 2, "tools": {"enabled": []}})
+    assert changed is True
+    assert out == {"schema_version": 3, "tools": {"enabled": []}}
+    raw = {"schema_version": 2, "tools": {"enabled": ["create_document", "calculator"]}}
+    out, _ = config_mod.migrate_raw(raw)
+    assert out["tools"]["enabled"] == ["create_document", "calculator"]
+    assert raw["schema_version"] == 2, "the input was changed in place"
+
+
+def test_migrate_raw_is_a_no_op_at_the_current_version():
+    raw = {"schema_version": 3, "tools": {"enabled": ["calculator"]}}
+    out, changed = config_mod.migrate_raw(raw)
+    assert changed is False
+    assert out is raw
+
+
+def test_location_is_normalised_and_bounded():
+    cfg = config_mod.validate_config({"tools": {"location": "  Lisbon,   Portugal "}})
+    assert cfg.tools.location == "Lisbon, Portugal"
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        config_mod.validate_config({"tools": {"location": "x" * 101}})
+
+
+def test_key_required_and_docs_url_fields():
+    spec = ProviderSpec(id="x", kind="openai", display_name="X")
+    assert spec.key_required is None and spec.docs_url is None
+    with pytest.raises(ValueError):
+        ProviderSpec(id="x", kind="openai", display_name="X", docs_url="ftp://nope")

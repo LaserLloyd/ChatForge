@@ -3,7 +3,8 @@
 The hotkey is bound to the thread that registers it, so registration, re-registration
 (after a settings change) and un-registration all happen on :class:`HotkeyThread`. Other
 threads ask for a change by storing a request and posting ``WM_APP`` to the thread; the
-answer (``None`` or an error message) comes back through an ``Event``.
+answer (``None`` or an error message) comes back through an ``Event``. A change that
+fails puts the previous hotkey back, so the one Settings shows as active still works.
 
 The string form (``"Ctrl+Alt+Space"``) is parsed by :func:`aichat.config.parse_hotkey`;
 :func:`to_win32` maps the canonical result to ``MOD_*`` flags and a virtual-key code.
@@ -109,6 +110,11 @@ def describe_error(spec: str, error_code: int) -> str:
     return f"Could not register {spec} (Windows error {error_code})."
 
 
+def _last_error() -> int:
+    """``GetLastError`` right after a failed ``RegisterHotKey`` (a seam for tests)."""
+    return int(ctypes.GetLastError())
+
+
 class _MSG(ctypes.Structure):
     _fields_ = [
         ("hwnd", wintypes.HWND),
@@ -180,26 +186,44 @@ class HotkeyThread:
 
     # --- the thread -------------------------------------------------------------------
 
+    @staticmethod
+    def _register(user32: Any, spec: str) -> int | None:
+        """``RegisterHotKey`` for ``spec``: ``None`` on success, else the Windows error."""
+        mods, vk = to_win32(spec)
+        if user32.RegisterHotKey(None, HOTKEY_ID, mods | MOD_NOREPEAT, vk):
+            return None
+        return _last_error()
+
     def _apply_pending(self, user32: Any) -> None:
         spec = self._pending
         self._pending = None
         if spec is None:
             self._pending_done.set()
             return
-        if self.current is not None:
+        previous = self.current
+        if previous is not None:
+            # One id per thread: the old combination has to go before the new one can
+            # take the id, and comes back below if the new one is refused.
             user32.UnregisterHotKey(None, HOTKEY_ID)
             self.current = None
-        mods, vk = to_win32(spec)
-        if user32.RegisterHotKey(None, HOTKEY_ID, mods | MOD_NOREPEAT, vk):
+        code = self._register(user32, spec)
+        if code is None:
             self.current = spec
             self.error = None
             self._pending_result = None
             _log.info("hotkey registered: %s", spec)
-        else:
-            code = ctypes.GetLastError()
-            self.error = describe_error(spec, code)
-            self._pending_result = self.error
-            _log.warning("hotkey registration failed: %s", self.error)
+            self._pending_done.set()
+            return
+        message = describe_error(spec, code)
+        if previous is not None:
+            if self._register(user32, previous) is None:
+                self.current = previous
+                message += f" {previous} still works."
+            else:
+                message += f" {previous} could not be restored either; set a hotkey again."
+        self.error = message
+        self._pending_result = message
+        _log.warning("hotkey registration failed: %s (active: %s)", message, self.current)
         self._pending_done.set()
 
     def _run(self) -> None:

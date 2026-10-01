@@ -21,6 +21,9 @@ const BADGES = {
   avoid: ['Avoid', 'bad'],
 };
 const ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
+// config.py LocalCfg.max_prompt_len
+const MPL_MIN = 1024;
+const MPL_MAX = 8192;
 const ENV_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ACTIVE_DL = new Set(['downloading', 'queued', 'starting', 'verifying', 'running', 'active']);
 const RESUMABLE_DL = new Set(['paused', 'cancelled', 'canceled', 'error', 'failed']);
@@ -384,6 +387,36 @@ async function refreshRuntime() {
   renderModels();
 }
 
+/** The "Re-check" button: re-read the runtime, rescan the models folder and disk usage,
+ *  and say what was found (a re-check that changes nothing must still visibly finish). */
+async function recheckAll() {
+  const b = $('rt-recheck');
+  const msg = $('rt-msg');
+  b.disabled = true;
+  b.textContent = 'Checking…';
+  msg.className = 'ui-text-secondary small';
+  msg.textContent = '';
+  try {
+    await Promise.all([refreshRuntime(), loadModels(), loadDisk()]);
+    const rt = S.rtInfo || {};
+    const models = Array.isArray(S.models) ? S.models.length : null;
+    const bits = [
+      rt.installed ? `OVMS ${rt.version || ''} installed`.replace('  ', ' ') : 'OVMS not installed',
+      rt.vcredist === false ? 'Visual C++ runtime missing' : 'Visual C++ runtime OK',
+    ];
+    if (models != null) bits.push(`${models} model${models === 1 ? '' : 's'} found`);
+    const at = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    msg.textContent = `Checked at ${at}: ${bits.join(' · ')}.`;
+    msg.className = rt.installed && rt.vcredist !== false ? 'ok-text small' : 'ui-text-secondary small';
+  } catch (err) {
+    msg.textContent = `Re-check failed: ${(err && err.message) || err}`;
+    msg.className = 'danger-text small';
+  } finally {
+    b.disabled = false;
+    b.textContent = 'Re-check';
+  }
+}
+
 function onRuntimeInstall(evt) {
   const wrap = $('rt-progress'); const bar = $('rt-bar'); const text = $('rt-progress-text');
   const status = evt.status || 'downloading';
@@ -624,7 +657,7 @@ function closeDrawer() {
 
 function initModels() {
   $('rt-install').addEventListener('click', installRuntime);
-  $('rt-recheck').addEventListener('click', refreshRuntime);
+  $('rt-recheck').addEventListener('click', recheckAll);
   $('search-form').addEventListener('submit', (e) => { e.preventDefault(); doSearch(); });
   $('search-author').addEventListener('change', doSearch);
   let t = null;
@@ -648,6 +681,32 @@ async function loadProviders() {
   if (isOk(res)) S.views = pick(res, 'providers');
   fillLocalCard();
   renderProviderCards();
+  $('auto-refresh').checked = !(S.cfg && S.cfg.chat && S.cfg.chat.auto_refresh_models === false);
+}
+
+/** "Model list updated: 2 new (A, B), 1 removed (C)." for one refresh result. */
+function refreshSummary(r) {
+  if (!r.ok) return [r.error, r.hint].filter(Boolean).join(' ');
+  const parts = [];
+  const list = (a) => (a.length > 3 ? `${a.slice(0, 3).join(', ')} and ${a.length - 3} more` : a.join(', '));
+  if (r.added && r.added.length) parts.push(`${r.added.length} new (${list(r.added)})`);
+  if (r.removed && r.removed.length) parts.push(`${r.removed.length} removed (${list(r.removed)})`);
+  const n = (r.models || []).length;
+  return parts.length ? `Model list updated: ${parts.join(', ')}.` : `Up to date (${n} model${n === 1 ? '' : 's'}).`;
+}
+
+async function refreshAllModels() {
+  const b = $('refresh-all'); const msg = $('refresh-msg');
+  b.disabled = true; msg.className = 'small ui-text-secondary'; msg.textContent = 'Reading the model lists…';
+  const res = await api.call('refresh_models', null);
+  b.disabled = false;
+  if (!isOk(res)) { msg.className = 'small danger-text'; msg.textContent = errText(res); return; }
+  const results = res.results || {};
+  const names = Object.fromEntries((S.views || []).map((v) => [v.id, v.display_name || v.id]));
+  const lines = Object.entries(results).map(([id, r]) => `${names[id] || id}: ${refreshSummary(r)}`);
+  msg.className = 'small';
+  msg.textContent = lines.length ? lines.join(' ') : 'No provider has a key yet, so there was nothing to refresh.';
+  await loadProviders();
 }
 
 function fillLocalCard() {
@@ -659,8 +718,8 @@ function fillLocalCard() {
 async function saveLocal() {
   clearErrors($('panel-providers'));
   const mpl = Number($('local-mpl').value);
-  if (!Number.isInteger(mpl) || mpl < 512 || mpl > 16384) {
-    setError('local.max_prompt_len', 'Enter a whole number from 512 to 16384.');
+  if (!Number.isInteger(mpl) || mpl < MPL_MIN || mpl > MPL_MAX) {
+    setError('local.max_prompt_len', `Enter a whole number from ${MPL_MIN} to ${MPL_MAX}.`);
     $('local-mpl').closest('details').open = true;
     $('local-mpl').focus();
     return;
@@ -681,7 +740,7 @@ async function saveLocal() {
 }
 
 function keyStatusText(key, envFallback) {
-  if (!key || key.source === 'none') return 'No key';
+  if (!key || key.source === 'none') return key && key.required === false ? 'No key (optional for this server)' : 'No key';
   if (key.source === 'env') return `Using ${key.env_name || envFallback || 'the environment variable'} from the environment — it takes precedence over a saved key`;
   return 'Saved in Windows Credential Manager';
 }
@@ -796,6 +855,34 @@ function providerCard(v, spec) {
   custom.addEventListener('change', applyCustom);
   custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyCustom(); } });
 
+  // Context window and reply length --------------------------------------------
+  const ctxInput = el('input', { id: `${uid}-ctx`, class: 'input narrow', type: 'number', min: '2048', max: '10000000', step: '1024', inputmode: 'numeric', placeholder: 'Auto', value: spec.context_tokens != null ? String(spec.context_tokens) : '' });
+  const ctxHint = el('p', { class: 'ui-text-tertiary small', id: `${uid}-ctx-hint` });
+  const outInput = el('input', { id: `${uid}-out`, class: 'input narrow', type: 'number', min: '256', max: '200000', step: '256', inputmode: 'numeric', value: String(spec.max_output_tokens || 2048) });
+  const fmtTokens = (n) => (n >= 1000000 ? `${(n / 1000000).toFixed(n % 1000000 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+  function paintCtxHint() {
+    const reported = (spec.model_context || {})[currentModel];
+    const set = spec.context_tokens;
+    if (reported && set) ctxHint.textContent = `${shortName(currentModel)} reports ${fmtTokens(reported)} tokens; capped at ${fmtTokens(set)}.`;
+    else if (reported) ctxHint.textContent = `${shortName(currentModel)} reports ${fmtTokens(reported)} tokens (from Refresh models).`;
+    else if (set) ctxHint.textContent = `${fmtTokens(set)} tokens for every model of this provider.`;
+    else ctxHint.textContent = 'Auto: 100k tokens unless the provider reports one (Refresh models).';
+  }
+  const shortName = (m) => String(m || 'This model').split('/').pop();
+  paintCtxHint();
+  ctxInput.addEventListener('change', async () => {
+    const raw = ctxInput.value.trim();
+    const n = raw === '' ? null : Number(raw);
+    if (n !== null && (!Number.isInteger(n) || n < 2048 || n > 10000000)) { msg.textContent = 'Enter a whole number of tokens from 2048 to 10000000, or leave it empty for Auto.'; msg.className = 'danger-text small'; return; }
+    if (await saveSpec({ context_tokens: n }, n ? `Context window set to ${fmtTokens(n)} tokens.` : 'Context window set to Auto.')) paintCtxHint();
+  });
+  outInput.addEventListener('change', async () => {
+    const n = Number(outInput.value);
+    if (!Number.isInteger(n) || n < 256 || n > 200000) { msg.textContent = 'Enter a whole number of tokens from 256 to 200000.'; msg.className = 'danger-text small'; return; }
+    await saveSpec({ max_output_tokens: n }, `Replies can use up to ${fmtTokens(n)} tokens.`);
+  });
+  select.addEventListener('change', paintCtxHint);
+
   // Key ----------------------------------------------------------------------
   const keyInput = el('input', {
     id: `${uid}-key`, class: 'input mono', type: 'password', autocomplete: 'off', spellcheck: 'false',
@@ -818,30 +905,45 @@ function providerCard(v, spec) {
 
   const takeKey = () => { const k = keyInput.value; keyInput.value = ''; keyInput.type = 'password'; eye.setAttribute('aria-pressed', 'false'); return k; };
 
+  const showTest = (text, cls) => { testLine.textContent = text; testLine.className = `test-line small ${cls}`; };
+  /** Hand a typed key to the bridge. False (with the reason shown) when it was not saved. */
+  async function saveTypedKey(k) {
+    const res = await api.call('save_api_key', id, k);
+    if (!isOk(res)) { showTest(errText(res), 'danger-text'); return false; }
+    setKey(res.key);
+    return true;
+  }
+
   const saveBtn = btn('Save key', { cls: 'btn-primary', 'aria-label': `Save the API key for ${v.display_name || id}` });
   saveBtn.addEventListener('click', async () => {
     const k = takeKey().trim();
-    if (!k) { testLine.textContent = 'Type a key first.'; testLine.className = 'test-line small danger-text'; keyInput.focus(); return; }
+    if (!k) { showTest('Type a key first.', 'danger-text'); keyInput.focus(); return; }
     saveBtn.disabled = true;
-    const res = await api.call('save_api_key', id, k);
+    const saved = await saveTypedKey(k);
     saveBtn.disabled = false;
-    if (!isOk(res)) { testLine.textContent = errText(res); testLine.className = 'test-line small danger-text'; return; }
-    setKey(res.key);
-    testLine.textContent = 'Key saved.'; testLine.className = 'test-line small ok-text';
+    if (saved) showTest('Key saved.', 'ok-text');
   });
-  const testBtn = btn('Test', { 'aria-label': `Test the connection to ${v.display_name || id}` });
+  // A key in the field is saved before the test (the inline key card's "Save & test"):
+  // a key that was only tested was lost when Settings closed, after showing "Connected".
+  // The test then checks the key the chat will use, saved or from the environment.
+  const testBtn = btn('Test', { 'aria-label': `Save a typed key and test the connection to ${v.display_name || id}` });
   testBtn.addEventListener('click', async () => {
     const k = takeKey().trim();
-    testBtn.disabled = true;
-    testLine.textContent = 'Testing…'; testLine.className = 'test-line small ui-text-secondary';
-    const res = await api.call('test_provider', id, k || null, currentModel || null);
-    testBtn.disabled = false;
+    testBtn.disabled = true; saveBtn.disabled = true;
+    const done = () => { testBtn.disabled = false; saveBtn.disabled = false; };
+    if (k) {
+      showTest('Saving the key…', 'ui-text-secondary');
+      if (!(await saveTypedKey(k))) { done(); return; }
+    }
+    const savedNote = k ? 'Key saved. ' : '';
+    showTest(`${savedNote}Testing…`, 'ui-text-secondary');
+    const res = await api.call('test_provider', id, null, currentModel || null);
+    done();
     fetched.hidden = true; clear(fetched);
     if (res && res.ok) {
       const list = res.models || [];
       const lat = res.latency_s != null ? ` in ${Number(res.latency_s).toFixed(2)} s` : '';
-      testLine.textContent = `Connected${lat}. ${list.length ? `${list.length} model${list.length === 1 ? '' : 's'} available.` : ''}`.trim();
-      testLine.className = 'test-line small ok-text';
+      showTest(`${savedNote}Connected${lat}. ${list.length ? `${list.length} model${list.length === 1 ? '' : 's'} available.` : ''}`.trim(), 'ok-text');
       if (list.length) {
         for (const m of list) if (!dlist.querySelector(`option[value="${cssEsc(m)}"]`)) dlist.append(el('option', { value: m }));
         if (JSON.stringify(list) !== JSON.stringify(models)) {
@@ -858,9 +960,29 @@ function providerCard(v, spec) {
     } else {
       const err = (res && (res.error && typeof res.error === 'object' ? res.error.message : res.error)) || 'The test failed.';
       const hint = (res && (res.hint || (res.error && res.error.hint))) || '';
-      testLine.textContent = hint ? `${err} ${hint}` : err;
-      testLine.className = 'test-line small danger-text';
+      showTest(`${k ? 'Key saved, but the test failed: ' : ''}${hint ? `${err} ${hint}` : err}`, 'danger-text');
     }
+  });
+  const refreshBtn = btn('Refresh models', { 'aria-label': `Refresh the model list for ${v.display_name || id}` });
+  refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true;
+    testLine.textContent = 'Reading the model list…'; testLine.className = 'test-line small ui-text-secondary';
+    const res = await api.call('refresh_models', id);
+    refreshBtn.disabled = false;
+    const r = res && res.results && res.results[id];
+    if (!isOk(res) || !r) { testLine.textContent = errText(res); testLine.className = 'test-line small danger-text'; return; }
+    testLine.textContent = refreshSummary(r);
+    testLine.className = `test-line small ${r.ok ? 'ok-text' : 'danger-text'}`;
+    if (!r.ok) return;
+    const view = (res.providers || []).find((p) => p.id === id) || {};
+    models.splice(0, models.length, ...r.models);
+    currentModel = view.default_model || (r.models.includes(currentModel) ? currentModel : r.models[0] || '');
+    const modelContext = { ...(spec.model_context || {}), ...(r.contexts || {}) };
+    Object.assign(spec, { models: [...r.models], default_model: currentModel, model_context: modelContext });
+    if (S.cfg && S.cfg.providers) S.cfg.providers[id] = { ...(S.cfg.providers[id] || {}), models: [...r.models], default_model: currentModel, model_context: modelContext };
+    fillModels();
+    paintCtxHint();
+    fetched.hidden = true; clear(fetched);
   });
   removeBtn.addEventListener('click', async () => {
     takeKey();
@@ -869,7 +991,12 @@ function providerCard(v, spec) {
     setKey(res.key);
     testLine.textContent = 'Key removed.'; testLine.className = 'test-line small ui-text-secondary';
   });
-  keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); testBtn.click(); } });
+  // Enter saves the typed key and tests it; on an empty field it says to type a key first.
+  keyInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (keyInput.value.trim()) testBtn.click(); else saveBtn.click();
+  });
 
   // Remove provider (custom only) ----------------------------------------------
   let removeProvider = null;
@@ -910,12 +1037,20 @@ function providerCard(v, spec) {
       el('div', { class: 'field' }, [el('label', { for: `${uid}-model`, text: 'Model' }), select]),
       el('div', { class: 'field' }, [el('label', { for: `${uid}-model-custom`, text: 'Custom model name' }), custom, dlist]),
     ]),
+    el('div', { class: 'grid2' }, [
+      el('div', { class: 'field' }, [el('label', { for: `${uid}-ctx`, text: 'Context window (tokens)' }), ctxInput, ctxHint]),
+      el('div', { class: 'field' }, [el('label', { for: `${uid}-out`, text: 'Longest reply (tokens)' }), outInput]),
+    ]),
     el('div', { class: 'field' }, [
-      el('label', { for: `${uid}-key`, text: 'API key' }),
+      el('label', { for: `${uid}-key`, text: v.key && v.key.required === false ? 'API key (optional)' : 'API key' }),
       el('div', { class: 'key-row' }, [keyInput, eye]),
       keyLine,
+      v.docs_url ? el('p', { class: 'small' }, [el('a', {
+        href: v.docs_url, rel: 'noopener noreferrer', text: 'Where do I get a key?',
+        onclick: (e) => { e.preventDefault(); api.call('open_external', v.docs_url); },
+      })]) : null,
     ]),
-    el('div', { class: 'row' }, [saveBtn, testBtn, removeBtn]),
+    el('div', { class: 'row' }, [saveBtn, testBtn, refreshBtn, removeBtn]),
     testLine,
     fetched,
     msg,
@@ -932,6 +1067,15 @@ async function refreshKeyStatuses() {
 
 function initProviders() {
   $('local-save').addEventListener('click', saveLocal);
+  $('refresh-all').addEventListener('click', refreshAllModels);
+  $('auto-refresh').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    const res = await api.call('update_settings', { chat: { auto_refresh_models: want } });
+    if (!isOk(res)) { e.target.checked = !want; $('refresh-msg').className = 'small danger-text'; $('refresh-msg').textContent = errText(res); return; }
+    if (res.config) S.cfg = { ...S.cfg, ...res.config };
+    $('refresh-msg').className = 'small ui-text-secondary';
+    $('refresh-msg').textContent = want ? 'Model lists will refresh once a day.' : 'Automatic refresh is off.';
+  });
   for (const id of ['local-device', 'local-mpl']) $(id).addEventListener('input', () => { $('local-msg').textContent = ''; });
 
   const form = $('add-form');
@@ -976,9 +1120,50 @@ function fillGeneral() {
   $('g-hotkey').value = (c.ui && c.ui.hotkey) || '';
   $('g-reasoning').value = (c.chat && c.chat.show_reasoning) || 'collapsed';
   $('g-blur').checked = !!(c.ui && c.ui.hide_on_blur);
+  $('g-reply').checked = !(c.ui && c.ui.show_on_reply === false);   // on unless turned off
   const enabled = new Set((c.tools && c.tools.enabled) || []);
   for (const cb of document.querySelectorAll('[data-tool]')) cb.checked = enabled.has(cb.value);
+  $('g-personality').value = (c.chat && c.chat.system_prompt) || '';
+  $('g-instructions').value = (c.chat && c.chat.instructions) || '';
+  $('g-location').value = (c.tools && c.tools.location) || '';
+  $('g-units').value = (c.tools && c.tools.units) || 'metric';
+  fillFallback();
   S.generalDirty = false;
+}
+
+/** The ticked tools, plus any enabled tool this page has no box for. A save replaces
+ *  tools.enabled as a whole, so a tool without a box would otherwise be switched off. */
+function enabledTools() {
+  const boxes = [...document.querySelectorAll('[data-tool]')];
+  const listed = new Set(boxes.map((cb) => cb.value));
+  const others = ((S.cfg && S.cfg.tools && S.cfg.tools.enabled) || []).filter((t) => !listed.has(t));
+  return [...boxes.filter((cb) => cb.checked).map((cb) => cb.value), ...others];
+}
+
+/** Remote providers (not the local runtime) as [id, spec], in config order. */
+function remoteProviders() {
+  const all = (S.cfg && S.cfg.providers) || {};
+  return Object.entries(all).filter(([, p]) => p && p.kind !== 'ovms');
+}
+
+function fillFallbackModels() {
+  const list = $('g-fallback-models');
+  clear(list);
+  const spec = ((S.cfg && S.cfg.providers) || {})[$('g-fallback').value];
+  for (const m of (spec && spec.models) || []) list.append(el('option', { value: m }));
+  $('g-fallback-model').disabled = !$('g-fallback').value;
+}
+
+function fillFallback() {
+  const c = S.cfg || {};
+  const sel = $('g-fallback');
+  clear(sel);
+  sel.append(el('option', { value: '', text: 'Nothing (show the error)' }));
+  for (const [id, p] of remoteProviders()) sel.append(el('option', { value: id, text: p.display_name || id }));
+  const want = (c.chat && c.chat.fallback_provider) || '';
+  sel.value = [...sel.options].some((o) => o.value === want) ? want : '';
+  $('g-fallback-model').value = (c.chat && c.chat.fallback_model) || '';
+  fillFallbackModels();
 }
 
 async function refreshAutostart() {
@@ -991,6 +1176,7 @@ function initGeneral() {
   const form = $('general-form');
   form.addEventListener('input', () => { S.generalDirty = true; $('g-msg').textContent = ''; });
   form.addEventListener('change', () => { S.generalDirty = true; });
+  $('g-fallback').addEventListener('change', () => { $('g-fallback-model').value = ''; fillFallbackModels(); });
 
   $('g-autostart').addEventListener('change', async (e) => {
     const want = e.target.checked;
@@ -1013,16 +1199,32 @@ function initGeneral() {
     let bad = null;
     const fail = (k, m, input) => { setError(k, m); if (!bad) bad = input; };
     if ($('g-idle').value === '' || !Number.isInteger(idle) || idle < 0 || idle > 1440) fail('local.idle_unload_minutes', 'Enter a whole number of minutes from 0 to 1440.', $('g-idle'));
-    if ($('g-mpc').value === '' || !Number.isInteger(mpc) || mpc < 200 || mpc > 100000) fail('chat.max_prompt_chars', 'Enter a whole number from 200 to 100000.', $('g-mpc'));
+    if ($('g-mpc').value === '' || !Number.isInteger(mpc) || mpc < 200 || mpc > 4000000) fail('chat.max_prompt_chars', 'Enter a whole number from 200 to 4000000.', $('g-mpc'));
     const hotkey = $('g-hotkey').value.trim();
     if (!hotkey) fail('ui.hotkey', 'Enter a hotkey, for example Ctrl+Alt+C.', $('g-hotkey'));
+    const location = $('g-location').value.replace(/\s+/g, ' ').trim();
+    if (location.length > 100) fail('tools.location', 'Keep the location under 100 characters.', $('g-location'));
+    const fbModel = $('g-fallback-model').value.trim();
+    if (/\s/.test(fbModel)) fail('chat.fallback_model', 'Model names cannot contain spaces.', $('g-fallback-model'));
     if (bad) { bad.focus(); return; }
 
+    const fallback = $('g-fallback').value;
     const patch = {
       local: { idle_unload_minutes: idle },
-      chat: { max_prompt_chars: mpc, show_reasoning: $('g-reasoning').value },
-      ui: { hide_on_blur: $('g-blur').checked },
-      tools: { enabled: [...document.querySelectorAll('[data-tool]:checked')].map((c) => c.value) },
+      chat: {
+        max_prompt_chars: mpc,
+        show_reasoning: $('g-reasoning').value,
+        system_prompt: $('g-personality').value.trim(),
+        instructions: $('g-instructions').value.trim(),
+        fallback_provider: fallback,
+        fallback_model: fallback ? fbModel : '',
+      },
+      ui: { hide_on_blur: $('g-blur').checked, show_on_reply: $('g-reply').checked },
+      tools: {
+        enabled: enabledTools(),
+        location,
+        units: $('g-units').value,
+      },
     };
     $('g-save').disabled = true;
     const prevHotkey = (S.cfg && S.cfg.ui && S.cfg.ui.hotkey) || '';
@@ -1121,6 +1323,12 @@ function initLogs() {
 // ------------------------------------------------------------------- events ----
 
 function initEvents() {
+  // bridge.js is still waiting for the app (it never uses the dev mock inside WebView2);
+  // init() carries on if the bridge arrives.
+  on('bridge.unavailable', () => {
+    $('s-sub').textContent = 'Could not connect to AI Chat. Close this window and open Settings again from the tray; if that does not help, restart AI Chat.';
+    $('s-sub').className = 's-sub danger-text';
+  });
   on('runtime.status', (e) => {
     const changed = e.state !== S.runtime.state || e.model_id !== S.runtime.model_id;
     S.runtime = { ...S.runtime, ...e };
@@ -1150,6 +1358,7 @@ async function init() {
     try { await import('./settings-mock-ext.js'); } catch { /* the extension is optional */ }
   } else {
     $('s-sub').textContent = 'Changes are saved to config.toml.';
+    $('s-sub').className = 's-sub ui-text-tertiary';
   }
 
   const [st] = await Promise.all([api.call('get_state'), loadSettings()]);

@@ -18,9 +18,12 @@ returned, logged or stored anywhere but the keyring.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
+import functools
 import itertools
 import logging
+import sys
 import threading
 import time
 import webbrowser
@@ -29,8 +32,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from aichat import autostart, secrets
-from aichat.config import AppConfig, ProviderSpec, update_config
+from aichat import attachments, autostart, secrets
+from aichat.config import AppConfig, ProviderSpec, seed_providers, update_config
 from aichat.errors import AppError, ConfigError
 from aichat.logging_setup import RING_BUFFER
 from aichat.paths import Paths
@@ -41,6 +44,11 @@ _log = logging.getLogger(__name__)
 CONTRACT_METHODS: tuple[str, ...] = (
     "get_state",
     "send_message",
+    "attach_files",
+    "attach_data",
+    "remove_attachment",
+    "open_document",
+    "reveal_document",
     "stop_generation",
     "new_chat",
     "select_model",
@@ -53,6 +61,7 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "save_api_key",
     "remove_api_key",
     "test_provider",
+    "refresh_models",
     "get_settings",
     "update_settings",
     "list_providers",
@@ -78,10 +87,13 @@ CONTRACT_METHODS: tuple[str, ...] = (
 )
 
 LOCAL_ID = "local-npu"
+SEED_IDS = frozenset(seed_providers())
 DOWNLOAD_HEADROOM_BYTES = 2 * 1024**3
 CALL_TIMEOUT_S = 30.0
 PROBE_TIMEOUT_S = 90.0
 NETWORK_TIMEOUT_S = 60.0
+#: How many stopped request ids ``Api`` remembers (to skip ``on_reply_end`` for them).
+STOPPED_IDS_KEPT = 64
 
 _DOWNLOAD_STATUS = {
     "queued": "queued",
@@ -249,8 +261,14 @@ class Services:
         self.engine: Any = None  # chat.engine.ChatEngine (WS6)
         #: Called with the new config after every persisted change.
         self.on_config_changed: Callable[[AppConfig], None] | None = None
+        #: Called on the core loop (so it must not block) with the request id when a reply
+        #: ends with ``chat.done`` or an error, unless it was stopped (``cancelled``, or
+        #: ``stop_generation`` was called for it: the page abandoned it).
+        self.on_reply_end: Callable[[str], None] | None = None
         self.install_task: Any = None
         self.installing = False
+        #: Files attached in the composer, waiting for ``send_message``.
+        self.attachments = attachments.AttachmentStore()
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +282,8 @@ class Api:
     def __init__(self, services: Services) -> None:
         self._s = services
         self._request_ids = itertools.count(1)
+        #: Request ids the page stopped or abandoned (``stop_generation``), newest last.
+        self._stopped_ids: collections.deque[str] = collections.deque(maxlen=STOPPED_IDS_KEPT)
 
     # --- plumbing ---------------------------------------------------------------------
 
@@ -371,7 +391,9 @@ class Api:
             "default_model": default,
             "region": spec.region,
             "base_url": spec.base_url,
-            "builtin": bool(spec.builtin),
+            # Seeded providers cannot be removed, so they show as built in too.
+            "builtin": bool(spec.builtin) or spec.id in SEED_IDS,
+            "docs_url": spec.docs_url,
             "key": self._key_status(spec),
         }
 
@@ -474,11 +496,23 @@ class Api:
 
         return self._guard(impl, "get_state")
 
-    def send_message(self, text: str) -> dict[str, Any]:
+    def send_message(self, text: str, attachment_ids: list[str] | None = None) -> dict[str, Any]:
+        """Send the typed text plus the attached files ``attachment_ids`` (ids from
+        ``attach_files`` / ``attach_data``). A message may be files only. The ids stay
+        valid until the reply finishes (``chat.done``) or is stopped, so a Retry after an
+        error can send them again."""
+
         def impl() -> dict[str, Any]:
             message = str(text or "")
-            if not message.strip():
+            ids = self._attachment_ids(attachment_ids)
+            if not message.strip() and not ids:
                 return fail("bad_request", "Empty message.")
+            if len(ids) > attachments.MAX_FILES:
+                return fail(
+                    "bad_request",
+                    f"Attach at most {attachments.MAX_FILES} files to one message.",
+                    "Remove some files and send again.",
+                )
             limit = self._cfg.chat.max_prompt_chars
             if len(message) > limit:
                 return fail(
@@ -494,15 +528,212 @@ class Api:
                     "See Settings → Logs.",
                     "open_settings",
                 )
+            files = self._s.attachments.peek(ids)  # raises not_found for a stale id
             request_id = f"req_{next(self._request_ids)}"
-            self._submit(engine.send(message, request_id, self._emit), f"chat:{request_id}")
+            if files:
+                emit = self._report_reply_end(request_id, self._emit_then_release(ids))
+                coro = engine.send(message, request_id, emit, attachments=files)
+            else:
+                emit = self._report_reply_end(request_id, self._emit)
+                coro = engine.send(message, request_id, emit)
+            self._submit(coro, f"chat:{request_id}")
             return ok(request_id=request_id)
 
         return self._guard(impl, "send_message")
 
+    def _emit_then_release(self, ids: list[str]) -> Callable[[dict[str, Any]], None]:
+        """An event sink that forgets the attached files ``ids`` once the message they
+        were sent with is answered or stopped (they are in the conversation then)."""
+
+        def emit(evt: dict[str, Any]) -> None:
+            etype = evt.get("type")
+            if etype == "chat.done" or (etype == "chat.error" and evt.get("code") == "cancelled"):
+                self._s.attachments.discard(ids)
+            self._emit(evt)
+
+        return emit
+
+    def _report_reply_end(
+        self, request_id: str, emit: Callable[[dict[str, Any]], None]
+    ) -> Callable[[dict[str, Any]], None]:
+        """Wrap ``emit`` so that, after a reply's last event (``chat.done``, or a
+        ``chat.error`` that is not a stop) went to the page, ``on_reply_end`` hears of it.
+        Not for a request the page stopped or abandoned (``stop_generation``)."""
+
+        def wrapped(evt: dict[str, Any]) -> None:
+            emit(evt)
+            etype = evt.get("type")
+            if etype == "chat.done" or (etype == "chat.error" and evt.get("code") != "cancelled"):
+                hook = self._s.on_reply_end
+                if hook is None or request_id in self._stopped_ids:
+                    return
+                try:
+                    hook(request_id)
+                except Exception:  # noqa: BLE001 - a broken hook must not break the turn
+                    _log.exception("on_reply_end hook failed")
+
+        return wrapped
+
+    # --- attachments (popup) ---------------------------------------------------------------
+
+    @staticmethod
+    def _attachment_ids(value: Any) -> list[str]:
+        """``attachment_ids`` as a list of unique strings (``None`` or one id accepted)."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list | tuple):
+            raise AppError("attachment_ids must be a list of ids.", code="bad_request")
+        return list(dict.fromkeys(str(v) for v in value if v))
+
+    def _attach(self, loaders: list[tuple[str, Callable[[], Any]]]) -> dict[str, Any]:
+        """Run each ``(name, load)`` (``load`` returns ``(Extracted, size)``) and store what
+        reads. ``{ok, attachments: [{id, name, kind, chars, size, truncated, warning}],
+        errors: [{name, message}]}``; a file that cannot be read is an error entry, not a
+        failed call."""
+        added: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for i, (name, load) in enumerate(loaders):
+            if i >= attachments.MAX_FILES:
+                errors.append(
+                    {
+                        "name": name,
+                        "message": f"Only {attachments.MAX_FILES} files can be attached "
+                        "to one message.",
+                    }
+                )
+                continue
+            try:
+                file, size = load()
+            except AppError as exc:
+                errors.append({"name": name, "message": exc.message})
+                continue
+            except Exception as exc:  # noqa: BLE001 - one bad file must not fail the rest
+                _log.warning("attachment %s failed: %s", i, type(exc).__name__)
+                errors.append({"name": name, "message": "The file could not be read."})
+                continue
+            added.append(self._s.attachments.add(file, size).view())
+        _log.info("attached %d file(s), %d refused", len(added), len(errors))
+        return ok(attachments=added, errors=errors)
+
+    def _dialog_window(self) -> Any:
+        """The window whose page made this call (popup or settings), for the file dialog:
+        found on pywebview's call stack, else the active window, else the popup."""
+        frame = sys._getframe(1)
+        while frame is not None:
+            # webview/util.py ``js_bridge_call`` runs each call in a ``_call`` closure that
+            # holds the calling ``window``.
+            if frame.f_code.co_name == "_call" and frame.f_globals.get("__name__") == (
+                "webview.util"
+            ):
+                window = frame.f_locals.get("window")
+                if window is not None and hasattr(window, "create_file_dialog"):
+                    return window
+            frame = frame.f_back
+        with contextlib.suppress(Exception):
+            import webview
+
+            window = webview.active_window()
+            if window is not None:
+                return window
+        popup = self._s.popup
+        return getattr(popup, "window", None) if popup is not None else None
+
+    def attach_files(self) -> dict[str, Any]:
+        """Open the native multi-select file dialog of the calling window and attach the
+        chosen files. ``cancelled: true`` when the dialog was closed without a choice."""
+
+        def impl() -> dict[str, Any]:
+            import webview
+
+            window = self._dialog_window()
+            if window is None:
+                return fail("server", "No window is open to show the file dialog.")
+            popup = self._s.popup
+            suspend = getattr(popup, "suspend_blur", None)
+            on_popup = popup is not None and window is getattr(popup, "window", None)
+            with suspend() if on_popup and callable(suspend) else contextlib.nullcontext():
+                paths = window.create_file_dialog(
+                    webview.FileDialog.OPEN,
+                    allow_multiple=True,
+                    file_types=attachments.DIALOG_FILE_TYPES,
+                )
+            if not paths:
+                return ok(attachments=[], errors=[], cancelled=True)
+            if isinstance(paths, str):
+                paths = [paths]
+            max_chars = int(self._cfg.tools.attachment_max_chars)
+            loaders = [
+                (
+                    attachments.clean_name(p),
+                    functools.partial(attachments.read_path, p, max_chars=max_chars),
+                )
+                for p in paths
+            ]
+            return self._attach(loaders)
+
+        return self._guard(impl, "attach_files")
+
+    def attach_data(self, name: str, base64_data: str) -> dict[str, Any]:
+        """Attach a dropped or pasted file: ``base64_data`` is plain base64 or a ``data:``
+        URL. The size is checked before it is decoded. Same reply as ``attach_files``."""
+
+        def impl() -> dict[str, Any]:
+            file_name = attachments.clean_name(name)
+            max_chars = int(self._cfg.tools.attachment_max_chars)
+
+            def load() -> tuple[Any, int]:
+                data = attachments.decode_base64(str(base64_data or ""))
+                return attachments.extract_text(file_name, data, max_chars=max_chars), len(data)
+
+            return self._attach([(file_name, load)])
+
+        return self._guard(impl, "attach_data")
+
+    def remove_attachment(self, attachment_id: str) -> dict[str, Any]:
+        def impl() -> dict[str, Any]:
+            return ok(removed=self._s.attachments.remove(str(attachment_id or "")))
+
+        return self._guard(impl, "remove_attachment")
+
+    # --- documents (popup) -----------------------------------------------------------------
+
+    def _document_path(self, path: str) -> Any:
+        from aichat.tools import documents
+
+        folder = documents.documents_dir(self._cfg.tools.documents_dir)
+        return documents.resolve_document(folder, path)
+
+    def open_document(self, path: str) -> dict[str, Any]:
+        """Open a file ``create_document`` saved (only files in the documents folder)."""
+
+        def impl() -> dict[str, Any]:
+            from aichat.tools import documents
+
+            target = self._document_path(path)
+            documents.open_document(target)
+            return ok(path=str(target))
+
+        return self._guard(impl, "open_document")
+
+    def reveal_document(self, path: str) -> dict[str, Any]:
+        """Show a saved file selected in Explorer (only files in the documents folder)."""
+
+        def impl() -> dict[str, Any]:
+            from aichat.tools import documents
+
+            target = self._document_path(path)
+            documents.reveal_document(target)
+            return ok(path=str(target))
+
+        return self._guard(impl, "reveal_document")
+
     def stop_generation(self, request_id: str) -> dict[str, Any]:
         def impl() -> dict[str, Any]:
             engine = self._s.engine
+            if request_id:
+                self._stopped_ids.append(str(request_id))  # no on_reply_end for it
             if engine is not None and request_id:
                 self._s.loop.call(engine.cancel, str(request_id))
             return ok()
@@ -681,6 +912,70 @@ class Api:
 
         return self._guard(impl, "test_provider")
 
+    def refresh_models(self, provider_id_or_null: str | None = None) -> dict[str, Any]:
+        """Re-read the model list of one remote provider, or of every configured one, and
+        store it. ``{ok, results: {id: {ok, models, added, removed, error, hint, code}},
+        providers}``."""
+
+        def impl() -> dict[str, Any]:
+            pid = str(provider_id_or_null).strip() if provider_id_or_null else None
+            if pid is not None:
+                spec = self._spec(pid)
+                if spec.kind == "ovms":
+                    return fail("bad_request", "Local models are managed in Settings → Models.")
+            results = self._run(self._refresh_models_async(pid), timeout=PROBE_TIMEOUT_S)
+            return ok(results=results, providers=self._provider_views())
+
+        return self._guard(impl, "refresh_models")
+
+    async def _refresh_models_async(self, provider_id: str | None = None) -> dict[str, Any]:
+        """Core-loop half of :meth:`refresh_models` (also run daily by the app). One
+        provider failing never stops the others."""
+        from aichat.llm import model_refresh as mr
+
+        if provider_id is not None:
+            specs = [self._spec(provider_id)]
+        else:
+            specs = [s for s in self._cfg.providers.values() if s.kind != "ovms"]
+        results: dict[str, Any] = {}
+        changed = False
+        for spec in specs:
+            key, _source = secrets.get_api_key(spec.id, spec.api_key_env)
+            if provider_id is None and not mr.is_configured(spec, key):
+                continue  # "refresh all" skips providers without a key
+            fetched = await mr.fetch_models(spec, key)
+            entry: dict[str, Any] = {
+                "ok": fetched.ok,
+                "error": fetched.error,
+                "hint": fetched.hint,
+                "code": fetched.code,
+                "models": list(spec.models),
+                "added": [],
+                "removed": [],
+            }
+            if fetched.ok:
+                models, default = mr.merge_models(spec, fetched.models)
+                contexts = {m: c for m, c in fetched.contexts.items() if m in models}
+                entry.update(models=models, contexts=contexts)
+                entry.update(mr.change_summary(list(spec.models), models))
+                if (
+                    models != list(spec.models)
+                    or default != spec.default_model
+                    or any(spec.model_context.get(m) != c for m, c in contexts.items())
+                ):
+                    patch = {"models": models, "default_model": default, "model_context": contexts}
+                    self._apply_patch({"providers": {spec.id: patch}})
+                    changed = True
+            results[spec.id] = entry
+        if changed:
+            self._emit({"type": "settings.changed", "config": ui_config(self._cfg)})
+        _log.info(
+            "model lists refreshed: %s",
+            ", ".join(f"{k}={'ok' if v['ok'] else v['code']}" for k, v in results.items())
+            or "none",
+        )
+        return results
+
     # --- settings --------------------------------------------------------------------------
 
     def _settings_reply(
@@ -753,6 +1048,8 @@ class Api:
             if self._cfg.chat.provider == pid:
                 local = self._local_target_model() or self._cfg.chat.model
                 patch["chat"] = {"provider": LOCAL_ID, "model": local}
+            if self._cfg.chat.fallback_provider == pid:
+                patch.setdefault("chat", {}).update(fallback_provider="", fallback_model="")
             new_cfg, _restart = self._apply_patch(patch)
             with contextlib.suppress(Exception):
                 secrets.delete_api_key(pid)
@@ -966,10 +1263,11 @@ class Api:
             st = autostart.status()
             return ok(
                 enabled=st.enabled,
-                mode="startup-folder",
+                mode=st.mode,  # "task-scheduler" | "startup-folder"
                 mechanism=st.mechanism,
                 path=str(st.path) if st.path else None,
                 detail=st.detail,
+                duplicate=str(st.duplicate) if st.duplicate else None,
                 description=st.describe(),
             )
 
@@ -978,12 +1276,16 @@ class Api:
     def set_autostart(self, flag: bool) -> dict[str, Any]:
         def impl() -> dict[str, Any]:
             want = bool(flag)
-            st = autostart.enable(home=self._s.paths.home) if want else autostart.disable()
+            home = self._s.paths.home
+            st = autostart.enable(home=home) if want else autostart.disable(home=home)
             with contextlib.suppress(ConfigError):
                 self._apply_patch({"startup": {"autostart": want}})
             return ok(
                 enabled=st.enabled,
+                mode=st.mode,
+                mechanism=st.mechanism,
                 path=str(st.path) if st.path else None,
+                detail=st.detail,
                 description=st.describe(),
             )
 

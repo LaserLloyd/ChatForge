@@ -370,3 +370,26 @@ def test_model_dir_and_cache_dir_helpers(dirs) -> None:
     assert model_slug(REPO) == "OpenVINO--Qwen3-4B-int4-ov"
     with pytest.raises(ModelError):
         reg.model_dir("../x")
+
+
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "Pub/model-",  # the compile-cache slug strips a trailing "-" ...
+        "Pub/v1.0.-",  # ... and ".-" runs
+    ],
+)
+def test_delete_finds_the_compile_cache_the_runtime_wrote(dirs, repo_id) -> None:
+    from aichat.runtime import compile_cache
+
+    models, cache = dirs
+    make_model(models, repo_id)
+    compiled = compile_cache.cache_dir_for(cache, repo_id, "NPU", 4096)
+    compiled.mkdir(parents=True)
+    (compiled / "blob").write_bytes(b"c")
+    reg = Registry(models, cache)
+    assert reg.cache_dir_for(repo_id) == compile_cache.model_cache_root(cache, repo_id)
+    assert reg.cache_dir_for(repo_id) != cache / "ov" / model_slug(repo_id)
+    removed = reg.delete(repo_id)
+    assert len(removed) == 2
+    assert not compiled.parent.exists()

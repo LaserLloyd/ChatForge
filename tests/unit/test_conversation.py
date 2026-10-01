@@ -133,3 +133,59 @@ def test_load_missing_and_corrupt(tmp_path) -> None:
     assert (tmp_path / "conversation.json.bad").exists()
     assert not path.exists()
     store.delete(path)  # idempotent
+
+
+def turns(count: int) -> Conversation:
+    conv = Conversation()
+    for i in range(count):
+        conv.append({"role": "user", "content": f"u{i}", "_ts": 10.0 + 2 * i})
+        conv.append({"role": "assistant", "content": f"a{i}", "_ts": 11.0 + 2 * i})
+    return conv
+
+
+NOTICE = {"role": "notice", "kind": "context_cut", "content": store.CONTEXT_CUT_NOTICE}
+
+
+def test_notice_goes_before_the_first_message_the_model_still_sees() -> None:
+    conv = turns(3)
+    assert NOTICE not in conv.items()
+    conv.context_start_ts = 12.0
+    items = conv.items()
+    assert items[2] == NOTICE
+    assert [i.get("content") for i in items[:4]] == ["u0", "a0", store.CONTEXT_CUT_NOTICE, "u1"]
+    assert items.count(NOTICE) == 1
+    # A start between two messages: the notice goes before the next user message.
+    conv.context_start_ts = 12.5
+    assert conv.items()[4] == NOTICE
+    # Everything still seen, or the start message is gone (rolled back): no notice.
+    for start in (5.0, 10.0, 99.0):
+        conv.context_start_ts = start
+        assert NOTICE not in conv.items()
+
+
+def test_a_cut_message_is_marked_in_items() -> None:
+    conv = turns(2)
+    conv.mark_latest_cut()
+    assert conv.messages[2]["_cut"] is True and "_cut" not in conv.messages[0]
+    items = conv.items()
+    assert items[2]["cut"] is True
+    assert "cut" not in items[0] and "cut" not in items[1]
+
+
+def test_context_start_is_saved_and_cleared(tmp_path) -> None:
+    path = tmp_path / "conversation.json"
+    conv = turns(2)
+    conv.context_start_ts = 12.0
+    store.save(path, conv)
+    assert json.loads(path.read_text(encoding="utf-8"))["context_start_ts"] == 12.0
+    loaded = store.load(path)
+    assert loaded.context_start_ts == 12.0
+    assert loaded.items() == conv.items()
+    loaded.clear()
+    assert loaded.context_start_ts is None and loaded.items() == []
+    # A file from before this field, or with a bad value, has no start.
+    for value in (None, "12", True):
+        data = {"schema": 1, "messages": conv.messages}
+        if value is not None:
+            data["context_start_ts"] = value
+        assert Conversation.from_json(data).context_start_ts is None

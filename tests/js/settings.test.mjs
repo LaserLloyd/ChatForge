@@ -61,9 +61,14 @@ test('four tabs render with the ARIA tabs pattern', () => {
 test('Models tab lists the installed models with badges, size and actions', () => {
   const rows = [...doc.querySelectorAll('#model-list .model-row')];
   assert.equal(rows.length, 2);
+  // catalog.toml: Qwen2.5-1.5B is the recommended default; Qwen3-4B is outside the catalog.
+  assert.match(rows[0].textContent, /Qwen2\.5 1\.5B Instruct INT4/);
   assert.match(rows[0].textContent, /Recommended/);
-  assert.match(rows[0].textContent, /2\.29 GB/);
-  assert.match(rows[1].textContent, /Compiled for NPU/);
+  assert.match(rows[0].textContent, /930 MB/);
+  assert.match(rows[0].textContent, /Compiled for NPU/);
+  assert.match(rows[1].textContent, /Qwen3-4B-int4-ov/);
+  assert.match(rows[1].textContent, /Untested/);
+  assert.match(rows[1].textContent, /2\.29 GB/);
   for (const label of ['Load', 'Clear cache', 'Delete']) {
     assert.ok([...rows[0].querySelectorAll('button')].some((b) => b.textContent.trim() === label), label);
   }
@@ -102,6 +107,61 @@ test('Providers tab builds the MiniMax card with a masked key field', async () =
   assert.ok(card.querySelector('label[for="' + key.id + '"]'), 'key label');
 });
 
+test('every seeded remote provider has a card; StudioForge marks its key optional', () => {
+  const ids = [...doc.querySelectorAll('.provider-card')].map((c) => c.dataset.id);
+  assert.deepEqual(ids, ['minimax', 'studioforge', 'openai', 'deepseek']);
+  const sf = doc.querySelector('.provider-card[data-id="studioforge"]');
+  assert.match(sf.querySelector(`label[for="${sf.querySelector('input[data-key-input]').id}"]`).textContent, /optional/);
+  assert.match(sf.querySelector('.key-status').textContent, /optional for this server/);
+  const openai = doc.querySelector('.provider-card[data-id="openai"]');
+  assert.ok([...openai.querySelectorAll('a')].some((a) => /Where do I get a key/.test(a.textContent)), 'docs link');
+});
+
+/** Wait until `fn()` is truthy (or ~4 s). */
+async function until(fn) {
+  for (let i = 0; i < 80 && !fn(); i++) await sleep(50);
+  return fn();
+}
+
+test('Enter in the key field saves the key, then tests it', async () => {
+  const card = doc.querySelector('.provider-card[data-id="minimax"]');
+  const key = card.querySelector('input[data-key-input]');
+  const testLine = card.querySelector('.test-line');
+  key.value = 'test-key-not-real-123456';
+  key.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  assert.equal(key.value, '', 'the key left the field straight away');
+  assert.ok(await until(() => /Connected/.test(testLine.textContent)), testLine.textContent);
+  assert.match(testLine.textContent, /^Key saved\. Connected/);
+  // Saved, not just tested: the bridge reports it in the credential store.
+  assert.ok(await until(() => /Credential Manager/.test(card.querySelector('.key-status').textContent)));
+  const st = await dom.window.pywebview.api.list_providers();
+  assert.equal(st.providers.find((p) => p.id === 'minimax').key.source, 'keyring');
+});
+
+test('Enter on an empty key field asks for a key instead of testing', async () => {
+  const card = doc.querySelector('.provider-card[data-id="openai"]');
+  const key = card.querySelector('input[data-key-input]');
+  key.value = '';
+  key.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await sleep(20);
+  assert.match(card.querySelector('.test-line').textContent, /Type a key first/);
+});
+
+test('the local prompt window is checked against config.py (1024 to 8192)', async () => {
+  const input = $('local-mpl');
+  assert.equal(input.getAttribute('min'), '1024');
+  assert.equal(input.getAttribute('max'), '8192');
+  input.value = '512';
+  $('local-save').click();
+  await sleep(20);
+  assert.match($('err-local.max_prompt_len').textContent, /1024 to 8192/);
+  assert.equal(input.getAttribute('aria-invalid'), 'true');
+  input.value = '8192';
+  $('local-save').click();
+  assert.ok(await until(() => $('local-msg').textContent === 'Saved.'), $('local-msg').textContent);
+  assert.equal($('err-local.max_prompt_len').textContent, '');
+});
+
 test('the key field is cleared when switching tabs', () => {
   const key = doc.querySelector('input[data-key-input]');
   key.value = 'dummy-not-a-real-key';
@@ -115,14 +175,62 @@ test('General tab is populated and exposes the theme picker', () => {
   assert.equal($('g-mpc').value, '4000');
   assert.equal($('g-hotkey').value, 'Ctrl+Alt+C');
   assert.ok($('g-theme').hasAttribute('data-ui-theme-picker'));
-  assert.equal(doc.querySelectorAll('[data-tool]:checked').length, 4);
+  // config.ToolsCfg.enabled: every tool is on, and every tool has a box.
+  assert.equal(doc.querySelectorAll('[data-tool]').length, 9);
+  assert.equal(doc.querySelectorAll('[data-tool]:checked').length, 9);
+  assert.equal($('tool-create_document').checked, true);
+  // ui.show_on_reply: on by default, next to the hide-on-blur box.
+  assert.equal($('g-reply').checked, true);
+  assert.match($('g-reply').closest('label').textContent, /Show the popup when a reply finishes/);
+  assert.equal($('g-blur').closest('.switches'), $('g-reply').closest('.switches'));
+});
+
+test('the reply checkbox saves ui.show_on_reply', async () => {
+  const api = window.pywebview.api;
+  const submit = async () => {
+    $('g-msg').textContent = '';
+    $('general-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 30 && $('g-msg').textContent !== 'Saved.'; i++) await sleep(20);
+    assert.equal($('g-msg').textContent, 'Saved.');
+  };
+  $('g-reply').checked = false;
+  await submit();
+  assert.equal((await api.get_settings()).config.ui.show_on_reply, false);
+  $('g-reply').checked = true;
+  await submit();
+  assert.equal((await api.get_settings()).config.ui.show_on_reply, true);
+});
+
+test('saving the General tab unchanged keeps every tool on, even one without a box', async () => {
+  const api = window.pywebview.api;
+  const all = (await api.get_settings()).config.tools.enabled;
+  const submit = async () => {
+    $('general-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 30 && $('g-msg').textContent !== 'Saved.'; i++) await sleep(20);
+    assert.equal($('g-msg').textContent, 'Saved.');
+  };
+  await submit();
+  assert.deepEqual((await api.get_settings()).config.tools.enabled, all);
+  assert.ok(all.includes('create_document'));
+
+  // A tool this page does not list (a newer one) survives a save; settings.changed reloads it.
+  await api.update_settings({ tools: { enabled: [...all, 'future_tool'] } });
+  for (let i = 0; i < 30 && !(await api.get_settings()).config.tools.enabled.includes('future_tool'); i++) await sleep(20);
+  await sleep(50);
+  $('tool-calculator').checked = false;
+  await submit();
+  assert.deepEqual((await api.get_settings()).config.tools.enabled,
+    [...all.filter((t) => t !== 'calculator'), 'future_tool']);
+  await api.update_settings({ tools: { enabled: all } });
+  await sleep(50);
+  assert.equal($('tool-calculator').checked, true);
 });
 
 test('General tab shows a per-field error for an invalid value', async () => {
   $('g-mpc').value = '50';
   $('general-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
   await sleep(50);
-  assert.match($('err-chat.max_prompt_chars').textContent, /200 to 100000/);
+  assert.match($('err-chat.max_prompt_chars').textContent, /200 to 4000000/);
   assert.equal($('g-mpc').getAttribute('aria-invalid'), 'true');
 });
 

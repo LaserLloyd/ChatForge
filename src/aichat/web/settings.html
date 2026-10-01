@@ -59,6 +59,7 @@
             <button type="button" id="rt-install" class="btn btn-primary">Install OVMS</button>
             <button type="button" id="rt-recheck" class="btn">Re-check</button>
           </div>
+          <p id="rt-msg" class="ui-text-secondary small" role="status" aria-live="polite"></p>
           <div id="rt-progress" class="progress-wrap" hidden>
             <div class="bar" id="rt-bar" role="progressbar" aria-label="OVMS download" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
             <p id="rt-progress-text" class="ui-text-secondary small" role="status" aria-live="polite"></p>
@@ -111,8 +112,8 @@
             <summary>Advanced</summary>
             <div class="field">
               <label for="local-mpl">Max prompt length (tokens, NPU prompt window)</label>
-              <input id="local-mpl" type="number" class="input narrow" min="512" max="16384" step="256" data-field="local.max_prompt_len" inputmode="numeric">
-              <p class="ui-text-tertiary small" id="local-mpl-hint">Reload required: the model recompiles when this changes. Larger windows use more memory and take longer to compile; the usual ceiling is 8192.</p>
+              <input id="local-mpl" type="number" class="input narrow" min="1024" max="8192" step="256" data-field="local.max_prompt_len" inputmode="numeric" aria-describedby="local-mpl-hint err-local.max_prompt_len">
+              <p class="ui-text-tertiary small" id="local-mpl-hint">From 1024 to 8192. Reload required: the model recompiles when this changes. Larger windows use more memory and take longer to compile.</p>
               <p class="err" id="err-local.max_prompt_len" role="alert"></p>
             </div>
           </details>
@@ -122,6 +123,16 @@
             <span id="local-msg" class="ui-text-secondary small" role="status" aria-live="polite"></span>
           </div>
           <p class="ui-text-tertiary small">Idle unload time is under General.</p>
+        </section>
+
+        <section class="card" aria-labelledby="h-refresh">
+          <h2 id="h-refresh" class="h2">Model lists</h2>
+          <p class="ui-text-secondary small">Providers add new models over time. Refresh reads each provider's current list with its saved key; providers without a key are skipped.</p>
+          <div class="row">
+            <button type="button" id="refresh-all" class="btn">Refresh all model lists</button>
+            <label class="check" for="auto-refresh"><input id="auto-refresh" type="checkbox"> <span>Refresh automatically once a day</span></label>
+          </div>
+          <p id="refresh-msg" class="small" role="status" aria-live="polite"></p>
         </section>
 
         <div id="provider-cards" class="cards"></div>
@@ -179,8 +190,8 @@
             </div>
             <div class="field">
               <label for="g-mpc">Max prompt length (characters)</label>
-              <input id="g-mpc" type="number" class="input narrow" min="200" max="100000" step="100" data-field="chat.max_prompt_chars" inputmode="numeric" aria-describedby="g-mpc-hint err-chat.max_prompt_chars">
-              <p id="g-mpc-hint" class="ui-text-tertiary small">The composer limit. 200 to 100000.</p>
+              <input id="g-mpc" type="number" class="input narrow" min="200" max="4000000" step="100" data-field="chat.max_prompt_chars" inputmode="numeric" aria-describedby="g-mpc-hint err-chat.max_prompt_chars">
+              <p id="g-mpc-hint" class="ui-text-tertiary small">The longest message you can type; attached files have their own limit. 200 to 4000000 characters (MiniMax accepts about 1M tokens).</p>
               <p class="err" id="err-chat.max_prompt_chars" role="alert"></p>
             </div>
             <div class="field">
@@ -204,19 +215,81 @@
             </div>
           </div>
 
+          <fieldset class="tools prompts">
+            <legend>Personality and instructions</legend>
+            <div class="field">
+              <label for="g-personality">Personality (system prompt)</label>
+              <textarea id="g-personality" class="input" rows="3" maxlength="20000" data-field="chat.system_prompt" spellcheck="true"
+                placeholder="Default: You are AI Chat, a concise desktop assistant. Answer briefly, and work things out step by step when a question needs it."
+                aria-describedby="g-personality-hint err-chat.system_prompt"></textarea>
+              <p id="g-personality-hint" class="ui-text-tertiary small">Who the assistant is and how it sounds, e.g. "You are a friendly, witty assistant who explains things with everyday examples." Leave empty for the default.</p>
+              <p class="err" id="err-chat.system_prompt" role="alert"></p>
+            </div>
+            <div class="field">
+              <label for="g-instructions">Instructions</label>
+              <textarea id="g-instructions" class="input" rows="5" maxlength="20000" data-field="chat.instructions" spellcheck="true"
+                placeholder="What should AI Chat know about you, and how should it respond? For example:&#10;- I'm a teacher in Denver; I use Windows and Excel.&#10;- Use metric units and 24-hour times.&#10;- Keep answers short; use bullet lists for steps.&#10;- When you are not sure, say so instead of guessing."
+                aria-describedby="g-instructions-hint err-chat.instructions"></textarea>
+              <p id="g-instructions-hint" class="ui-text-tertiary small">Standing directions sent with every message: facts about you, preferences, rules. Like "custom instructions" in other assistants.</p>
+              <p class="err" id="err-chat.instructions" role="alert"></p>
+            </div>
+          </fieldset>
+
           <div class="switches">
             <label class="check" for="g-autostart"><input id="g-autostart" type="checkbox"> <span>Start at login</span></label>
             <p id="autostart-msg" class="ui-text-tertiary small" role="status" aria-live="polite"></p>
             <label class="check" for="g-blur"><input id="g-blur" type="checkbox" data-field="ui.hide_on_blur"> <span>Hide the popup when it loses focus</span></label>
+            <label class="check" for="g-reply"><input id="g-reply" type="checkbox" data-field="ui.show_on_reply"> <span>Show the popup when a reply finishes</span></label>
           </div>
 
           <fieldset class="tools">
             <legend>Tools the assistant may use</legend>
             <label class="check" for="tool-web_search"><input id="tool-web_search" type="checkbox" value="web_search" data-tool> <span>Web search</span></label>
+            <label class="check" for="tool-news_search"><input id="tool-news_search" type="checkbox" value="news_search" data-tool> <span>News search</span></label>
             <label class="check" for="tool-fetch_url"><input id="tool-fetch_url" type="checkbox" value="fetch_url" data-tool> <span>Fetch a web page</span></label>
+            <label class="check" for="tool-weather"><input id="tool-weather" type="checkbox" value="weather" data-tool> <span>Weather (Open-Meteo)</span></label>
+            <label class="check" for="tool-wikipedia"><input id="tool-wikipedia" type="checkbox" value="wikipedia" data-tool> <span>Wikipedia</span></label>
+            <label class="check" for="tool-exchange_rate"><input id="tool-exchange_rate" type="checkbox" value="exchange_rate" data-tool> <span>Exchange rates</span></label>
             <label class="check" for="tool-current_datetime"><input id="tool-current_datetime" type="checkbox" value="current_datetime" data-tool> <span>Current date and time</span></label>
             <label class="check" for="tool-calculator"><input id="tool-calculator" type="checkbox" value="calculator" data-tool> <span>Calculator</span></label>
+            <label class="check" for="tool-create_document"><input id="tool-create_document" type="checkbox" value="create_document" data-tool> <span>Create documents</span></label>
+            <p class="ui-text-tertiary small">The small local model is offered web search, page fetch, weather, date and time, and the calculator. Cloud and StudioForge models get every tool that is on.</p>
             <p class="err" id="err-tools.enabled" role="alert"></p>
+          </fieldset>
+
+          <div class="grid2">
+            <div class="field">
+              <label for="g-location">Your location</label>
+              <input id="g-location" type="text" class="input" maxlength="100" data-field="tools.location" placeholder="e.g. Lisbon, Portugal" autocomplete="off" aria-describedby="g-location-hint err-tools.location">
+              <p id="g-location-hint" class="ui-text-tertiary small">For weather and "near me" questions. Leave it empty and the assistant asks.</p>
+              <p class="err" id="err-tools.location" role="alert"></p>
+            </div>
+            <div class="field">
+              <label for="g-units">Units</label>
+              <select id="g-units" class="input" data-field="tools.units">
+                <option value="metric">Metric (°C, km/h, mm)</option>
+                <option value="imperial">Imperial (°F, mph, inches)</option>
+              </select>
+              <p class="err" id="err-tools.units" role="alert"></p>
+            </div>
+          </div>
+
+          <fieldset class="tools">
+            <legend>When the local model fails</legend>
+            <div class="grid2">
+              <div class="field">
+                <label for="g-fallback">Answer with</label>
+                <select id="g-fallback" class="input" data-field="chat.fallback_provider" aria-describedby="g-fallback-hint"></select>
+                <p class="err" id="err-chat.fallback_provider" role="alert"></p>
+              </div>
+              <div class="field">
+                <label for="g-fallback-model">Model</label>
+                <input id="g-fallback-model" type="text" class="input mono" data-field="chat.fallback_model" spellcheck="false" autocomplete="off" placeholder="The provider's default" list="g-fallback-models">
+                <datalist id="g-fallback-models"></datalist>
+                <p class="err" id="err-chat.fallback_model" role="alert"></p>
+              </div>
+            </div>
+            <p id="g-fallback-hint" class="ui-text-tertiary small">If the NPU model cannot load, crashes or times out, the message is sent again to this provider, for example StudioForge.</p>
           </fieldset>
 
           <div class="row">

@@ -24,7 +24,7 @@ from aichat.llm.providers import (
     make_quirks,
     resolve_base_url,
 )
-from aichat.llm.quirks import GenericQuirks, OvmsQuirks
+from aichat.llm.quirks import DeepSeekQuirks, GenericQuirks, OpenAIQuirks, OvmsQuirks
 from tests.fakes.openai_server import fake_openai_server
 
 KEY = "sk-cp-unit-test-key-0001"
@@ -92,7 +92,7 @@ def _custom(base_url="http://127.0.0.1:1234/v1", **kw) -> ProviderSpec:
 
 
 def test_seeds_and_regions() -> None:
-    assert set(SEED_PROVIDERS) == {"local-npu", "minimax"}
+    assert set(SEED_PROVIDERS) == {"local-npu", "minimax", "studioforge", "openai", "deepseek"}
     assert SEED_PROVIDERS["local-npu"].builtin is True
     mm = SEED_PROVIDERS["minimax"]
     assert mm.default_model == "MiniMax-M3"
@@ -119,6 +119,51 @@ def test_make_quirks_and_key_required() -> None:
     assert key_required(SEED_PROVIDERS["local-npu"]) is False
     assert key_required(_custom()) is False  # loopback server
     assert key_required(_custom(base_url="https://api.example.com/v1")) is True
+    # A LAN server can declare its key optional (StudioForge with server.api_key unset).
+    assert key_required(SEED_PROVIDERS["studioforge"]) is False
+    assert key_required(SEED_PROVIDERS["openai"]) is True
+    assert key_required(SEED_PROVIDERS["deepseek"]) is True
+    assert type(make_quirks(SEED_PROVIDERS["studioforge"])) is GenericQuirks
+    assert isinstance(make_quirks(SEED_PROVIDERS["openai"]), OpenAIQuirks)
+    assert isinstance(make_quirks(SEED_PROVIDERS["deepseek"]), DeepSeekQuirks)
+
+
+async def test_studioforge_without_a_key_gets_a_client(monkeypatch) -> None:
+    monkeypatch.delenv("STUDIOFORGE_API_KEY", raising=False)
+    provider = RemoteProvider(SEED_PROVIDERS["studioforge"])
+    assert provider.requires_key is False
+    async with await provider.client_for("any-model") as client:
+        assert client.base_url == "http://localhost:1234/v1"
+        assert "Authorization" not in client._headers(sse=True)
+
+
+def test_openai_quirks_rename_max_tokens() -> None:
+    body = OpenAIQuirks().prepare_body({"model": "m", "messages": [], "max_tokens": 64})
+    assert "max_tokens" not in body and body["max_completion_tokens"] == 64
+
+
+def test_deepseek_quirks_send_reasoning_only_for_this_turns_tool_calls() -> None:
+    from aichat.llm.events import AssistantMessage, ToolCall
+
+    q = DeepSeekQuirks()
+    call = ToolCall("c1", "web_search", "{}")
+    old_tool_msg = q.history_message(AssistantMessage("", "old thoughts", [call]))
+    answer = q.history_message(AssistantMessage("Done.", "final thoughts"))
+    new_tool_msg = q.history_message(AssistantMessage("", "new thoughts", [call]))
+    assert "reasoning_content" not in answer  # plain answers never carry reasoning
+    msgs = [
+        {"role": "user", "content": "first"},
+        old_tool_msg,
+        {"role": "tool", "tool_call_id": "c1", "content": "r"},
+        answer,
+        {"role": "user", "content": "second"},
+        new_tool_msg,
+        {"role": "tool", "tool_call_id": "c1", "content": "r"},
+    ]
+    out = q.prepare_body({"messages": msgs})["messages"]
+    assert "reasoning_content" not in out[1]  # an earlier turn
+    assert out[5]["reasoning_content"] == "new thoughts"  # this turn's tool call
+    assert all(not k.startswith("_") for m in out for k in m)
 
 
 # --------------------------------------------------------------------------- #
@@ -182,10 +227,30 @@ def test_remote_make_request_and_budget() -> None:
     assert req.extra_body == {"reasoning_split": True}
     no_tools = RemoteProvider(spec.model_copy(update={"supports_tools": False}))
     assert no_tools.make_request("m", [], tools).tools is None
+    # MiniMax: a 1M-token window, less room for the reply.
     assert provider.budget_params("MiniMax-M3") == {
-        "max_prompt_tokens": None,
+        "max_prompt_tokens": 1_000_000 - 4096 - 256,
         "tool_result_chars": 6000,
+        "local": False,
     }
+    # No window known: the cloud default (None), still not local.
+    plain = RemoteProvider(spec.model_copy(update={"context_tokens": None}), settings=_settings)
+    assert plain.budget_params("m")["max_prompt_tokens"] is None
+
+
+def test_context_window_reported_per_model_is_capped_by_the_setting() -> None:
+    from aichat.llm.providers import context_tokens_for, prompt_tokens_for
+
+    sf = SEED_PROVIDERS["studioforge"].model_copy(
+        update={"model_context": {"big": 262_144, "small": 32_768}}
+    )
+    assert context_tokens_for(sf, "big") == 262_144  # reported, no cap
+    assert context_tokens_for(sf, "other") is None  # unknown: cloud default
+    capped = sf.model_copy(update={"context_tokens": 65_536})
+    assert context_tokens_for(capped, "big") == 65_536
+    assert context_tokens_for(capped, "small") == 32_768
+    assert context_tokens_for(capped, "other") == 65_536
+    assert prompt_tokens_for(capped, "small") == 32_768 - 4096 - 256
 
 
 # --------------------------------------------------------------------------- #
@@ -314,7 +379,14 @@ def test_registry_minimax_region_switch_updates_base_url() -> None:
 def test_registry_replace_all_keeps_seeds() -> None:
     reg = ProviderRegistry()
     reg.replace_all({"lmstudio": _custom()})
-    assert {s.id for s in reg.list()} == {"local-npu", "minimax", "lmstudio"}
+    assert {s.id for s in reg.list()} == {
+        "local-npu",
+        "minimax",
+        "studioforge",
+        "openai",
+        "deepseek",
+        "lmstudio",
+    }
 
 
 def test_provider_timeouts_type() -> None:

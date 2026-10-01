@@ -118,7 +118,12 @@ def test_methods_keep_real_signatures_for_pywebview() -> None:
         name: [p for p in inspect.signature(getattr(Api, name)).parameters if p != "self"]
         for name in CONTRACT_METHODS
     }
-    assert params["send_message"] == ["text"]
+    assert params["send_message"] == ["text", "attachment_ids"]
+    assert params["attach_files"] == []
+    assert params["attach_data"] == ["name", "base64_data"]
+    assert params["remove_attachment"] == ["attachment_id"]
+    assert params["open_document"] == ["path"]
+    assert params["reveal_document"] == ["path"]
     assert params["select_model"] == ["provider_id", "model_id"]
     assert params["save_api_key"] == ["provider_id", "key"]
     assert params["test_provider"] == ["provider_id", "key_or_null", "model_or_null"]
@@ -254,6 +259,7 @@ def test_get_state_shape(api: Api, services: Services) -> None:
             "region",
             "base_url",
             "builtin",
+            "docs_url",
             "key",
         }
         assert set(p["key"]) >= {"source", "env_name", "env_overrides_saved"}
@@ -292,6 +298,53 @@ def test_update_settings_invalid_reports_field_errors(api: Api, services: Servic
     assert services.config.local.device == "NPU"
     reply = api.update_settings({"nope": {"x": 1}})
     assert reply["ok"] is False and "nope" in reply["errors"]
+
+
+def test_update_settings_location_units_and_fallback(api: Api, services: Services) -> None:
+    reply = api.update_settings(
+        {
+            "tools": {"location": "Porto,  Portugal", "units": "imperial"},
+            "chat": {"fallback_provider": "studioforge", "fallback_model": "m1"},
+        }
+    )
+    assert reply["ok"] is True
+    cfg = reply["config"]
+    assert (cfg["tools"]["location"], cfg["tools"]["units"]) == ("Porto, Portugal", "imperial")
+    assert (cfg["chat"]["fallback_provider"], cfg["chat"]["fallback_model"]) == (
+        "studioforge",
+        "m1",
+    )
+    text = services.paths.config_file.read_text(encoding="utf-8")
+    assert 'fallback_provider = "studioforge"' in text and 'units = "imperial"' in text
+    # The local runtime can never be its own fallback.
+    reply = api.update_settings({"chat": {"fallback_provider": "local-npu"}})
+    assert reply["config"]["chat"]["fallback_provider"] == ""
+
+
+def test_removing_the_fallback_provider_clears_the_fallback(api: Api, services: Services) -> None:
+    spec = {
+        "id": "acme",
+        "kind": "openai",
+        "display_name": "Acme",
+        "base_url": "https://acme.test/v1",
+        "models": ["a1"],
+    }
+    assert api.upsert_provider(spec)["ok"] is True
+    api.update_settings({"chat": {"fallback_provider": "acme", "fallback_model": "a1"}})
+    assert services.config.chat.fallback_provider == "acme"
+    assert api.remove_provider("acme")["ok"] is True
+    assert (services.config.chat.fallback_provider, services.config.chat.fallback_model) == (
+        "",
+        "",
+    )
+
+
+def test_seeded_providers_show_as_built_in(api: Api) -> None:
+    views = {p["id"]: p for p in api.list_providers()["providers"]}
+    for pid in ("minimax", "studioforge", "openai", "deepseek"):
+        assert views[pid]["builtin"] is True
+    assert views["studioforge"]["key"]["required"] is False
+    assert views["openai"]["docs_url"] == "https://platform.openai.com/api-keys"
 
 
 def test_get_settings_full_config(api: Api) -> None:
@@ -390,6 +443,96 @@ def test_send_message_dispatches_to_engine(api: Api, services: Services, loop) -
     assert api.get_state()["conversation"] == [{"role": "user", "content": "hi", "ts": 1}]
 
 
+class EndingEngine:
+    """Ends each request with ``outcome`` once ``release`` is set (immediately by default)."""
+
+    def __init__(self, outcome: dict) -> None:
+        import asyncio
+
+        self.outcome = outcome
+        self.release: asyncio.Event | None = None
+        self.done = asyncio.Event()
+        self.cancelled: list[str] = []
+
+    async def send(self, text, request_id, emit, attachments=None):
+        if self.release is not None:
+            await self.release.wait()
+        emit({**self.outcome, "request_id": request_id})
+        self.done.set()
+
+    def cancel(self, rid):
+        self.cancelled.append(rid)
+
+
+def _ends(api: Api, services: Services, loop, outcome: dict) -> tuple[list[str], list[dict]]:
+    """Send one message that ends with ``outcome``: (on_reply_end calls, page events)."""
+    import asyncio
+
+    services.loop = loop
+    engine = services.engine = EndingEngine(outcome)
+    ended: list[str] = []
+    services.on_reply_end = ended.append
+    reply = api.send_message("hi")
+    loop.run(asyncio.wait_for(engine.done.wait(), 2))
+    assert ended in ([], [reply["request_id"]])
+    return ended, services.events.drain()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [{"type": "chat.done"}, {"type": "chat.error", "code": "no_key"}],
+    ids=["done", "error"],
+)
+def test_reply_end_is_reported_after_the_last_event(api, services, loop, outcome) -> None:
+    ended, delivered = _ends(api, services, loop, outcome)
+    assert len(ended) == 1
+    assert delivered[-1]["type"] == outcome["type"]  # the page got the event first
+
+
+def test_a_stopped_reply_is_not_reported(api, services, loop) -> None:
+    ended, delivered = _ends(api, services, loop, {"type": "chat.error", "code": "cancelled"})
+    assert ended == [] and delivered[-1]["code"] == "cancelled"
+
+
+def test_a_reply_the_page_abandoned_is_not_reported(api, services, loop) -> None:
+    import asyncio
+
+    services.loop = loop
+    engine = services.engine = EndingEngine({"type": "chat.done"})
+    engine.release = asyncio.Event()
+    ended: list[str] = []
+    services.on_reply_end = ended.append
+    rid = api.send_message("hi")["request_id"]
+    # The page gave up on it (New chat, or Stop) but the engine finished it anyway.
+    assert api.stop_generation(rid)["ok"]
+    loop.call(engine.release.set)
+    loop.run(asyncio.wait_for(engine.done.wait(), 2))
+    assert engine.cancelled == [rid] and ended == []
+    # The next request is reported as usual.
+    engine.done.clear()
+    rid2 = api.send_message("again")["request_id"]
+    loop.run(asyncio.wait_for(engine.done.wait(), 2))
+    assert ended == [rid2]
+
+
+def test_a_failing_reply_end_hook_does_not_break_the_turn(api, services, loop) -> None:
+    import asyncio
+    import base64
+
+    services.loop = loop
+    engine = services.engine = EndingEngine({"type": "chat.done"})
+
+    def broken(_rid: str) -> None:
+        raise RuntimeError("boom")
+
+    services.on_reply_end = broken
+    aid = api.attach_data("a.txt", base64.b64encode(b"alpha").decode())["attachments"][0]["id"]
+    assert api.send_message("Read", [aid])["ok"] is True
+    loop.run(asyncio.wait_for(engine.done.wait(), 2))
+    assert aid not in services.attachments  # the files path still releases them
+    assert services.events.drain()[-1]["type"] == "chat.done"
+
+
 def test_window_ops(api: Api, services: Services) -> None:
     popup = FakePopup()
     services.popup = popup
@@ -414,15 +557,20 @@ def test_load_unload_without_manager(api: Api) -> None:
     assert api.unload_model()["error"]["code"] == "server"
 
 
-def test_logs_and_autostart_shapes(api: Api) -> None:
+def test_logs_and_autostart_shapes(api: Api, monkeypatch) -> None:
     import logging
+
+    from aichat import autostart
 
     logging.getLogger("aichat.test").warning("hello from the test")
     reply = api.get_logs(50, "WARNING")
     assert reply["ok"] and isinstance(reply["lines"], list)
+    # Never the real Task Scheduler from a test.
+    off = autostart.AutostartStatus(False, "Task Scheduler", None)
+    monkeypatch.setattr(autostart, "status", lambda: off)
     reply = api.get_autostart()
     assert reply["ok"] and set(reply) >= {"enabled", "mode", "path"}
-    assert reply["mode"] == "startup-folder"
+    assert reply["mode"] == "task-scheduler"
 
 
 def test_set_hotkey_validates_and_registers(api: Api, services: Services) -> None:

@@ -16,7 +16,8 @@ See `src/aichat/web/static/vendor/README.md` for full details.
 This project includes code adapted from the following repositories (all MIT License, owned by LaserLloyd):
 
 - **StudioForge** (`src/studioforge/`) - Configuration, paths, logging, autostart, supervisor patterns
-- **DisPatch_Chat** (`frontend/static/js/`) - Markdown rendering pipeline, chat UI patterns
+- **DisPatch_Chat** (`frontend/static/js/`) - Markdown rendering pipeline, chat UI patterns;
+  (`backend/app/llm_api.py`) - the OpenAI and DeepSeek provider presets
 - **CrucibleForge** (`crucibleforge/api.py`) - LLM streaming client and SSE handling
 
 Each adapted function carries an "Adapted from" comment indicating the source.
@@ -38,3 +39,13 @@ The following are downloaded and used at runtime (not redistributed):
 - **Qwen Models** (OpenVINO-optimized versions) - Apache-2.0 License
   - Downloaded from: https://huggingface.co/OpenVINO/
   - Used for local inference on NPU
+
+## Data Services
+
+The tools call these public APIs at run time (no key; nothing is stored beyond a short cache):
+
+- **Open-Meteo** (weather and geocoding) - data licensed CC BY 4.0; "Weather data by
+  Open-Meteo.com" is credited in every weather result
+- **Wikipedia** (page summaries) - text licensed CC BY-SA 4.0
+- **Frankfurter** (exchange rates) - republishes the European Central Bank's reference rates
+- **DuckDuckGo** via the `ddgs` package (web and news search)

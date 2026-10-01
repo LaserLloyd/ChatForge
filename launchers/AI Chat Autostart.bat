@@ -46,8 +46,10 @@ goto :done
 
 :done
 echo.
-REM Enabling writes a small hidden-launch script (AIChat.vbs) into your Startup
-REM folder; it needs no administrator rights and option 2 removes it again.
+REM Enabling writes a small hidden-launch script (AIChat.vbs in AppData\Local\AIChat)
+REM and registers a per-user Task Scheduler task, "AI Chat", that runs it at sign-in
+REM (the Startup folder is the fallback if Task Scheduler refuses). It needs no
+REM administrator rights, and option 2 removes the task and the script again.
 "%PY%" -m aichat autostart status
 echo.
 pause

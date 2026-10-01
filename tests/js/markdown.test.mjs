@@ -150,6 +150,18 @@ test('noLocal: a bare local path is not turned into a file link', () => {
   assert.doesNotMatch(out, /markdown-file-link/);
 });
 
+test('noLocal: a [[doc:...]] directive is plain text, never a card pointing at /api/files', () => {
+  for (const src of ['see [[doc:report.pdf]] here', '[[doc:abc123|Quarterly report.pdf]]', '[[doc:../../api/export?format=json]]']) {
+    const out = renderMarkdown(src, OPTS);
+    assert.doesNotMatch(out, /doc-card|api\/files|<a /, `${src} -> ${out}`);
+    assert.doesNotMatch(out, /\[\[doc:/, `${src} -> ${out}`);
+  }
+  assert.match(mount(renderMarkdown('see [[doc:report.pdf]] here', OPTS)).textContent, /see report\.pdf here/);
+  assert.match(mount(renderMarkdown('[[doc:abc123|Quarterly report.pdf]]', OPTS)).textContent, /Quarterly report\.pdf/);
+  // Without noLocal (DisPatch) the card is unchanged.
+  assert.match(renderMarkdown('[[doc:report.pdf]]'), /class="doc-card"/);
+});
+
 test('enhanceContent with noLocal strips a local-path anchor', () => {
   const div = mount('<p><a href="/home/me/file.txt">the file</a> and <a href="https://example.com/">web</a></p>');
   enhanceContent(div, { noLocal: true });

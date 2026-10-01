@@ -5,8 +5,11 @@
 # (MIT, LaserLloyd). Cut: server supervision, adoption, watchdog, ports, MCP, API client.
 
 Menu (PLAN WS7 step 6): status line, Open chat (default, so a left click opens it),
-Settings, Load/Unload model, Open logs folder, Start at login (checked), Quit. Handlers
-run on a spawned thread, never on pystray's message-pump thread.
+Settings, Load model, Unload models, Open logs folder, Start at login (checked), Restart,
+Quit. Handlers run on a spawned thread, never on pystray's message-pump thread.
+
+"Load model" is enabled while the local model is neither loaded nor loading; "Unload
+models" while it is loaded or loading (unloading also abandons a load in progress).
 """
 
 from __future__ import annotations
@@ -24,6 +27,9 @@ _log = logging.getLogger(__name__)
 
 APP_NAME = "AI Chat"
 
+#: ``runtime.status`` states in which the local model is loading.
+LOADING_STATES = frozenset({"starting", "compiling"})
+
 
 class Tray:
     """The notification-area icon. All callbacks are optional and run off the pump thread."""
@@ -39,6 +45,7 @@ class Tray:
         logs_dir: Path,
         autostart_enabled: Callable[[], bool],
         set_autostart: Callable[[bool], str | None],
+        on_restart: Callable[[], bool] | None = None,
         app_name: str = APP_NAME,
     ) -> None:
         self._on_open = on_open
@@ -46,6 +53,7 @@ class Tray:
         self._on_load = on_load
         self._on_unload = on_unload
         self._on_quit = on_quit
+        self._on_restart = on_restart
         self._logs_dir = logs_dir
         self._autostart_enabled = autostart_enabled
         self._set_autostart = set_autostart
@@ -54,7 +62,8 @@ class Tray:
         self.icon: Any = None
         self.state: IconState = "off"
         self.status: str = "No model loaded"
-        self.model_loaded = False
+        #: The local model's ``runtime.status`` state (``unloaded``, ``starting``, ...).
+        self.runtime_state: str | None = None
         self._thread: threading.Thread | None = None
         self._quitting = False
         self._lock = threading.Lock()
@@ -100,15 +109,36 @@ class Tray:
 
     # --- state ------------------------------------------------------------------------
 
-    def update(self, state: IconState, status: str, *, model_loaded: bool | None = None) -> None:
-        """Refresh the dot, tooltip and menu. Safe from any thread."""
+    @property
+    def model_loaded(self) -> bool:
+        return self.runtime_state == "ready"
+
+    @property
+    def model_loading(self) -> bool:
+        return self.runtime_state in LOADING_STATES
+
+    def can_load(self) -> bool:
+        """Whether "Load model" is enabled: the local model is neither loaded nor loading."""
+        return not (self.model_loaded or self.model_loading)
+
+    def can_unload(self) -> bool:
+        """Whether "Unload models" is enabled: the local model is loaded or loading."""
+        return self.model_loaded or self.model_loading
+
+    def update(self, state: IconState, status: str, *, runtime_state: str | None = None) -> None:
+        """Refresh the dot, tooltip and menu. Safe from any thread.
+
+        ``runtime_state`` is the local model's ``runtime.status`` state; it decides which of
+        Load model / Unload models is enabled (``None`` keeps the last one).
+        """
         # Adapted from StudioForge src/studioforge/tray/tray_app.py `_refresh` (MIT, LaserLloyd)
         with self._lock:
             changed = state != self.state or status != self.status
             self.state = state
             self.status = status
-            if model_loaded is not None:
-                self.model_loaded = model_loaded
+            if runtime_state is not None and runtime_state != self.runtime_state:
+                self.runtime_state = runtime_state
+                changed = True
         icon = self.icon
         if icon is None or not changed:
             return
@@ -145,11 +175,8 @@ class Tray:
             item("Open chat", self._menu_open, default=True),
             item("Settings", self._menu_settings),
             sep,
-            item(
-                lambda _i: "Unload model" if self.model_loaded else "Load model",
-                self._menu_load_toggle,
-                enabled=lambda _i: self.state != "loading",
-            ),
+            item("Load model", self._menu_load, enabled=lambda _i: self.can_load()),
+            item("Unload models", self._menu_unload, enabled=lambda _i: self.can_unload()),
             item("Open logs folder", self._menu_logs),
             sep,
             item(
@@ -158,6 +185,7 @@ class Tray:
                 checked=lambda _i: self._safe_autostart_enabled(),
             ),
             sep,
+            item("Restart", self._menu_restart, visible=self._on_restart is not None),
             item("Quit", self._menu_quit),
         )
 
@@ -193,8 +221,11 @@ class Tray:
     def _menu_settings(self, _icon: Any = None, _item: Any = None) -> None:
         self._spawn_thread(self._on_settings, "settings")
 
-    def _menu_load_toggle(self, _icon: Any = None, _item: Any = None) -> None:
-        self._spawn_thread(self._on_unload if self.model_loaded else self._on_load, "load")
+    def _menu_load(self, _icon: Any = None, _item: Any = None) -> None:
+        self._spawn_thread(self._on_load, "load")
+
+    def _menu_unload(self, _icon: Any = None, _item: Any = None) -> None:
+        self._spawn_thread(self._on_unload, "unload")
 
     def _menu_logs(self, _icon: Any = None, _item: Any = None) -> None:
         self._spawn_thread(self._open_logs, "logs")
@@ -233,3 +264,26 @@ class Tray:
                 return
             self._quitting = True
         self._spawn_thread(self._on_quit, "quit")
+
+    def _menu_restart(self, _icon: Any = None, _item: Any = None) -> None:
+        """Quit the same way as Quit and start a fresh copy (``on_restart``). When the new
+        copy cannot be started, ``on_restart`` returns False and this one keeps running."""
+        on_restart = self._on_restart
+        if on_restart is None:
+            return
+        with self._lock:
+            if self._quitting:
+                return
+            self._quitting = True
+
+        def work() -> None:
+            self.notify(f"Restarting {self._app_name}…")
+            restarted = False
+            try:
+                restarted = on_restart() is not False
+            finally:
+                if not restarted:
+                    with self._lock:
+                        self._quitting = False
+
+        self._spawn_thread(work, "restart")

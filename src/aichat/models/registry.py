@@ -35,6 +35,7 @@ from typing import Any, Final
 
 from aichat.models.catalog import Catalog, CatalogEntry
 from aichat.models.hf_search import ModelError, RepoFile, safe_relpath, validate_repo_id
+from aichat.runtime.compile_cache import model_cache_root
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +68,11 @@ _PART_SUFFIX: Final = ".part"
 
 
 def model_slug(repo_id: str) -> str:
-    """``OpenVINO/Qwen3-4B-int4-ov`` -> ``OpenVINO--Qwen3-4B-int4-ov`` (cache dir name)."""
+    """``OpenVINO/Qwen3-4B-int4-ov`` -> ``OpenVINO--Qwen3-4B-int4-ov`` (download group id).
+
+    Not the compile-cache directory name: that is
+    :func:`aichat.runtime.compile_cache.model_slug`, which also cleans and truncates.
+    """
     return repo_id.replace("/", "--")
 
 
@@ -247,9 +252,13 @@ class Registry:
         return target
 
     def cache_dir_for(self, repo_id: str) -> Path:
-        """``cache_dir/ov/<slug>``: this model's OVMS compile cache root."""
+        """``cache_dir/ov/<slug>``: this model's OVMS compile cache root.
+
+        The same path the runtime compiles into (:func:`compile_cache.model_cache_root`),
+        so :meth:`delete` finds it for every id, including ones the slug cleans or cuts.
+        """
         repo = validate_repo_id(repo_id)
-        target = self.cache_dir / "ov" / model_slug(repo)
+        target = model_cache_root(self.cache_dir, repo)
         self._assert_inside(target, self.cache_dir)
         return target
 

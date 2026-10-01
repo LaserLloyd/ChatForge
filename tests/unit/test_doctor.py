@@ -119,6 +119,39 @@ def test_autostart_verdicts(tmp_path):
     assert no_hidden.status == "warn" and "--hidden" in no_hidden.detail
 
 
+def test_autostart_task_scheduler_verdicts(tmp_path):
+    exe = r"C:\Repo\.venv\Scripts\pythonw.exe"
+    script = tmp_path / "AIChat.vbs"
+    text = f'shell.Run "{exe} -m aichat --hidden"'
+    good = doctor.check_autostart(True, script, text, exe, mechanism="Task Scheduler")
+    assert good.status == "pass"
+    assert good.detail == f"enabled via Task Scheduler ({script})"
+    shim = tmp_path / "Startup" / "AIChat.vbs"
+    twice = doctor.check_autostart(
+        True, script, text, exe, mechanism="Task Scheduler", duplicate=shim
+    )
+    assert twice.status == "warn" and str(shim) in twice.detail and "twice" in twice.detail
+    missing = doctor.check_autostart(True, script, "", exe, mechanism="Task Scheduler")
+    assert missing.status == "warn" and "missing" in missing.detail
+    assert "point at" not in missing.detail  # one clear problem, not three
+
+
+def test_autostart_verdict_reads_the_task_status(tmp_path):
+    from aichat import autostart
+
+    script = tmp_path / "AIChat.vbs"
+    exe = autostart.launch_argv()[0]
+    autostart._write_utf16(script, f'shell.Run "{exe} -m aichat --hidden"\n')
+    status = autostart.AutostartStatus(True, "Task Scheduler", script)
+    good = doctor.autostart_verdict(status)
+    assert good.status == "pass" and good.detail == f"enabled via Task Scheduler ({script})"
+    shim = tmp_path / "Startup" / "AIChat.vbs"
+    twice = doctor.autostart_verdict(
+        autostart.AutostartStatus(True, "Task Scheduler", script, duplicate=shim)
+    )
+    assert twice.status == "warn" and str(shim) in twice.detail
+
+
 def test_disk_verdicts():
     home = Path(r"C:\Users\x\AppData\Local\AIChat")
     assert doctor.check_disk(None, home).status == "warn"

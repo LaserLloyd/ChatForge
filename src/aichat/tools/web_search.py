@@ -44,7 +44,10 @@ def _format(results: list[dict[str, Any]]) -> str:
         title = " ".join(str(item.get("title") or "").split())
         url = str(item.get("href") or item.get("url") or "").strip()
         snippet = " ".join(str(item.get("body") or item.get("snippet") or "").split())
-        lines.append(f"{i}. {title} — {url} — {snippet[:SNIPPET_CHARS]}")
+        # News results also carry a date and a source; text results do not.
+        meta = " · ".join(str(item[k]).strip()[:40] for k in ("date", "source") if item.get(k))
+        head = f"{title} ({meta})" if meta else title
+        lines.append(f"{i}. {head} — {url} — {snippet[:SNIPPET_CHARS]}")
     return "\n".join(lines)
 
 
@@ -63,10 +66,10 @@ class WebSearch:
         self.min_interval_s = min_interval_s
         self.cache_ttl_s = cache_ttl_s
         self.cache_size = cache_size
-        self._cache: OrderedDict[tuple[str, int], tuple[float, str, int]] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, ...], tuple[float, str, int]] = OrderedDict()
         self._next_slot = 0.0
 
-    def _cache_get(self, key: tuple[str, int]) -> tuple[str, int] | None:
+    def _cache_get(self, key: tuple[str, ...]) -> tuple[str, int] | None:
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -77,7 +80,7 @@ class WebSearch:
         self._cache.move_to_end(key)
         return text, count
 
-    def _cache_put(self, key: tuple[str, int], text: str, count: int) -> None:
+    def _cache_put(self, key: tuple[str, ...], text: str, count: int) -> None:
         self._cache[key] = (_clock(), text, count)
         self._cache.move_to_end(key)
         while len(self._cache) > self.cache_size:
@@ -91,37 +94,44 @@ class WebSearch:
         if start > now:
             await _sleep(start - now)
 
-    async def search(self, query: str, max_results: int | None = None) -> ToolResult:
+    async def search(
+        self, query: str, max_results: int | None = None, *, kind: str = "text"
+    ) -> ToolResult:
+        """``kind`` is ``"text"`` (web results) or ``"news"`` (recent articles)."""
         query = " ".join(str(query or "").split())[:MAX_QUERY_CHARS]
         if not query:
             return ToolResult(False, "Search error: query is empty.", "search error")
         n = max(1, min(int(max_results or self.max_results), 10))
-        key = (query.casefold(), n)
+        news = kind == "news"
+        verb = "News" if news else "Searched"
+        key: tuple[str, ...] = (query.casefold(), str(n)) + (("news",) if news else ())
 
         cached = self._cache_get(key)
         if cached is not None:
             text, count = cached
-            return ToolResult(True, text, f"Searched: {query} ({count} results, cached)")
+            return ToolResult(True, text, f"{verb}: {query} ({count} results, cached)")
 
         await self._wait_turn()
         try:
             results = await asyncio.wait_for(
-                asyncio.to_thread(self._blocking_search, query, n), DDGS_TIMEOUT_S + 5
+                asyncio.to_thread(self._blocking_search, query, n, kind), DDGS_TIMEOUT_S + 5
             )
         except TimeoutError as exc:
             return ToolResult(False, _friendly_error(exc), "search timed out")
         except Exception as exc:
             if "no results" in str(exc).lower():
-                return ToolResult(True, "No results found.", f"Searched: {query} (0 results)")
+                return ToolResult(True, "No results found.", f"{verb}: {query} (0 results)")
             message = _friendly_error(exc)
             return ToolResult(False, message, "search failed")
         if not results:
-            return ToolResult(True, "No results found.", f"Searched: {query} (0 results)")
+            return ToolResult(True, "No results found.", f"{verb}: {query} (0 results)")
         text = _format(results)
         self._cache_put(key, text, len(results))
-        return ToolResult(True, text, f"Searched: {query} ({len(results)} results)")
+        return ToolResult(True, text, f"{verb}: {query} ({len(results)} results)")
 
     @staticmethod
-    def _blocking_search(query: str, n: int) -> list[dict[str, Any]]:
+    def _blocking_search(query: str, n: int, kind: str = "text") -> list[dict[str, Any]]:
         ddgs = _ddgs_factory(timeout=DDGS_TIMEOUT_S)
+        if kind == "news":
+            return list(ddgs.news(query, max_results=n) or [])
         return list(ddgs.text(query, max_results=n) or [])

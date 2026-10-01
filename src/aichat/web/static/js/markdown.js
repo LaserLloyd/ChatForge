@@ -568,10 +568,14 @@ function _docIcon(name) {
   return '📄';
 }
 
-function expandDocDirectives(text, parker) {
+function expandDocDirectives(text, parker, noLocal) {
   return subOutsideCode(text, (seg) => seg.replace(/\[\[doc:([^\]|]+)(?:\|([^\]]*))?\]\]/g, (_, id, name) => {
     const fid = id.trim();
     const fname = (name || fid).trim();
+    // noLocal (the AI Chat popup): there is no /api/files/ route behind the card, so a
+    // reply containing `[[doc:report.pdf]]` would link to a 404. Like `[[view:]]`, the
+    // directive degrades to its name as plain text.
+    if (noLocal) return fname;
     const icon = _docIcon(fname);
     // encodeURIComponent, not just attrEscape: attrEscape makes the id safe to
     // sit INSIDE an attribute, it does not stop the id from being read as PATH.
@@ -1381,7 +1385,7 @@ export function renderMarkdown(text, { noMedia = false, noLocal = false } = {}) 
   // cannot be rewritten a second time.
   const expanded = linkifyLocalPaths(
     expandViewDirectives(
-      expandDocDirectives(expandMediaDirectives(noted, parker), parker),
+      expandDocDirectives(expandMediaDirectives(noted, parker), parker, noLocal),
       parker, noLocal),
     parker, noLocal);
   ensureRenderer();

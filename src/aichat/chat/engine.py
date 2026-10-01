@@ -2,16 +2,35 @@
 
 One request, as events (every event also carries ``type`` and ``request_id``)::
 
-    chat.start      {provider, model}
+    chat.start      {provider, model, user_ts}       ``user_ts``: the ``_ts`` this message is
+                                                     stored with
     chat.phase      {phase: loading_model}           local model not ready yet
+    chat.context    {dropped_messages, first_kept_ts, message_cut}
+                                                     the conversation does not fit the
+                                                     model's context window: older turns
+                                                     were left out of the prompt (it holds
+                                                     the messages from the one stored at
+                                                     ``first_kept_ts`` on) and/or this
+                                                     message was cut (see below)
     chat.phase      {phase: generating}              each model round starts
     chat.phase      {phase: thinking}                first reasoning delta of a stretch
     chat.delta      {reasoning} | {content}
     chat.phase      {phase: calling_tool}
     chat.tool_call  {call_id, name, arguments}       arguments cut to 300 chars
-    chat.tool_result{call_id, name, ok, summary}
+    chat.tool_result{call_id, name, ok, summary, document?}
+                                                     ``document`` {name, path, size, kind}:
+                                                     a file the tool saved
+                                                     (``create_document``)
+    chat.reset      {reason}                         drop the text streamed so far
+                                                     (``refusal``: the reply said it could
+                                                     not look things up, so a tool runs and
+                                                     the model answers again)
+    chat.fallback   {from_provider, provider, model, reason}
+                                                     the local model failed; the message
+                                                     runs again on the fallback provider
     ... more rounds ...
-    chat.done       {finish_reason, usage, elapsed_s, tok_per_s, content, model, rounds}
+    chat.done       {finish_reason, usage, elapsed_s, tok_per_s, content, model, rounds,
+                     provider}
   or
     chat.error      {code, message, hint, action}    ``cancelled`` keeps the partial text
 
@@ -25,6 +44,21 @@ unknown provider, load failure) records nothing; any other error rolls the
 conversation back to where it was, so Retry re-sends cleanly. A cancel keeps the user
 message and the partial reply (marked ``stopped``) and answers any unanswered tool
 call with "Not run (stopped).".
+
+Attached files (``send(..., attachments=[Extracted, ...])``) are stored on the user
+message as ``_attachments`` with their text, next to the typed text; ``chat.history``
+adds them to the prompt as ``<file name="...">`` blocks, cut to fit each model's budget.
+``chat.max_prompt_chars`` limits the typed text only.
+
+Context window (``chat.history.fit_prompt``, no summarising): every round's prompt keeps
+the system prompt, this message and this turn's tool calls and results, and leaves out
+the oldest whole turns that do not fit; if this message alone does not fit, its end is
+cut. ``chat.context`` comes before the first round that leaves something out, again if a
+later round of the turn leaves out something else (more tool results, or the fallback
+provider's window), and once with ``dropped_messages: 0`` when a turn fits whole after
+an earlier one did not, so the popup can move or remove its divider. A turn that ends
+(done or stopped) stores where the model's view started as
+``Conversation.context_start_ts``; a message that was cut is stored with ``_cut``.
 """
 
 from __future__ import annotations
@@ -33,16 +67,18 @@ import asyncio
 import contextlib
 import json
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from aichat.attachments import MAX_FILES, as_record
 from aichat.chat import conversation as conv_store
-from aichat.chat import prompts
+from aichat.chat import prompts, research
 from aichat.chat.conversation import Conversation
-from aichat.chat.history import fit_messages, halve_history
+from aichat.chat.history import Fitted, fit_prompt
 from aichat.llm.errors import LLMError, normalize_base_url
 from aichat.llm.events import Completed, ContentDelta, ReasoningDelta, ToolCall
 from aichat.logging_setup import get_logger
@@ -60,6 +96,12 @@ NOTE_DUPLICATE = (
     "Not run: this exact call was already made; its result is above. Answer the user now."
 )
 NOTE_NO_TOOLS = "Not run: tools are not available for this answer."
+#: The local model's temperature cap once tool results are in the prompt.
+GROUNDED_TEMPERATURE = 0.3
+#: Added to the system prompt when ``create_document`` is offered.
+DOCUMENTS_SENTENCE = (
+    "When the user asks for a file or document, write it with create_document and mention its name."
+)
 
 
 @dataclass
@@ -83,6 +125,16 @@ class _Request:
     finish_reason: str | None = None
     served_model: str | None = None
     rounds: int = 0
+    #: The attached files as ``_attachments`` records (``attachments.as_record``).
+    files: list[dict[str, Any]] = field(default_factory=list)
+    #: The user message's ``_ts`` (sent with ``chat.start``; a fallback keeps it).
+    user_ts: float | None = None
+    #: ``Conversation.context_start_ts`` when the turn started (what the popup shows).
+    shown_start: float | None = None
+    #: The last ``chat.context`` fields sent in this turn.
+    context: dict[str, Any] | None = None
+    #: What the latest round's prompt left out.
+    fitted: Fitted | None = None
 
 
 #: What OVMS says (HTTP 400) when the prompt is over ``--max_prompt_len``.
@@ -103,6 +155,33 @@ def _canonical_args(arguments: str) -> str:
         return json.dumps(json.loads(arguments or "{}"), sort_keys=True, ensure_ascii=False)
     except ValueError:
         return (arguments or "").strip()
+
+
+def _plan_sig(plan: research.Plan) -> tuple[str, str]:
+    """The duplicate-detection signature of an engine-made tool call."""
+    return plan.name, _canonical_args(json.dumps(plan.arguments))
+
+
+def _model_for(configured: str | None, spec: Any) -> str:
+    """``configured`` if set, else the provider's default (or first) model."""
+    return configured or spec.default_model or (spec.models[0] if spec.models else "")
+
+
+def _with_documents_sentence(system: dict) -> dict:
+    """``system`` with :data:`DOCUMENTS_SENTENCE` after the tool guidance (or before the
+    date line when a custom prompt already carries its own guidance)."""
+    content = str(system.get("content") or "")
+    head, found, tail = content.partition(prompts.TOOLS_SENTENCE)
+    if found:
+        content = f"{head}{found} {DOCUMENTS_SENTENCE}{tail}"
+    else:
+        head, found, tail = content.partition("\nToday is ")
+        content = (
+            f"{head} {DOCUMENTS_SENTENCE}{found}{tail}"
+            if found
+            else f"{content}\n{DOCUMENTS_SENTENCE}"
+        )
+    return {**system, "content": content}
 
 
 def _add_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
@@ -157,7 +236,9 @@ class ChatEngine:
         return self._conv
 
     def conversation_items(self) -> list[dict]:
-        """``[{role, content, ts, reasoning?, tools?, model?, stopped?}]`` for the popup."""
+        """``[{role, content, ts, reasoning?, tools?, model?, stopped?, attachments?,
+        documents?, cut?}]`` plus a ``{role: "notice", kind: "context_cut"}`` item where the
+        model's view starts, for the popup (``Conversation.items``)."""
         return self._conv.items()
 
     def snapshot(self) -> dict:
@@ -196,18 +277,29 @@ class ChatEngine:
         self._conv = Conversation()
         self._persist()
 
-    async def send(self, text: str, request_id: str, emit: Emit) -> None:
+    async def send(
+        self, text: str, request_id: str, emit: Emit, attachments: list[Any] | None = None
+    ) -> None:
         """Run one user message to completion; progress and outcome arrive as events.
-        Never raises (except when the task itself is cancelled from outside)."""
+        ``attachments`` are ``attachments.Extracted`` files (or ``{name, kind, chars,
+        truncated, text}`` dicts). Never raises (except when the task itself is cancelled
+        from outside)."""
         loop = asyncio.get_running_loop()
         req = _Request(id=request_id, emit=emit, task=asyncio.current_task(), loop=loop)
+        req.files = [as_record(f) for f in attachments or []]
         self._active[request_id] = req
+        # The conversation and its rollback mark are taken only once this request holds
+        # the lock: a request still queued behind another must never roll back, repair or
+        # append to the conversation the running one is writing.
         conv = self._conv
         mark = len(conv)
-        t0 = self._mono()
+        started = False
         try:
             async with self._send_lock:
-                await self._run(req, conv, text, t0)
+                conv = self._conv
+                mark = len(conv)
+                started = True
+                await self._run(req, conv, text, self._mono())
         except asyncio.CancelledError:
             if not req.cancelled:
                 raise  # shutdown, not a user Stop
@@ -215,9 +307,14 @@ class ChatEngine:
             if task is not None:
                 while task.cancelling():
                     task.uncancel()
-            self._finish_cancelled(req, conv, text)
+            if started:
+                self._finish_cancelled(req, conv, text)
+            else:
+                self._emit_queued_cancel(req)
         except LLMError as exc:
-            if exc.code == "cancelled" or req.cancelled:
+            if not started:
+                self._fail(req, conv, len(conv), exc)  # nothing of ours to roll back
+            elif exc.code == "cancelled" or req.cancelled:
                 self._finish_cancelled(req, conv, text)
             else:
                 self._fail(req, conv, mark, exc)
@@ -226,7 +323,7 @@ class ChatEngine:
             self._fail(
                 req,
                 conv,
-                mark,
+                mark if started else len(conv),
                 LLMError(
                     "Something went wrong",
                     code="server",
@@ -262,8 +359,12 @@ class ChatEngine:
             req.phase = phase
             self._emit(req, "chat.phase", phase=phase)
 
-    def _user_message(self, text: str) -> dict:
-        return {"role": "user", "content": text, "_ts": self._clock()}
+    def _user_message(self, req: _Request, text: str) -> dict:
+        ts = req.user_ts if req.user_ts is not None else self._clock()
+        msg: dict[str, Any] = {"role": "user", "content": text, "_ts": ts}
+        if req.files:
+            msg["_attachments"] = [dict(f) for f in req.files]
+        return msg
 
     def _fail(self, req: _Request, conv: Conversation, mark: int, exc: LLMError) -> None:
         if conv is self._conv and len(conv) > mark:
@@ -276,14 +377,31 @@ class ChatEngine:
             message=exc.message,
             hint=exc.hint,
             action=getattr(exc, "action", None),
+            # After a fallback this is the fallback provider, so a "no key" error asks
+            # for the right key.
+            provider=req.provider,
+        )
+
+    def _emit_queued_cancel(self, req: _Request) -> None:
+        """A request stopped while still waiting for the lock: it never touched the
+        conversation, so there is nothing to record or repair."""
+        self._emit(
+            req,
+            "chat.error",
+            code="cancelled",
+            message="Stopped.",
+            hint=None,
+            action=None,
+            partial=False,
         )
 
     def _finish_cancelled(self, req: _Request, conv: Conversation, text: str) -> None:
         partial = bool(req.round_content or req.round_reasoning)
         if conv is self._conv:
             if not req.user_recorded:
-                conv.append(self._user_message(text))
+                conv.append(self._user_message(req, text))
                 req.user_recorded = True
+            self._store_context(req, conv)
             if partial:
                 msg: dict[str, Any] = {
                     "role": "assistant",
@@ -316,8 +434,10 @@ class ChatEngine:
     async def _run(self, req: _Request, conv: Conversation, text: str, t0: float) -> None:
         cfg = self._get_config()
         limit = int(cfg.chat.max_prompt_chars)
-        if not text or not text.strip():
+        if (not text or not text.strip()) and not req.files:
             raise LLMError("Type a message first", code="bad_request")
+        if len(req.files) > MAX_FILES:
+            raise LLMError(f"Attach at most {MAX_FILES} files to one message", code="bad_request")
         if len(text) > limit:
             raise LLMError(
                 f"The message is longer than {limit} characters",
@@ -326,34 +446,43 @@ class ChatEngine:
             )
         pid = cfg.chat.provider
         provider = self._providers.get(pid)
-        spec = provider.spec
-        model = cfg.chat.model or spec.default_model or (spec.models[0] if spec.models else "")
+        model = _model_for(cfg.chat.model, provider.spec)
         req.provider, req.model = pid, model
-        self._emit(req, "chat.start", provider=pid, model=model)
+        req.user_ts = self._clock()
+        req.shown_start = conv.context_start_ts
+        self._emit(req, "chat.start", provider=pid, model=model, user_ts=req.user_ts)
 
-        local = spec.kind == "ovms"
-        manager = getattr(provider, "manager", None) if local else None
-        if local:
-            status = manager.status() if manager is not None else {}
-            if status.get("state") != "ready" or status.get("model_id") != model:
-                self._phase(req, "loading_model")
-        client = await provider.client_for(model)  # remote: LLMError(no_key); local: loads
+        mark = len(conv)
         try:
-            conv.append(self._user_message(text))
-            req.user_recorded = True
-            if local and manager is not None:
-                async with self._lease(req, provider, manager, model) as base_url:
-                    if normalize_base_url(base_url) != client.base_url:
-                        await client.aclose()
-                        client = provider.make_client(base_url)
-                    await self._rounds(req, conv, provider, client, model, cfg, manager)
-            else:
-                await self._rounds(req, conv, provider, client, model, cfg, None)
-        finally:
-            with contextlib.suppress(Exception):
-                await client.aclose()
+            await self._attempt(req, conv, text, cfg, provider, model)
+        except LLMError as exc:
+            fallback = self._fallback_for(cfg, provider.spec, exc, req)
+            if fallback is None:
+                raise
+            fb_provider, fb_model = fallback
+            log.info(
+                "local_fallback",
+                request_id=req.id,
+                error=exc.code,
+                provider=fb_provider.spec.id,
+                model=fb_model,
+            )
+            if len(conv) > mark:
+                conv.rollback(mark)
+            self._reset_turn(req)
+            req.provider, req.model = fb_provider.spec.id, fb_model
+            self._emit(
+                req,
+                "chat.fallback",
+                from_provider=pid,
+                provider=fb_provider.spec.id,
+                model=fb_model,
+                reason=exc.message,
+            )
+            await self._attempt(req, conv, text, cfg, fb_provider, fb_model)
 
         content = "\n\n".join(p.strip() for p in req.turn_parts if p and p.strip())
+        self._store_context(req, conv)
         self._emit(
             req,
             "chat.done",
@@ -362,11 +491,70 @@ class ChatEngine:
             elapsed_s=round(self._mono() - t0, 3),
             tok_per_s=round(req.tok_per_s, 2) if req.tok_per_s is not None else None,
             content=content,
-            model=req.served_model or model,
+            model=req.served_model or req.model or model,
             rounds=req.rounds,
+            provider=req.provider,
         )
         conv.trim()
         self._persist()
+
+    async def _attempt(
+        self, req: _Request, conv: Conversation, text: str, cfg: Any, provider: Any, model: str
+    ) -> None:
+        """Run the message on one provider: load/lease the model, then the tool rounds."""
+        local = provider.spec.kind == "ovms"
+        manager = getattr(provider, "manager", None) if local else None
+        if local:
+            status = manager.status() if manager is not None else {}
+            if status.get("state") != "ready" or status.get("model_id") != model:
+                self._phase(req, "loading_model")
+        client = await provider.client_for(model)  # remote: LLMError(no_key); local: loads
+        try:
+            conv.append(self._user_message(req, text))
+            req.user_recorded = True
+            if local and manager is not None:
+                async with self._lease(req, provider, manager, model) as base_url:
+                    if normalize_base_url(base_url) != client.base_url:
+                        await client.aclose()
+                        client = provider.make_client(base_url)
+                    await self._rounds(req, conv, provider, client, model, cfg, manager, text)
+            else:
+                await self._rounds(req, conv, provider, client, model, cfg, None, text)
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+
+    def _fallback_for(
+        self, cfg: Any, spec: Any, exc: LLMError, req: _Request
+    ) -> tuple[Any, str] | None:
+        """``(provider, model)`` to retry a failed local message on, or ``None``."""
+        if req.cancelled or exc.code == "cancelled" or spec.kind != "ovms":
+            return None
+        fb = str(getattr(cfg.chat, "fallback_provider", "") or "").strip()
+        if not fb or fb == spec.id:
+            return None
+        try:
+            provider = self._providers.get(fb)
+        except LLMError:
+            log.warning("fallback_provider_unknown", provider=fb)
+            return None
+        if provider.spec.kind == "ovms":
+            return None
+        return provider, _model_for(getattr(cfg.chat, "fallback_model", ""), provider.spec)
+
+    @staticmethod
+    def _reset_turn(req: _Request) -> None:
+        """Forget a failed attempt's progress before the fallback runs."""
+        req.user_recorded = False
+        req.phase = None
+        req.round_content = req.round_reasoning = ""
+        req.turn_parts = []
+        req.usage = {}
+        req.tok_per_s = None
+        req.finish_reason = None
+        req.served_model = None
+        req.rounds = 0
+        req.fitted = None
 
     def _lease(self, req: _Request, provider: Any, manager: Any, model: str) -> Any:
         def on_cancel() -> None:
@@ -386,15 +574,26 @@ class ChatEngine:
         model: str,
         cfg: Any,
         manager: Any,
+        text: str = "",
     ) -> None:
         max_rounds = int(cfg.chat.max_tool_rounds)
+        local = provider.spec.kind == "ovms"
         use_tools = bool(provider.spec.supports_tools) and max_rounds > 0
         if use_tools and manager is not None and hasattr(manager, "model_supports_tools"):
             use_tools = bool(manager.model_supports_tools(model))
         enabled = list(cfg.tools.enabled) if use_tools else []
-        schemas = self._tools.schemas(enabled) if enabled else []
+        schemas = self._schemas(enabled, local=local) if enabled else []
+        offered = {s["function"]["name"] for s in schemas}
         budget = provider.budget(model)
-        system = prompts.system_message(self._now(), cfg.chat.system_prompt, tools=bool(schemas))
+        system = prompts.system_message(
+            self._now(),
+            cfg.chat.system_prompt,
+            tools=bool(schemas),
+            location=str(getattr(self._tools, "location", "") or ""),
+            instructions=str(getattr(cfg.chat, "instructions", "") or ""),
+        )
+        if "create_document" in offered:
+            system = _with_documents_sentence(system)
 
         tool_rounds = 0
         prev_sigs: set[tuple[str, str]] = set()
@@ -402,13 +601,24 @@ class ChatEngine:
         retried = False
         halve = False
         round_budget = budget
+        # The small local model tends to refuse live-data questions instead of calling a
+        # tool, so a clear live-data intent runs the tool before its first round.
+        helped = False
+        if local and offered and max_rounds > 0:
+            plan = research.plan(text, offered, eager=True)
+            if plan is not None:
+                helped = True
+                tool_rounds += 1
+                prev_sigs = {_plan_sig(plan)}
+                await self._auto_tool(req, conv, plan, enabled, budget.tool_result_chars, model)
         while True:
-            history = conv.llm_history()
-            if halve:
-                history = halve_history(history)
-            offered = [] if final_round else schemas
-            messages = fit_messages(system, history, offered, round_budget)
-            request = provider.make_request(model, messages, offered or None)
+            round_tools = [] if final_round else schemas
+            fitted = fit_prompt(system, conv.llm_history(), round_tools, round_budget, halve=halve)
+            self._report_context(req, conv, fitted)
+            request = provider.make_request(model, fitted.messages, round_tools or None)
+            if local and tool_rounds and request.temperature is not None:
+                # The small model embroiders tool results at its chat temperature.
+                request.temperature = min(request.temperature, GROUNDED_TEMPERATURE)
             try:
                 completed = await self._stream_round(req, client, request)
             except LLMError as exc:
@@ -422,6 +632,27 @@ class ChatEngine:
             msg = completed.message
             self._record_round(req, conv, client, completed, model)
             if not msg.tool_calls:
+                # A refusal ("I can't access real-time data") with tools on offer and none
+                # used yet: drop it, look the answer up, and let the model answer again.
+                if (
+                    offered
+                    and not final_round
+                    and not helped
+                    and tool_rounds == 0
+                    and research.needs_lookup(msg.content)
+                ):
+                    plan = research.plan(text, offered, eager=False)
+                    if plan is not None:
+                        helped = True
+                        tool_rounds += 1
+                        prev_sigs = {_plan_sig(plan)}
+                        self._drop_last_round(req, conv)
+                        self._emit(req, "chat.reset", reason="refusal")
+                        log.info("refusal_recovery", request_id=req.id, tool=plan.name)
+                        await self._auto_tool(
+                            req, conv, plan, enabled, budget.tool_result_chars, model
+                        )
+                        continue
                 return
             sigs = {(c.name, _canonical_args(c.arguments)) for c in msg.tool_calls}
             duplicate = bool(sigs & prev_sigs)
@@ -455,6 +686,80 @@ class ChatEngine:
             self._phase(req, "calling_tool")
             for call in msg.tool_calls:
                 await self._run_tool(req, conv, call, enabled, budget.tool_result_chars)
+
+    def _report_context(self, req: _Request, conv: Conversation, fitted: Fitted) -> None:
+        """Remember what this round's prompt left out, and send ``chat.context`` when the
+        popup has not been told yet (see the module docstring)."""
+        req.fitted = fitted
+        if fitted.message_cut:
+            conv.mark_latest_cut()
+        fields = {
+            "dropped_messages": fitted.dropped,
+            "first_kept_ts": fitted.first_kept_ts,
+            "message_cut": fitted.message_cut,
+        }
+        if req.context is None:
+            if not fitted.left_out and req.shown_start is None:
+                return  # it all fits, as it did before
+        elif fields == req.context:
+            return
+        req.context = fields
+        log.info(
+            "context_window",
+            request_id=req.id,
+            dropped=fitted.dropped,
+            message_cut=fitted.message_cut,
+        )
+        self._emit(req, "chat.context", **fields)
+
+    def _store_context(self, req: _Request, conv: Conversation) -> None:
+        """A finished or stopped turn keeps where the model's view started with the
+        conversation (``items()`` shows a notice there)."""
+        if req.fitted is not None and conv is self._conv:
+            conv.context_start_ts = req.fitted.first_kept_ts
+
+    def _schemas(self, enabled: list[str], *, local: bool) -> list[dict]:
+        try:
+            return self._tools.schemas(enabled, local=local)
+        except TypeError:  # a registry without the local subset
+            return self._tools.schemas(enabled)
+
+    def _drop_last_round(self, req: _Request, conv: Conversation) -> None:
+        """Forget the round just recorded (its text was streamed; ``chat.reset`` clears it)."""
+        if len(conv) and conv.messages[-1].get("role") == "assistant":
+            conv.rollback(len(conv) - 1)
+        if req.turn_parts:
+            req.turn_parts.pop()
+
+    async def _auto_tool(
+        self,
+        req: _Request,
+        conv: Conversation,
+        plan: research.Plan,
+        enabled: list[str],
+        max_chars: int,
+        model: str,
+    ) -> None:
+        """Make ``plan``'s tool call on the model's behalf: recorded as an assistant
+        tool call plus its result, exactly as if the model had asked for it."""
+        call = ToolCall(
+            id=f"call_auto_{uuid.uuid4().hex[:12]}",
+            name=plan.name,
+            arguments=json.dumps(plan.arguments, ensure_ascii=False),
+        )
+        conv.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call.to_openai()],
+                "_ts": self._clock(),
+                "_model": model,
+                "_auto": True,
+            }
+        )
+        log.info("auto_tool", request_id=req.id, tool=plan.name)
+        self._phase(req, "calling_tool")
+        await self._run_tool(req, conv, call, enabled, max_chars)
 
     def _record_round(
         self, req: _Request, conv: Conversation, client: Any, completed: Completed, model: str
@@ -529,6 +834,9 @@ class ChatEngine:
         except Exception as exc:  # noqa: BLE001 - a tool bug must not end the turn
             log.warning("tool_failed", tool=call.name, error=type(exc).__name__)
             result = ToolResult(False, f"Tool {call.name} failed.", f"{call.name} failed")
+        log.info("tool_call", request_id=req.id, tool=call.name, ok=bool(result.ok))
+        document = getattr(result, "document", None)
+        extra = {"document": dict(document)} if isinstance(document, dict) else {}
         self._emit(
             req,
             "chat.tool_result",
@@ -536,18 +844,20 @@ class ChatEngine:
             name=call.name,
             ok=bool(result.ok),
             summary=result.summary,
+            **extra,
         )
-        conv.append(
-            {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": result.content,
-                "_name": call.name,
-                "_ok": bool(result.ok),
-                "_summary": result.summary,
-                "_ts": self._clock(),
-            }
-        )
+        message: dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": result.content,
+            "_name": call.name,
+            "_ok": bool(result.ok),
+            "_summary": result.summary,
+            "_ts": self._clock(),
+        }
+        if extra:
+            message["_document"] = extra["document"]
+        conv.append(message)
 
     # ------------------------------------------------------------------ #
     # Persistence

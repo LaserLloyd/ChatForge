@@ -64,7 +64,7 @@
 
 **Threads.** The main thread runs pywebview (it must). The core thread runs one asyncio loop that owns every service. The pystray icon runs `icon.run()` in a daemon thread (the win32 backend allows this). The hotkey thread runs a message loop. The dispatch thread drains the event queue into `window.evaluate_js`, which blocks, so it must never be called on the loop. `js_api` calls arrive on pywebview worker threads and forward to the loop with `asyncio.run_coroutine_threadsafe(...).result(timeout)` for short calls. Long work returns an id immediately and reports through events.
 
-### 1.1 Repo tree (`C:\Users\jlloy\Desktop\Projects\AI Chat`)
+### 1.1 Repo tree (`%USERPROFILE%\Desktop\Projects\AI Chat`)
 
 ```
 pyproject.toml  uv.lock  package.json  package-lock.json  README.md  LICENSE (MIT)
@@ -843,7 +843,7 @@ Merge order: WS0 → WS2 → WS1-B → WS3 → WS5 → WS4 → WS6 → WS8a → 
 No step needs admin (UAC) on this machine. VC++ v14.50 and WebView2 are present, and OVMS binds loopback.
 
 ```powershell
-cd "C:\Users\jlloy\Desktop\Projects\AI Chat"
+cd "%USERPROFILE%\Desktop\Projects\AI Chat"
 py -3.12 -m uv venv --python 3.12 .venv
 py -3.12 -m uv sync --extra dev                      # ~100–150 MB of wheels (estimate)
 npm ci                                               # dev only: jsdom (~10 MB)
@@ -954,11 +954,11 @@ Only if VC++ is ever missing: `winget install --id Microsoft.VCRedist.2015+.x64 
 - [ ] `THIRD_PARTY_NOTICES.md` and `web/static/vendor/README.md` are present. Every copied module carries an "adapted from" comment. StudioForge is unmodified (`git -C ..\StudioForge status` is clean).
 
 ### Critical Files for Implementation
-- C:\Users\jlloy\Desktop\Projects\StudioForge\src\studioforge\core\supervisor.py (lines 700–1001 job object and kill tree, 2461–2760 spawn, pump and readiness)
-- C:\Users\jlloy\Desktop\Projects\StudioForge\src\studioforge\core\downloader.py (lines 197–633 part file, retry and progress; 1288–1590 transfer and finish)
-- C:\Users\jlloy\Desktop\Projects\_reference\DisPatch_Chat\frontend\static\js\markdown.js, plus js\main.js (lines 1281–1960 and 4760–4870) and js\llm.js (lines 275–395)
-- https://raw.githubusercontent.com/LaserLloyd/CrucibleForge/main/crucibleforge/api.py (`split_thinking`, `_merge_tool_call_deltas`, `stream_chat`) and C:\Users\jlloy\Desktop\Projects\_reference\DisPatch_Chat\backend\app\llm_api.py (lines 226–488 and 857–913)
-- C:\Users\jlloy\Desktop\Projects\_reference\UnifyingTheme\ui-theme\ (verbatim bundle), C:\Users\jlloy\Desktop\Projects\StudioForge\src\studioforge\tray\tray_app.py, and C:\Users\jlloy\Desktop\Projects\StudioForge\src\studioforge\core\autostart.py
+- %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\core\supervisor.py (lines 700–1001 job object and kill tree, 2461–2760 spawn, pump and readiness)
+- %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\core\downloader.py (lines 197–633 part file, retry and progress; 1288–1590 transfer and finish)
+- %USERPROFILE%\Desktop\Projects\_reference\DisPatch_Chat\frontend\static\js\markdown.js, plus js\main.js (lines 1281–1960 and 4760–4870) and js\llm.js (lines 275–395)
+- https://raw.githubusercontent.com/LaserLloyd/CrucibleForge/main/crucibleforge/api.py (`split_thinking`, `_merge_tool_call_deltas`, `stream_chat`) and %USERPROFILE%\Desktop\Projects\_reference\DisPatch_Chat\backend\app\llm_api.py (lines 226–488 and 857–913)
+- %USERPROFILE%\Desktop\Projects\_reference\UnifyingTheme\ui-theme\ (verbatim bundle), %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\tray\tray_app.py, and %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\core\autostart.py
 
 ---
 
@@ -1015,7 +1015,7 @@ Verdict: APPROVE WITH REQUIRED CHANGES. All required changes below are adopted. 
 5. **Repo:** private `LaserLloyd/AI-Chat`, as the owner requested. It stays private until the UnifyingTheme licence is reviewed.
 
 ### Execution rules for all agents
-- All agents share one working tree, `C:\Users\jlloy\Desktop\Projects\AI Chat`. **Edit only the files your workstream owns.** Do not run repo-wide `ruff format` or `ruff check --fix`. Run them on your own files only.
+- All agents share one working tree, `%USERPROFILE%\Desktop\Projects\AI Chat`. **Edit only the files your workstream owns.** Do not run repo-wide `ruff format` or `ruff check --fix`. Run them on your own files only.
 - Use `py -3.12 -m uv run ...` from the repo root, and never bare `python`. Do not add dependencies; ask the lead to change `pyproject.toml`.
 - Do not `git commit`, create branches or push. The lead commits each workstream when it lands.
 - Never type, print or log an API key. The owner enters keys in the app.

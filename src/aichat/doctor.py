@@ -172,17 +172,32 @@ def check_hotkey(spec: str, outcome: str, app_running: bool) -> Check:
     return Check("Hotkey", status, f"{spec}: {message or kind}")
 
 
-def check_autostart(enabled: bool, path: Path | None, shim_text: str, expected_exe: str) -> Check:
+def check_autostart(
+    enabled: bool,
+    path: Path | None,
+    shim_text: str,
+    expected_exe: str,
+    *,
+    mechanism: str = "Startup folder",
+    duplicate: Path | None = None,
+) -> Check:
+    """``path`` is the ``AIChat.vbs`` that runs at sign-in (``shim_text`` its source);
+    ``duplicate`` a Startup-folder shim found next to an enabled logon task."""
     if not enabled:
         return Check(
             "Autostart", "warn", "not enabled; turn on 'Start at login' in the tray or Settings"
         )
-    where = str(path) if path else "Startup folder"
+    where = f"{mechanism} ({path})" if path else mechanism
     problems = []
-    if "--hidden" not in shim_text:
-        problems.append("shim does not pass --hidden")
-    if expected_exe and expected_exe.casefold() not in shim_text.casefold():
-        problems.append(f"shim does not point at {expected_exe}")
+    if not shim_text:
+        problems.append("the launcher script is missing or empty")
+    else:
+        if "--hidden" not in shim_text:
+            problems.append("shim does not pass --hidden")
+        if expected_exe and expected_exe.casefold() not in shim_text.casefold():
+            problems.append(f"shim does not point at {expected_exe}")
+    if duplicate is not None:
+        problems.append(f"{duplicate} also starts AI Chat, so it launches twice; delete it")
     if problems:
         return Check("Autostart", "warn", f"{where}: {'; '.join(problems)}")
     return Check("Autostart", "pass", f"enabled via {where}")
@@ -342,6 +357,20 @@ def _shim_text(path: Path | None) -> str:
     return _read_shim(path)
 
 
+def autostart_verdict(status: Any) -> Check:
+    """:func:`check_autostart` for an :class:`aichat.autostart.AutostartStatus`."""
+    from aichat import autostart
+
+    return check_autostart(
+        status.enabled,
+        status.path,
+        _shim_text(status.path),
+        autostart.launch_argv()[0],
+        mechanism=status.mechanism,
+        duplicate=status.duplicate,
+    )
+
+
 def _safe(name: str, fn: Callable[[], Check]) -> Check:
     try:
         return fn()
@@ -415,12 +444,6 @@ def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
         keyring_present = secrets._keyring_get(MINIMAX_PROVIDER) is not None  # noqa: SLF001
         return check_minimax_key(env_present, keyring_present)
 
-    def autostart_check() -> Check:
-        status = autostart.status()
-        return check_autostart(
-            status.enabled, status.path, _shim_text(status.path), autostart.launch_argv()[0]
-        )
-
     return [
         _safe("Python", check_python),
         config_check,
@@ -438,7 +461,7 @@ def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
         _safe("Keyring backend", lambda: check_keyring(*keyring_backend_status())),
         _safe("MiniMax key", minimax_check),
         _safe("Hotkey", lambda: check_hotkey(cfg.ui.hotkey, probe_hotkey(cfg.ui.hotkey), running)),
-        _safe("Autostart", autostart_check),
+        _safe("Autostart", lambda: autostart_verdict(autostart.status())),
         _safe("Free disk", lambda: check_disk(free_bytes(paths.home), paths.home)),
         _safe(
             "App running",

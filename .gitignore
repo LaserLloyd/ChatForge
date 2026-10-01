@@ -9,3 +9,20 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Personal data never belongs in the repo. AI Chat keeps it outside the tree:
+# settings, conversation, logs and models in %LOCALAPPDATA%\AIChat (or $AICHAT_HOME),
+# API keys in Windows Credential Manager. These patterns catch copies made by hand.
+config.toml
+config.toml.*
+*.local.toml
+conversation.json
+state.json
+downloads.json
+.env.*
+*.log
+/logs/
+/models/
+/runtime/
+.claude/settings.local.json
+scratch/

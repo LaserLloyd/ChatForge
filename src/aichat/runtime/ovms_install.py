@@ -95,7 +95,7 @@ class LocalCfgLike(Protocol):
 class InstallError(RuntimeError):
     """Runtime install failed. ``code`` is one of: ``cancelled``, ``checksum``,
     ``size``, ``http``, ``network``, ``unsafe_zip``, ``bad_zip``, ``disk``,
-    ``unknown_variant``."""
+    ``unknown_variant``, ``in_use``."""
 
     def __init__(self, message: str, *, code: str, details: dict[str, Any] | None = None):
         super().__init__(message)
@@ -563,6 +563,31 @@ def safe_extract(zip_path: Path, dest: Path, *, cancel: asyncio.Event | None = N
     return written
 
 
+IN_USE_MESSAGE = (
+    "The installed runtime is in use, so it cannot be replaced. "
+    "Unload the model first, then install again."
+)
+
+
+def running_from(folder: Path) -> list[int]:
+    """Pids of running ``ovms.exe`` processes whose executable lies under ``folder``.
+
+    Never raises: a process that exits or denies access while being looked at is skipped.
+    """
+    import psutil
+
+    root = os.path.normcase(os.path.abspath(folder))
+    pids: list[int] = []
+    for proc in psutil.process_iter(["name"]):
+        with contextlib.suppress(psutil.Error, OSError):
+            if (proc.info.get("name") or "").lower() != "ovms.exe":
+                continue
+            exe = os.path.normcase(os.path.abspath(proc.exe()))
+            if exe.startswith(root + os.sep):
+                pids.append(proc.pid)
+    return pids
+
+
 def _rmtree(path: Path) -> None:
     def _onexc(func: Callable[..., Any], p: str, _exc: BaseException) -> None:
         with contextlib.suppress(OSError):
@@ -608,6 +633,11 @@ async def install(
             }
         )
         return exe
+    if final.exists() and await asyncio.to_thread(running_from, final):
+        # Replacing the folder renames it, which Windows refuses while ovms.exe runs from
+        # it ("Access is denied"). Say so before a 100+ MB download, not after.
+        progress({"status": "error", "error": IN_USE_MESSAGE, "code": "in_use"})
+        raise InstallError(IN_USE_MESSAGE, code="in_use")
 
     try:
         zip_path = await download_asset(
@@ -647,7 +677,11 @@ async def install(
         if final.exists():
             old = final.with_name(final.name + ".old")
             await asyncio.to_thread(_rmtree, old)
-            os.replace(final, old)
+            try:
+                os.replace(final, old)
+            except PermissionError as exc:  # ovms.exe (or another program) holds it
+                await asyncio.to_thread(_rmtree, tmp)
+                raise InstallError(IN_USE_MESSAGE, code="in_use") from exc
             await asyncio.to_thread(_rmtree, old)
         os.replace(tmp, final)
     except InstallError as exc:

@@ -8,19 +8,23 @@ over a stub supervisor whose "OVMS" is the fake server's ``/v3`` prefix.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from aichat.chat import prompts
+from aichat.chat.conversation import CONTEXT_CUT_NOTICE
 from aichat.chat.engine import ChatEngine
-from aichat.chat.history import PromptBudget, estimate_tokens
+from aichat.chat.history import CONTEXT_NOTE, MESSAGE_CUT_NOTE, PromptBudget, estimate_tokens
 from aichat.config import validate_config
-from aichat.llm.providers import ProviderRegistry
+from aichat.llm.providers import ProviderRegistry, RemoteProvider
 from aichat.paths import Paths
 from aichat.runtime.manager import LocalModelManager
-from aichat.tools.registry import ToolRegistry, ToolResult
+from aichat.tools.registry import LOCAL_TOOL_NAMES, ToolRegistry, ToolResult
 from tests.fakes.openai_server import (
     CapturedRequest,
     Reply,
@@ -92,7 +96,7 @@ class Harness:
         self.search_calls: list[str] = []
         self.search_result = lambda q: ToolResult(True, f"1. {q} — https://x — snippet", "1 result")
 
-        async def fake_search(query: str, max_results: int | None = None) -> ToolResult:
+        async def fake_search(query: str, max_results: int | None = None, **kw: Any) -> ToolResult:
             self.search_calls.append(query)
             return self.search_result(query)
 
@@ -157,6 +161,7 @@ async def test_event_sequence_and_fields(tmp_path) -> None:
         "request_id": "r1",
         "provider": "fake",
         "model": "fake-model",
+        "user_ts": 1_700_000_000.0,
     }
     assert "".join(e.get("content", "") for e in h.of("chat.delta", events)) == (
         "Hello there, friend."
@@ -563,5 +568,379 @@ async def test_custom_system_prompt_keeps_tool_guidance(tmp_path) -> None:
         h.cfg.tools.enabled = []
         await h.send("Hi", "r2")
         with_tools, without = (r.json["messages"][0]["content"] for r in srv.chat_requests)
-    assert with_tools.startswith("You are a pirate. Use tools only when they help.")
-    assert "Use tools" not in without and "Today is" in without
+    assert with_tools.startswith(f"You are a pirate. {prompts.TOOLS_SENTENCE}")
+    assert "call a tool" not in without and "Today is" in without
+
+
+# --------------------------------------------------------------------------- #
+# Research help: refusal recovery, eager tools for the local model, local fallback
+# --------------------------------------------------------------------------- #
+
+
+async def test_refusal_is_replaced_by_a_search_and_a_real_answer(tmp_path) -> None:
+    question = "Who won the Tigers game last night?"
+    with fake_openai_server(
+        sse(text_chunks("I'm sorry, but I don't have access to real-time data.", 2)),
+        sse(text_chunks("The Tigers won 5-3.", 2)),
+    ) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await h.send(question)
+        second = srv.chat_requests[1].json["messages"]
+    assert h.search_calls == [question]
+    assert [e["reason"] for e in h.of("chat.reset", events)] == ["refusal"]
+    done = events[-1]
+    assert done["type"] == "chat.done" and done["content"] == "The Tigers won 5-3."
+    # The refusal is gone; the engine-made call and its result are in the history.
+    assert not any("real-time" in str(m.get("content")) for m in second)
+    assert second[-2]["tool_calls"][0]["function"]["name"] == "web_search"
+    assert second[-1]["role"] == "tool" and "snippet" in second[-1]["content"]
+    items = h.engine.conversation_items()
+    assert items[-1]["content"] == "The Tigers won 5-3."
+    assert [t["name"] for t in items[-1]["tools"]] == ["web_search"]
+
+
+async def test_refusal_recovery_happens_once(tmp_path) -> None:
+    refusal = "I don't have access to real-time information."
+    with fake_openai_server(sse(text_chunks(refusal, 1)), sse(text_chunks(refusal, 1))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await h.send("What is the latest score?")
+        n = len(srv.chat_requests)
+    assert n == 2 and len(h.search_calls) == 1
+    assert events[-1]["type"] == "chat.done" and events[-1]["content"] == refusal
+
+
+async def test_no_refusal_recovery_without_tools(tmp_path) -> None:
+    refusal = "I don't have access to real-time information."
+    with fake_openai_server(sse(text_chunks(refusal, 1))) as srv:
+        h = Harness(tmp_path, srv.base_url, tools={"enabled": []})
+        events = await h.send("What is the latest score?")
+        n = len(srv.chat_requests)
+    assert n == 1 and h.search_calls == [] and not h.of("chat.reset", events)
+
+
+async def test_local_model_gets_the_weather_before_its_first_round(tmp_path, monkeypatch) -> None:
+    from aichat.tools import weather
+
+    seen: dict[str, Any] = {}
+
+    async def fake_weather(location, **kw):
+        seen.update(kw, location=location)
+        return ToolResult(True, "Weather for Porto, Lisbon, Portugal\nNow: 82°F, sunny", "Weather")
+
+    monkeypatch.setattr(weather, "run", fake_weather)
+    with fake_openai_server(sse(text_chunks("82°F and sunny.", 2)), prefix="/v3") as srv:
+        h = Harness(
+            tmp_path,
+            srv.base_url,
+            provider="local-npu",
+            chat={"model": QWEN},
+            manager=True,
+            tools={"location": "Lisbon, Portugal", "units": "imperial"},
+        )
+        events = await h.send("what's the weather in porto tomorrow?")
+        body = srv.chat_requests[0].json
+        n = len(srv.chat_requests)
+    assert seen["location"] == "porto"
+    assert seen["default_location"] == "Lisbon, Portugal" and seen["units"] == "imperial"
+    assert [e["name"] for e in h.of("chat.tool_call", events)] == ["weather"]
+    msgs = body["messages"]
+    assert "home location is Lisbon, Portugal" in msgs[0]["content"]
+    assert msgs[-1]["role"] == "tool" and "82°F" in msgs[-1]["content"]
+    assert n == 1 and events[-1]["content"] == "82°F and sunny."
+    assert {t["function"]["name"] for t in body["tools"]} <= set(LOCAL_TOOL_NAMES)
+
+
+async def test_local_failure_falls_back_to_the_configured_provider(tmp_path) -> None:
+    with fake_openai_server(sse(text_chunks("From the fallback.", 2)), prefix="/v3") as srv:
+        h = Harness(
+            tmp_path,
+            srv.base_url,
+            provider="local-npu",
+            chat={"model": QWEN, "fallback_provider": "fake", "fallback_model": "fake-model"},
+            manager=True,
+        )
+        h.sup.fail = RuntimeError("NPU driver crashed")
+        events = await h.send("Hi")
+        body = srv.chat_requests[0].json
+    fb = h.of("chat.fallback", events)
+    assert len(fb) == 1
+    assert (fb[0]["from_provider"], fb[0]["provider"], fb[0]["model"]) == (
+        "local-npu",
+        "fake",
+        "fake-model",
+    )
+    done = events[-1]
+    assert done["type"] == "chat.done" and done["content"] == "From the fallback."
+    assert done["provider"] == "fake" and body["model"] == "fake-model"
+    assert [i["role"] for i in h.engine.conversation_items()] == ["user", "assistant"]
+
+
+async def test_local_failure_without_a_fallback_is_an_error(tmp_path) -> None:
+    with fake_openai_server(prefix="/v3") as srv:
+        h = Harness(
+            tmp_path, srv.base_url, provider="local-npu", chat={"model": QWEN}, manager=True
+        )
+        h.sup.fail = RuntimeError("NPU driver crashed")
+        events = await h.send("Hi")
+    assert events[-1]["type"] == "chat.error"
+    assert events[-1]["code"] == "model_loading_failed"
+    assert not h.of("chat.fallback", events)
+    assert h.engine.conversation_items() == []
+
+
+async def test_fallback_after_the_local_request_failed_rolls_everything_back(
+    tmp_path, monkeypatch
+) -> None:
+    from aichat.tools import weather
+
+    async def fake_weather(location, **kw):
+        return ToolResult(True, "Weather for Porto\nNow: 28°C", "Weather")
+
+    monkeypatch.setattr(weather, "run", fake_weather)
+    # The local model loads, the eager weather call runs, then OVMS answers 500.
+    with fake_openai_server(
+        json_reply({"error": {"message": "NPU device lost"}}, status=500),
+        sse(text_chunks("Sunny in Porto.", 2)),
+        prefix="/v3",
+    ) as srv:
+        h = Harness(
+            tmp_path,
+            srv.base_url,
+            provider="local-npu",
+            chat={"model": QWEN, "fallback_provider": "fake"},
+            manager=True,
+        )
+        events = await h.send("what's the weather in Porto today?")
+        fallback_body = srv.chat_requests[1].json
+    assert len(h.of("chat.fallback", events)) == 1
+    assert events[-1]["type"] == "chat.done" and events[-1]["content"] == "Sunny in Porto."
+    # The local attempt (user message, engine-made weather call and its result) is gone:
+    # the fallback request starts again from the user message.
+    roles = [m["role"] for m in fallback_body["messages"]]
+    assert roles == ["system", "user"]
+    msgs = h.engine.conversation.messages
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert not any(m.get("_auto") for m in msgs)
+
+
+async def test_eager_call_counts_for_duplicates_and_caps_temperature(tmp_path, monkeypatch) -> None:
+    from aichat.tools import weather
+
+    calls: list[str] = []
+
+    async def fake_weather(location, **kw):
+        calls.append(location)
+        return ToolResult(True, "Weather for Porto\nNow: 28°C", "Weather")
+
+    monkeypatch.setattr(weather, "run", fake_weather)
+    again = sse(tool_call_chunks([("w2", "weather", json.dumps({"location": "Porto"}))]))
+    with fake_openai_server(again, sse(text_chunks("28°C.", 1)), prefix="/v3") as srv:
+        h = Harness(
+            tmp_path, srv.base_url, provider="local-npu", chat={"model": QWEN}, manager=True
+        )
+        events = await h.send("what's the weather in Porto?")
+        first, second = (r.json for r in srv.chat_requests)
+    assert calls == ["Porto"]  # the model's identical repeat was not run
+    assert first["temperature"] == 0.3  # tool results are in: grounded temperature
+    assert "tools" not in second  # the duplicate ended the tool loop
+    assert events[-1]["content"] == "28°C."
+
+
+async def test_error_event_names_the_provider_that_failed(
+    tmp_path, fake_keyring, monkeypatch
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)  # never reach the real OpenAI
+    with fake_openai_server(prefix="/v3") as srv:
+        h = Harness(
+            tmp_path,
+            srv.base_url,
+            provider="local-npu",
+            chat={"model": QWEN, "fallback_provider": "openai"},
+            manager=True,
+        )
+        h.sup.fail = RuntimeError("NPU driver crashed")
+        events = await h.send("Hi")
+    # OpenAI has no key: the error asks for the OpenAI key, not one for the local model.
+    err = events[-1]
+    assert err["type"] == "chat.error" and err["code"] == "no_key"
+    assert err["provider"] == "openai"
+
+
+async def test_a_promised_lookup_is_carried_out(tmp_path) -> None:
+    question = "What temperature should I bake chicken at?"
+    with fake_openai_server(
+        sse(text_chunks("I will use my search engine. Please wait while I fetch data.", 2)),
+        sse(text_chunks("Bake it at 220°C.", 1)),
+    ) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await h.send(question)
+    assert h.search_calls == [question]
+    assert [e["reason"] for e in h.of("chat.reset", events)] == ["refusal"]
+    assert events[-1]["content"] == "Bake it at 220°C."
+
+
+async def test_a_queued_send_that_fails_leaves_the_running_turn_alone(tmp_path) -> None:
+    """A second message sent while one is streaming waits for the lock; if it is cancelled
+    before it starts, the first turn's history must be untouched (bug sweep finding)."""
+    with fake_openai_server(
+        sse(text_chunks("Reply A.", 4)), sse(text_chunks("Reply B.", 1))
+    ) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        first = asyncio.create_task(h.engine.send("A", "rA", h.events.append))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(h.engine.send("B", "rB", h.events.append))
+        await asyncio.sleep(0)
+        h.engine.cancel("rB")
+        await asyncio.gather(first, second)
+    roles = [(m["role"], m.get("content")) for m in h.engine.conversation.messages]
+    assert roles == [("user", "A"), ("assistant", "Reply A.")]
+    b_events = [e for e in h.events if e["request_id"] == "rB"]
+    assert b_events[-1]["type"] == "chat.error" and b_events[-1]["code"] == "cancelled"
+
+
+# --------------------------------------------------------------------------- #
+# Context window: dropped turns, cut messages, chat.context
+# --------------------------------------------------------------------------- #
+
+
+def windowed(tmp_path: Path, base_url: str, monkeypatch, tokens: int | None, **kw: Any) -> Harness:
+    """A harness whose remote provider has a ``tokens`` prompt budget, a short fixed
+    system prompt and date, and a clock that ticks once per message (100.0, 101.0, ...)."""
+    chat = {"system_prompt": "You are terse.", **kw.pop("chat", {})}
+    h = Harness(tmp_path, base_url, chat=chat, **kw)
+    set_window(monkeypatch, tokens)
+    h.engine._clock = itertools.count(100.0).__next__
+    h.engine._now = lambda: datetime(2026, 10, 1, 9, 0).astimezone()
+    return h
+
+
+def set_window(monkeypatch, tokens: int | None) -> None:
+    monkeypatch.setattr(
+        RemoteProvider, "budget", lambda self, model: PromptBudget(tokens, local=False)
+    )
+
+
+def old_turns(h: Harness, count: int, size: int = 450) -> None:
+    """``count`` stored turns, stamped 10.0, 11.0, ... (user, assistant, user, ...)."""
+    for i in range(count):
+        h.engine.conversation.append(
+            {"role": "user", "content": f"old question {i} " + "q" * size, "_ts": 10.0 + 2 * i}
+        )
+        h.engine.conversation.append(
+            {"role": "assistant", "content": f"old answer {i} " + "a" * size, "_ts": 11.0 + 2 * i}
+        )
+
+
+def context_events(h: Harness, events: list[dict]) -> list[dict]:
+    return [{k: v for k, v in e.items() if k != "type"} for e in h.of("chat.context", events)]
+
+
+async def test_dropped_turns_are_reported_and_the_view_start_is_kept(tmp_path, monkeypatch) -> None:
+    with fake_openai_server(sse(text_chunks("Sure.", 1))) as srv:
+        h = windowed(tmp_path, srv.base_url, monkeypatch, 900, chat={"max_tool_rounds": 0})
+        old_turns(h, 4)
+        events = await h.send("New question")
+        sent = srv.chat_requests[0].json["messages"]
+    types = [e["type"] for e in events]
+    assert types[:3] == ["chat.start", "chat.context", "chat.phase"] and types[-1] == "chat.done"
+    assert context_events(h, events) == [
+        {"request_id": "r1", "dropped_messages": 4, "first_kept_ts": 14.0, "message_cut": False}
+    ]
+    # The prompt: the system prompt with one note, the two newest old turns, the message.
+    assert sent[0]["content"].endswith(f"\n{CONTEXT_NOTE}")
+    assert [m["content"][:14] for m in sent[1:]] == [
+        "old question 2",
+        "old answer 2 a",
+        "old question 3",
+        "old answer 3 a",
+        "New question",
+    ]
+    conv = h.engine.conversation
+    assert len(conv.messages) == 10  # the stored conversation keeps everything
+    assert events[0]["user_ts"] == conv.messages[8]["_ts"] == 100.0
+    assert conv.context_start_ts == 14.0
+    items = h.engine.conversation_items()
+    notice = {"role": "notice", "kind": "context_cut", "content": CONTEXT_CUT_NOTICE}
+    assert [i["role"] for i in items].count("notice") == 1
+    assert items[4] == notice and items[5]["ts"] == 14.0
+    # Saved with the conversation: a restart shows the same notice.
+    saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))
+    assert saved["context_start_ts"] == 14.0
+    assert h.new_engine().conversation_items() == items
+
+
+async def test_a_message_too_long_for_the_window_is_cut_not_refused(tmp_path, monkeypatch) -> None:
+    text = "Please read: " + "w" * 3000 + " Thanks"
+    with fake_openai_server(sse(text_chunks("Read.", 1))) as srv:
+        h = windowed(tmp_path, srv.base_url, monkeypatch, 300, chat={"max_tool_rounds": 0})
+        events = await h.send(text)
+        sent = srv.chat_requests[0].json["messages"]
+    assert events[-1]["type"] == "chat.done"
+    assert context_events(h, events) == [
+        {"request_id": "r1", "dropped_messages": 0, "first_kept_ts": None, "message_cut": True}
+    ]
+    assert sent[-1]["content"].startswith("Please read: www")
+    assert sent[-1]["content"].endswith(MESSAGE_CUT_NOTE)
+    assert CONTEXT_NOTE not in sent[0]["content"]  # nothing earlier was dropped
+    stored = h.engine.conversation.messages[0]
+    assert stored["content"] == text and stored["_cut"] is True
+    items = h.engine.conversation_items()
+    assert items[0]["cut"] is True and "cut" not in items[1]
+    assert [i["role"] for i in items] == ["user", "assistant"]
+
+
+async def test_a_turn_that_fits_again_clears_the_divider_once(tmp_path, monkeypatch) -> None:
+    replies = (sse(text_chunks("One.", 1)), sse(text_chunks("Two.", 1)))
+    with fake_openai_server(*replies) as srv:
+        h = windowed(tmp_path, srv.base_url, monkeypatch, None, chat={"max_tool_rounds": 0})
+        old_turns(h, 2)
+        h.engine.conversation.context_start_ts = 12.0  # an earlier turn did not fit
+        first = await h.send("Bigger model now")
+        second = await h.send("And again", "r2")
+    assert context_events(h, first) == [
+        {"request_id": "r1", "dropped_messages": 0, "first_kept_ts": None, "message_cut": False}
+    ]
+    assert h.of("chat.context", second) == []
+    assert h.engine.conversation.context_start_ts is None
+    assert all(i["role"] != "notice" for i in h.engine.conversation_items())
+
+
+async def test_overflow_retry_reports_the_dropped_half(tmp_path, monkeypatch) -> None:
+    overflow = json_reply({"error": "Input length exceeds the maximum allowed length"}, status=400)
+    with fake_openai_server(overflow, sse(text_chunks("Short answer.", 1))) as srv:
+        h = windowed(tmp_path, srv.base_url, monkeypatch, None, chat={"max_tool_rounds": 0})
+        old_turns(h, 4, size=20)
+        events = await h.send("New question")
+        first, second = (r.json["messages"] for r in srv.chat_requests)
+    assert events[-1]["type"] == "chat.done"
+    assert CONTEXT_NOTE not in first[0]["content"] and len(first) == 1 + 8 + 1
+    assert second[0]["content"].endswith(CONTEXT_NOTE) and len(second) == 1 + 4 + 1
+    # Only the retry left something out, so chat.context comes once, before it.
+    assert context_events(h, events) == [
+        {"request_id": "r1", "dropped_messages": 4, "first_kept_ts": 14.0, "message_cut": False}
+    ]
+    assert h.engine.conversation.context_start_ts == 14.0
+
+
+async def test_a_later_round_that_drops_more_reports_again(tmp_path, monkeypatch) -> None:
+    search = sse(tool_call_chunks([("s1", "web_search", json.dumps({"query": "npu"}))]))
+    with fake_openai_server(search, sse(text_chunks("Found it.", 1))) as srv:
+        h = windowed(tmp_path, srv.base_url, monkeypatch, 1400, tools={"enabled": ["web_search"]})
+        h.search_result = lambda q: ToolResult(True, "r" * 1400, "1 result")
+        old_turns(h, 6, size=300)
+        events = await h.send("Search the NPU news")
+        reqs = [r.json["messages"] for r in srv.chat_requests]
+    assert events[-1]["type"] == "chat.done" and len(reqs) == 2
+    ctx = context_events(h, events)
+    assert len(ctx) == 2, ctx
+    assert 0 < ctx[0]["dropped_messages"] < ctx[1]["dropped_messages"]
+    stamps = {m["content"]: m["_ts"] for m in h.engine.conversation.messages}
+    for fields, sent in zip(ctx, reqs, strict=True):
+        assert sent[0]["content"].endswith(CONTEXT_NOTE)
+        first_user = next(m for m in sent if m["role"] == "user")
+        assert fields["first_kept_ts"] == stamps[first_user["content"]]
+        latest = max(i for i, m in enumerate(sent) if m["role"] == "user")
+        assert fields["dropped_messages"] == 12 - (latest - 1)  # old messages not sent
+    # The tool call and its result are never dropped.
+    assert [m["role"] for m in reqs[1][-3:]] == ["user", "assistant", "tool"]
+    assert h.engine.conversation.context_start_ts == ctx[1]["first_kept_ts"]

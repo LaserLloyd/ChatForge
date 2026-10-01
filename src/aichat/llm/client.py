@@ -59,8 +59,18 @@ class ChatRequest:
 # Adapted from CrucibleForge crucibleforge/api.py (MIT, LaserLloyd): _merge_tool_call_deltas.
 def _merge_tool_call_deltas(raw_deltas: list[dict]) -> list[dict]:
     calls: dict[int, dict] = {}
+    last: int | None = None
     for d in raw_deltas:
-        idx = d.get("index", 0)
+        idx = d.get("index")
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            # No index (some OpenAI-compatible servers): a new call id starts a new call;
+            # a fragment without an id continues the call before it.
+            new_id = d.get("id")
+            if last is None or (new_id and calls[last]["id"] and new_id != calls[last]["id"]):
+                idx = max(calls) + 1 if calls else 0
+            else:
+                idx = last
+        last = idx
         slot = calls.setdefault(idx, {"id": None, "name": "", "arguments": ""})
         if d.get("id"):
             slot["id"] = d["id"]
@@ -170,6 +180,11 @@ class OpenAICompatClient:
 
     async def list_models(self) -> list[str]:
         """Model ids from ``GET /models``; ``[]`` when the endpoint is 404/405."""
+        return parse_model_ids(await self.list_model_entries())
+
+    async def list_model_entries(self) -> list[dict]:
+        """The raw ``GET /models`` entries (id plus whatever metadata the server adds,
+        such as context lengths); ``[]`` when the endpoint is 404/405."""
         url = join_url(self.base_url, "models")
         try:
             resp = await self._http.get(url, headers=self._headers(sse=False))
@@ -190,7 +205,7 @@ class OpenAICompatClient:
                 key_used=bool(self._api_key),
                 retry_after=resp.headers.get("Retry-After"),
             )
-        return parse_model_ids(payload)
+        return parse_model_entries(payload)
 
     # ------------------------------------------------------------------ #
     # stream_chat
@@ -421,14 +436,27 @@ class OpenAICompatClient:
         )
 
 
-def parse_model_ids(payload: Any) -> list[str]:
+def parse_model_entries(payload: Any) -> list[dict]:
+    """``GET /models`` as ``[{"id": ..., ...metadata}]`` (a bare id becomes ``{"id": id}``)."""
     data = payload.get("data") if isinstance(payload, dict) else payload
-    ids: list[str] = []
+    out: list[dict] = []
     for item in data if isinstance(data, list) else []:
-        mid = item.get("id") if isinstance(item, dict) else item
+        entry = dict(item) if isinstance(item, dict) else {"id": item}
+        mid = entry.get("id")
         if isinstance(mid, str) and mid.strip():
-            ids.append(mid.strip())
-    return sorted(set(ids))
+            entry["id"] = mid.strip()
+            out.append(entry)
+    return out
+
+
+def parse_model_ids(payload: Any) -> list[str]:
+    """Sorted unique model ids from a ``GET /models`` payload or its entry list."""
+    entries = (
+        payload
+        if isinstance(payload, list) and all(isinstance(e, dict) for e in payload)
+        else parse_model_entries(payload)
+    )
+    return sorted({e["id"] for e in entries if isinstance(e.get("id"), str) and e["id"].strip()})
 
 
 def _cancelled() -> LLMError:

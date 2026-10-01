@@ -87,11 +87,14 @@ command exits 1 on any FAIL and names the fix.
 or double-click `launchers\AI Chat.bat`. On the first run the app:
 
 - writes `%LOCALAPPDATA%\AIChat\config.toml` with defaults;
-- enables **start at login** by writing `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\AIChat.vbs`,
-  which runs `.venv\Scripts\pythonw.exe -m aichat --hidden` silently (toggle it from the
-  tray menu, Settings > General, or `aichat autostart disable`);
+- enables **start at login**: it writes `%LOCALAPPDATA%\AIChat\AIChat.vbs`, which runs
+  `.venv\Scripts\pythonw.exe -m aichat --hidden` silently, and registers a per-user Task
+  Scheduler task, "AI Chat", that runs it ten seconds after you sign in (no admin). If Task
+  Scheduler refuses the task, the script goes in your Startup folder
+  (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\AIChat.vbs`) instead. Toggle it
+  from the tray menu, Settings > General, or `aichat autostart disable`;
 - registers the `Ctrl+Alt+C` hotkey (if it is taken, the tray shows a notice; change it in
-  Settings > General);
+  Settings > General; to open AI Chat with the keyboard's Copilot key, see step 8);
 - shows the popup at the lower right, above the taskbar.
 
 The first question loads the model. The very first load compiles it for the NPU, about 45 s,
@@ -112,7 +115,40 @@ To run the live MiniMax test afterwards:
 py -3.12 -m uv run pytest -m live_minimax -s
 ```
 
-## 8. Verify (optional, developers)
+## 8. Open AI Chat with the Copilot key (optional)
+
+The Copilot key sends `Win+Shift+F23` (left Win and left Shift, then F23). Windows registers
+that combination itself, so AI Chat can't take it as its hotkey: `RegisterHotKey` fails with
+error 1409 (already registered) whatever the key is set to in Settings. The Settings picker
+(Personalization > Text input > *Customize Copilot key on keyboard* > Custom) only lists
+MSIX-packaged, signed apps. AI Chat runs from `.venv` with no package identity, so it never
+appears there.
+
+What works is PowerToys Keyboard Manager. It catches the key before Windows does and sends
+AI Chat's own hotkey instead:
+
+1. Install PowerToys (per-user, about 283 MB, from Microsoft's GitHub release):
+   ```powershell
+   winget install --id Microsoft.PowerToys -e --scope user
+   ```
+2. PowerToys > **Keyboard Manager**: turn on *Enable Keyboard Manager*, then **Remap a
+   shortcut** > *Add shortcut remapping*.
+3. *Select*: click the keyboard button and press the Copilot key. It records
+   `Win (Left)` `Shift (Left)` `F23`. *To send*: `Ctrl+Alt+C` (whatever `ui.hotkey` is in
+   `config.toml`). Leave *Target app* empty and click **OK**.
+4. PowerToys > General: turn on *Run at startup*. Otherwise the key goes back to Windows
+   after a restart.
+5. Press the Copilot key and the popup opens. If Windows Search or Copilot opens instead,
+   PowerToys isn't running.
+
+If you change AI Chat's hotkey later, change the PowerToys target to match. The remap is
+saved in `%LOCALAPPDATA%\Microsoft\PowerToys\Keyboard Manager\default.json`.
+
+Not implemented: AI Chat could catch the key itself with a `WH_KEYBOARD_LL` hook in
+`desktop/hotkey.py`. The hook would swallow F23 while Win+Shift are down, and it must mask
+the Win key-up, or the Start menu opens.
+
+## 9. Verify (optional, developers)
 
 ```powershell
 py -3.12 -m uv run ruff check . ; py -3.12 -m uv run ruff format --check .
@@ -132,11 +168,13 @@ $env:AICHAT_LIVE_NPU = "1"; py -3.12 -m uv run pytest -m live_npu -s
 | `%LOCALAPPDATA%\AIChat\runtime\` | OVMS and the downloaded zip |
 | `%LOCALAPPDATA%\AIChat\cache\ov\` | NPU compile blobs (about 306 MiB per model) |
 | `%LOCALAPPDATA%\AIChat\logs\` | `aichat.log` and `ovms.log`, rotated |
-| `%APPDATA%\...\Startup\AIChat.vbs` | the autostart shim |
+| `%LOCALAPPDATA%\AIChat\AIChat.vbs` | the script the "AI Chat" start-at-login task runs |
+| `%APPDATA%\...\Startup\AIChat.vbs` | start at login when Task Scheduler refused the task (and in earlier versions) |
 
 ## Uninstall
 
-Quit from the tray, run `py -3.12 -m uv run python -m aichat autostart disable`, delete
+Quit from the tray, run `py -3.12 -m uv run python -m aichat autostart disable` (it removes
+the "AI Chat" task and any Startup-folder `AIChat.vbs`), delete
 `%LOCALAPPDATA%\AIChat` and the repo folder, and remove the `AIChat` entries from the
 Windows Credential Manager if you saved a key.
 

@@ -9,9 +9,18 @@
 // browser (no window.pywebview) dev-mock.js is loaded instead and implements every method.
 // Python pushes events by calling window.__aichat.emit(evt); handlers registered with on()
 // receive the event object. on('*', fn) receives every event.
+//
+// Inside WebView2 (the real app) the mock is never used: on a cold start the bridge can be
+// injected late, and the popup must not quietly run against fake data. bridge.js keeps
+// waiting and emits {type: 'bridge.unavailable'} once after CONNECT_TIMEOUT_MS so the page
+// can say it is not connected; calls made meanwhile resolve once the bridge arrives.
 
 const handlers = new Map();   // type -> Set<fn>
 let readyPromise = null;
+
+const MOCK_WAIT_MS = 1500;          // plain browser: how long to wait before using the mock
+const CONNECT_TIMEOUT_MS = 15000;   // WebView2: when to report that the bridge is missing
+const POLL_MS = 250;
 
 function dispatch(evt) {
   if (!evt || typeof evt.type !== 'string') return;
@@ -42,15 +51,32 @@ export function off(type, fn) {
 /** Feed an event in from JS (used by dev-mock.js and tests). */
 export function emit(evt) { dispatch(evt); }
 
+const hasBridge = () => !!(window.pywebview && window.pywebview.api);
+
+/** True inside WebView2, i.e. the real app shell (a plain browser has no chrome.webview). */
+function inWebView2() { return !!(window.chrome && window.chrome.webview); }
+
 function pywebviewReady() {
   return new Promise((resolve) => {
-    if (window.pywebview && window.pywebview.api) { resolve(true); return; }
+    if (hasBridge()) { resolve(true); return; }
     let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const timers = [];
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      for (const t of timers) { clearTimeout(t); clearInterval(t); }
+      resolve(v);
+    };
     window.addEventListener('pywebviewready', () => finish(true), { once: true });
-    // Plain browser: no pywebview will ever appear. Give an injected bridge a moment
-    // (it is injected before page scripts run in WebView2, so this is generous).
-    setTimeout(() => finish(!!(window.pywebview && window.pywebview.api)), 1500);
+    if (inWebView2()) {
+      // The real app: wait for the bridge however long it takes. Poll as well, in case
+      // pywebviewready fired before this listener was added.
+      timers.push(setInterval(() => { if (hasBridge()) finish(true); }, POLL_MS));
+      timers.push(setTimeout(() => { if (!done) dispatch({ type: 'bridge.unavailable' }); }, CONNECT_TIMEOUT_MS));
+      return;
+    }
+    // Plain browser: no pywebview will ever appear. Give an injected bridge a moment.
+    timers.push(setTimeout(() => finish(hasBridge()), MOCK_WAIT_MS));
   });
 }
 

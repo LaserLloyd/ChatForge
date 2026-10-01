@@ -5,14 +5,24 @@ output, user turns, ``role: tool`` results). UI metadata rides along in private
 ``_``-prefixed keys, which every ``Quirks.prepare_body`` strips before sending:
 
 * all:        ``_ts`` (epoch seconds)
+* user:       ``_attachments`` (attached files: ``[{name, kind, chars, truncated, text}]``;
+  ``content`` stays the typed text and ``chat.history`` adds the file blocks per request),
+  ``_cut`` (the message was too long for the model's context window when it was sent, so
+  its end or its files were cut)
 * assistant:  ``_reasoning`` (display reasoning), ``_model``, ``_stopped`` (cancelled
   partial), and the provider's own ``_origin`` / ``_visible`` (MiniMax echo: these MUST
   survive a save/load round trip or the echo breaks after a restart)
 * tool:       ``_name``, ``_ok``, ``_summary``, ``_hidden`` (a synthetic "not run"
-  result that the UI does not show as a chip)
+  result that the UI does not show as a chip), ``_document`` (a file the tool saved:
+  ``{name, path, size, kind}``)
 
-``conversation.json`` is ``{"schema": 1, "saved_at": ts, "messages": [...]}``, written
-atomically (tmp + ``os.replace``).
+``Conversation.context_start_ts`` is where the model's view of the conversation started
+in the last turn: the ``_ts`` of the first message its prompt still held after older turns
+were left out to fit its context window (``None``: it saw everything). ``items()`` puts a
+notice before that message.
+
+``conversation.json`` is ``{"schema": 1, "saved_at": ts, "context_start_ts": ts | null,
+"messages": [...]}``, written atomically (tmp + ``os.replace``).
 """
 
 from __future__ import annotations
@@ -32,6 +42,8 @@ SCHEMA = 1
 #: Older whole turn groups are dropped past this many stored messages.
 MAX_STORED_MESSAGES = 400
 TOOL_ARGUMENTS_UI_CHARS = 300
+#: The notice item ``items()`` puts before the first message the model still sees.
+CONTEXT_CUT_NOTICE = "Older messages are past the context window (too long for context)."
 
 
 def visible_content(msg: dict) -> str:
@@ -42,11 +54,52 @@ def visible_content(msg: dict) -> str:
     return content if isinstance(content, str) else ""
 
 
+def attachment_views(msg: dict) -> list[dict]:
+    """``[{name, kind, chars, truncated}]`` for a user message's attached files (no text)."""
+    files = msg.get("_attachments")
+    if not isinstance(files, list):
+        return []
+    return [
+        {
+            "name": str(f.get("name") or "file"),
+            "kind": str(f.get("kind") or "text"),
+            "chars": int(f.get("chars") or 0),
+            "truncated": bool(f.get("truncated", False)),
+        }
+        for f in files
+        if isinstance(f, dict)
+    ]
+
+
+def document_view(msg: dict) -> dict | None:
+    """``{name, path, size, kind}`` for a tool message that saved a document, else ``None``."""
+    doc = msg.get("_document")
+    if not isinstance(doc, dict) or not doc.get("path"):
+        return None
+    return {
+        "name": str(doc.get("name") or ""),
+        "path": str(doc.get("path")),
+        "size": int(doc.get("size") or 0),
+        "kind": doc.get("kind"),
+    }
+
+
+def _timestamp(value: Any) -> float | None:
+    """``value`` if it is a number (a ``_ts``), else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
 class Conversation:
     """An ordered message list with snapshot, rollback and repair helpers."""
 
-    def __init__(self, messages: list[dict] | None = None) -> None:
+    def __init__(
+        self, messages: list[dict] | None = None, *, context_start_ts: float | None = None
+    ) -> None:
         self.messages: list[dict] = [dict(m) for m in (messages or []) if isinstance(m, dict)]
+        #: Where the model's view started in the last turn (see the module docstring).
+        self.context_start_ts: float | None = _timestamp(context_start_ts)
 
     def __len__(self) -> int:
         return len(self.messages)
@@ -62,6 +115,14 @@ class Conversation:
 
     def clear(self) -> None:
         self.messages.clear()
+        self.context_start_ts = None
+
+    def mark_latest_cut(self) -> None:
+        """Mark the latest user message as cut to fit the context window (``_cut``)."""
+        for msg in reversed(self.messages):
+            if msg.get("role") == "user":
+                msg["_cut"] = True
+                return
 
     def repair_tool_calls(
         self, *, note: str = "Not run (stopped).", ts: float | None = None
@@ -120,12 +181,19 @@ class Conversation:
     def items(self) -> list[dict]:
         """The conversation as the popup renders it::
 
-            {role: "user", content, ts}
+            {role: "user", content, ts, attachments?: [{name, kind, chars, truncated}],
+             cut?: true}
             {role: "assistant", content, ts, model?, reasoning?, stopped?,
-             tools?: [{call_id, name, arguments, ok, summary}]}
+             tools?: [{call_id, name, arguments, ok, summary}],
+             documents?: [{name, path, size, kind}]}
+            {role: "notice", kind: "context_cut", content}
 
         All assistant/tool messages after one user message fold into one assistant item
-        (round contents joined with a blank line, reasoning likewise).
+        (round contents joined with a blank line, reasoning likewise). ``attachments`` and
+        ``documents`` are present only when there are some; ``cut`` only on a message that
+        was cut to fit the context window. The ``context_cut`` notice comes before the
+        first message the model still saw in the last turn (the first user message sent at
+        or after ``context_start_ts``), when older messages were left out.
         """
         out: list[dict] = []
         cur: dict[str, Any] | None = None
@@ -149,6 +217,8 @@ class Conversation:
                 item["tools"] = cur["tools"]
             if cur["stopped"]:
                 item["stopped"] = True
+            if cur["documents"]:
+                item["documents"] = cur["documents"]
             out.append(item)
             cur = None
 
@@ -157,13 +227,17 @@ class Conversation:
             if role == "user":
                 flush()
                 content = msg.get("content")
-                out.append(
-                    {
-                        "role": "user",
-                        "content": content if isinstance(content, str) else "",
-                        "ts": msg.get("_ts"),
-                    }
-                )
+                user: dict[str, Any] = {
+                    "role": "user",
+                    "content": content if isinstance(content, str) else "",
+                    "ts": msg.get("_ts"),
+                }
+                attachments = attachment_views(msg)
+                if attachments:
+                    user["attachments"] = attachments
+                if msg.get("_cut"):
+                    user["cut"] = True
+                out.append(user)
                 continue
             if role not in ("assistant", "tool"):
                 continue
@@ -172,6 +246,7 @@ class Conversation:
                     "parts": [],
                     "reasoning": [],
                     "tools": [],
+                    "documents": [],
                     "ts": msg.get("_ts"),
                     "model": None,
                     "stopped": False,
@@ -198,6 +273,9 @@ class Conversation:
                     chips[str(call.get("id"))] = chip
                     cur["tools"].append(chip)
             else:  # tool
+                document = document_view(msg)
+                if document is not None:
+                    cur["documents"].append(document)
                 chip = chips.get(str(msg.get("tool_call_id")))
                 if chip is None:
                     continue
@@ -207,18 +285,38 @@ class Conversation:
                 chip["ok"] = bool(msg.get("_ok", True))
                 chip["summary"] = str(msg.get("_summary", ""))
         flush()
+        self._insert_context_notice(out)
         return out
+
+    def _insert_context_notice(self, items: list[dict]) -> None:
+        start = self.context_start_ts
+        if start is None:
+            return
+        for k, item in enumerate(items):
+            ts = _timestamp(item.get("ts")) if item["role"] == "user" else None
+            if ts is None or ts < start:
+                continue
+            # At 0 nothing comes before it: nothing the UI shows was left out.
+            if k:
+                notice = {"role": "notice", "kind": "context_cut", "content": CONTEXT_CUT_NOTICE}
+                items.insert(k, notice)
+            return
 
     # -- persistence ------------------------------------------------------- #
 
     def to_json(self) -> dict:
-        return {"schema": SCHEMA, "saved_at": time.time(), "messages": self.messages}
+        return {
+            "schema": SCHEMA,
+            "saved_at": time.time(),
+            "context_start_ts": self.context_start_ts,
+            "messages": self.messages,
+        }
 
     @classmethod
     def from_json(cls, data: Any) -> Conversation:
         if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
             raise ValueError("not a conversation file")
-        return cls(data["messages"])
+        return cls(data["messages"], context_start_ts=_timestamp(data.get("context_start_ts")))
 
 
 def save(path: Path, conv: Conversation) -> None:

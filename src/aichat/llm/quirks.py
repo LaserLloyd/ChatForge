@@ -136,6 +136,44 @@ class GenericQuirks:
         return out
 
 
+class OpenAIQuirks(GenericQuirks):
+    """OpenAI: current chat models (reasoning models included) take
+    ``max_completion_tokens``; the reasoning models reject the older ``max_tokens``."""
+
+    name = "openai"
+
+    def prepare_body(self, body: dict) -> dict:
+        body = super().prepare_body(body)
+        if "max_tokens" in body:
+            body["max_completion_tokens"] = body.pop("max_tokens")
+        return body
+
+
+class DeepSeekQuirks(GenericQuirks):
+    """DeepSeek: in thinking mode, the ``reasoning_content`` of the current turn's
+    tool-call messages has to go back with the tool results; reasoning anywhere else is
+    not sent (the older reasoner rejected it)."""
+
+    name = "deepseek"
+
+    def prepare_body(self, body: dict) -> dict:
+        body = dict(body)
+        msgs = clean_messages(body.get("messages", []), origin=self.name)
+        last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=-1)
+        for i, m in enumerate(msgs):
+            if m.get("role") == "assistant" and (i < last_user or not m.get("tool_calls")):
+                m.pop("reasoning_content", None)
+        body["messages"] = msgs
+        return body
+
+    def history_message(self, msg: AssistantMessage) -> dict:
+        out = super().history_message(msg)
+        if msg.tool_calls and msg.reasoning:
+            out["reasoning_content"] = msg.reasoning
+            out["_origin"] = self.name
+        return out
+
+
 # --------------------------------------------------------------------------- #
 # OVMS
 # --------------------------------------------------------------------------- #

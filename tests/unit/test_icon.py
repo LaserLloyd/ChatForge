@@ -41,3 +41,18 @@ def test_state_for_runtime() -> None:
     assert state_for_runtime("not_installed") == "off"
     assert state_for_runtime(None) == "off"
     assert state_for_runtime("ready", local_selected=False) == "off"
+
+
+def test_app_icon_ico_has_every_size(tmp_path) -> None:
+    from PIL import Image
+
+    from aichat.desktop.icon import ICO_SIZES, make_app_icon, write_app_ico
+
+    assert make_app_icon(48).size == (48, 48)
+    path = write_app_ico(tmp_path / "app.ico")
+    with Image.open(path) as ico:
+        assert ico.format == "ICO"
+        assert {s[0] for s in ico.info["sizes"]} == set(ICO_SIZES)
+    first = path.stat().st_mtime_ns
+    write_app_ico(path)  # already there: left alone
+    assert path.stat().st_mtime_ns == first

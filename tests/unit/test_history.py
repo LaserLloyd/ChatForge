@@ -1,4 +1,4 @@
-"""chat.history: PromptBudget and fit_messages ordering (PLAN §1.6, §3)."""
+"""chat.history: PromptBudget, fit_messages ordering and context overflow (PLAN §1.6, §3)."""
 
 from __future__ import annotations
 
@@ -6,14 +6,19 @@ import copy
 
 import pytest
 
+from aichat.attachments import NOTE_CUT_LOCAL
 from aichat.chat.history import (
     CLOUD_CAP_TOKENS,
-    HINT_SHORTEN,
+    CONTEXT_NOTE,
+    HINT_SYSTEM,
+    HINT_TOO_LONG,
+    MESSAGE_CUT_NOTE,
     OLD_TOOL_RESULT_CHARS,
     PromptBudget,
     drop_oldest_groups,
     estimate_tokens,
     fit_messages,
+    fit_prompt,
     halve_history,
     split_groups,
 )
@@ -155,12 +160,136 @@ def test_step3_current_tool_results_share_the_budget() -> None:
     assert_pairs_intact(out[1:])
 
 
-def test_step4_overflowing_core_raises_with_hint() -> None:
-    history = turn(1, 100) + [user("x" * 20_000)]
+def stamped(history: list[dict]) -> list[dict]:
+    """Copies with a distinct ``_ts`` per message (10.0, 11.0, ...)."""
+    return [{**m, "_ts": 10.0 + i} for i, m in enumerate(history)]
+
+
+def test_nothing_left_out_leaves_the_system_prompt_alone() -> None:
+    history = stamped(turn(1, 50) + [user("next")])
+    fitted = fit_prompt(SYSTEM, history, TOOLS, PromptBudget(3968))
+    assert fitted.messages[0] == SYSTEM
+    assert (fitted.dropped, fitted.first_kept_ts, fitted.message_cut) == (0, None, False)
+    assert not fitted.left_out
+
+
+def test_dropped_turns_add_one_fixed_line_to_the_system_prompt() -> None:
+    history = []
+    for i in range(6):
+        history += turn(i, 900)
+    history = stamped([*history, user("latest question")])
+    budget = PromptBudget(2000)
+    fitted = fit_prompt(SYSTEM, history, TOOLS, budget)
+    system = fitted.messages[0]
+    assert system["content"] == f"{SYSTEM['content']}\n{CONTEXT_NOTE}"
+    assert system["content"].count("Too long for context") == 1
+    # The note's tokens are counted: the whole prompt still fits.
+    assert estimate_tokens(fitted.messages, TOOLS, budget) <= 2000
+    body = fitted.messages[1:]
+    assert body[0]["role"] == "user" and body[-1]["content"] == "latest question"
+    assert fitted.dropped == len(history) - len(body)
+    assert fitted.first_kept_ts == body[0]["_ts"]
+    assert not fitted.message_cut and fitted.left_out
+    # The wording never changes, however much is dropped (the provider's prefix cache).
+    tighter = fit_prompt(SYSTEM, history, TOOLS, PromptBudget(1000))
+    assert tighter.dropped > fitted.dropped
+    assert tighter.messages[0] == system
+
+
+def test_overlong_latest_message_is_cut_at_the_end_instead_of_raising() -> None:
+    history = stamped(turn(1, 100) + [user("start " + "x" * 20_000 + " END")])
+    budget = PromptBudget(3968)
+    fitted = fit_prompt(SYSTEM, history, TOOLS, budget)
+    latest = fitted.messages[-1]
+    assert latest["content"].startswith("start xxx")
+    assert latest["content"].endswith(MESSAGE_CUT_NOTE)
+    assert "END" not in latest["content"]
+    assert latest["_ts"] == history[-1]["_ts"]  # private keys kept
+    assert estimate_tokens(fitted.messages, TOOLS, budget) <= 3968
+    # Most of the window goes to the message: it is cut only as far as needed.
+    assert len(latest["content"]) > 3968 * 3 * 0.6
+    assert fitted.message_cut
+    assert fitted.dropped == 4 and fitted.first_kept_ts == history[-1]["_ts"]
+    assert fitted.messages[0]["content"].endswith(CONTEXT_NOTE)
+    assert len(history[-1]["content"]) == 20_010  # the stored message is untouched
+
+
+def test_current_tool_calls_and_results_are_kept_when_the_message_is_cut() -> None:
+    results = [tool(f"s{i}", f"result {i} " + "z" * 3000) for i in range(3)]
+    history = [
+        user("y" * 12_000),
+        assistant("", [(f"s{i}", "web_search") for i in range(3)]),
+        *results,
+    ]
+    budget = PromptBudget(3968, tool_result_chars=3000)
+    fitted = fit_prompt(SYSTEM, history, TOOLS, budget)
+    out = fitted.messages
+    assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "tool", "tool"]
+    assert_pairs_intact(out[1:])
+    assert all(m["content"].startswith(f"result {i}") for i, m in enumerate(out[3:]))
+    assert out[1]["content"].endswith(MESSAGE_CUT_NOTE)
+    assert fitted.message_cut and fitted.dropped == 0
+    assert out[0] == SYSTEM  # nothing earlier was dropped, so no note
+    assert estimate_tokens(out, TOOLS, budget) <= 3968
+
+
+def test_attached_files_of_the_latest_message_count_as_cut() -> None:
+    text = "word " * 5000
+    record = {"name": "big.txt", "kind": "text", "chars": len(text), "truncated": False}
+    history = [{**user("Summarise this"), "_attachments": [{**record, "text": text}]}]
+    fitted = fit_prompt(SYSTEM, history, [], PromptBudget(1000))
+    content = fitted.messages[-1]["content"]
+    assert content.startswith("Summarise this\n\n<file") and NOTE_CUT_LOCAL in content
+    assert MESSAGE_CUT_NOTE not in content  # the files shared the room; the text is whole
+    assert fitted.message_cut and fitted.dropped == 0
+
+
+def test_a_kept_file_turn_does_not_hide_the_turns_dropped_after_it() -> None:
+    file_text = {"name": "spec.txt", "kind": "text", "chars": 16, "truncated": False}
+    history = stamped(
+        [
+            user("old " + "a" * 1500),
+            assistant("b" * 1500),
+            {**user("Read this"), "_attachments": [{**file_text, "text": "the spec says 42"}]},
+            assistant("Read it."),
+            user("later " + "c" * 1500),
+            assistant("d" * 1500),
+            user("What number does the spec give?"),
+        ]
+    )
+    fitted = fit_prompt(SYSTEM, history, [], PromptBudget(max_prompt_tokens=700))
+    assert [m["_ts"] for m in fitted.messages[1:]] == [12.0, 13.0, 16.0]
+    assert fitted.dropped == 4
+    # The model's unbroken view starts at the latest message, after the dropped "later" turn.
+    assert fitted.first_kept_ts == 16.0
+
+
+def test_overflow_retry_drops_the_older_half_and_reports_it() -> None:
+    history = stamped(turn(1, 5) + turn(2, 5) + turn(3, 5) + turn(4, 5) + [user("now")])
+    fitted = fit_prompt(SYSTEM, history, TOOLS, PromptBudget(None), halve=True)
+    body = fitted.messages[1:]
+    assert body[0]["content"].startswith("question 3")
+    assert fitted.dropped == 8 and fitted.first_kept_ts == body[0]["_ts"]
+    assert fitted.messages[0]["content"].endswith(CONTEXT_NOTE)
+    assert body == fit_messages(SYSTEM, halve_history(history), TOOLS, PromptBudget(None))[1:]
+
+
+def test_a_system_prompt_that_cannot_fit_raises() -> None:
+    huge = {"role": "system", "content": "Be helpful. " * 2000}
     with pytest.raises(LLMError) as ei:
-        fit_messages(SYSTEM, history, TOOLS, PromptBudget(3968))
+        fit_prompt(huge, [user("hi")], TOOLS, PromptBudget(3968))
     assert ei.value.code == "context_overflow"
-    assert ei.value.hint == HINT_SHORTEN
+    assert ei.value.hint == HINT_SYSTEM
+    assert "system prompt" in ei.value.message
+
+
+def test_a_turn_whose_own_tool_results_cannot_fit_still_raises() -> None:
+    calls = [(f"t{i}", "web_search") for i in range(30)]
+    history = [user("q"), assistant("", calls), *[tool(c, "r" * 3000) for c, _ in calls]]
+    with pytest.raises(LLMError) as ei:
+        fit_prompt(SYSTEM, history, TOOLS, PromptBudget(1000))
+    assert ei.value.code == "context_overflow"
+    assert ei.value.hint == HINT_TOO_LONG
 
 
 def test_split_drop_and_halve_groups() -> None:

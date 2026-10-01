@@ -305,6 +305,87 @@ async def test_install_rejects_zip_without_exe(tmp_path, monkeypatch):
     assert not (tmp_path / "runtime" / "ovms-2026.4.0").exists()
 
 
+async def _installed_python_on(tmp_path, monkeypatch) -> SimpleNamespace:
+    data = _runtime_zip()
+    monkeypatch.setitem(oi.ASSETS, "python_on", _asset(data, oi.ASSET))
+    paths = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    cfg = SimpleNamespace(ovms_version="2026.4.0", ovms_variant="python_on")
+    async with _server(data) as client:
+        await oi.install(paths, cfg, lambda e: None, asyncio.Event(), client=client)
+    return paths
+
+
+async def test_variant_change_refused_while_the_runtime_runs(tmp_path, monkeypatch):
+    paths = await _installed_python_on(tmp_path, monkeypatch)
+    final = oi.install_dir(paths.runtime_dir)
+    seen: list[Path] = []
+    monkeypatch.setattr(oi, "running_from", lambda folder: seen.append(folder) or [4242])
+    cfg = SimpleNamespace(ovms_version="2026.4.0", ovms_variant="python_off")
+    events: list[dict] = []
+
+    def handler(request):  # pragma: no cover - must refuse before downloading
+        raise AssertionError("no request expected")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(oi.InstallError) as err:
+            await oi.install(paths, cfg, events.append, asyncio.Event(), client=client)
+    assert err.value.code == "in_use" and "Unload the model" in err.value.message
+    assert events[-1] == {"status": "error", "error": oi.IN_USE_MESSAGE, "code": "in_use"}
+    assert seen == [final]
+    assert oi.detect_variant(final / "ovms") == "python_on"  # untouched
+
+
+async def test_rename_access_denied_is_reported_as_in_use(tmp_path, monkeypatch):
+    paths = await _installed_python_on(tmp_path, monkeypatch)
+    final = oi.install_dir(paths.runtime_dir)
+    off = _zip_bytes({"ovms/ovms.exe": b"MZ off"})
+    monkeypatch.setitem(oi.ASSETS, "python_off", _asset(off, "ovms_off.zip"))
+    monkeypatch.setattr(oi, "running_from", lambda folder: [])  # started after the check
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if Path(src) == final:
+            raise PermissionError(13, "Access is denied", str(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(oi.os, "replace", replace)
+    cfg = SimpleNamespace(ovms_version="2026.4.0", ovms_variant="python_off")
+    events: list[dict] = []
+    async with _server(off) as client:
+        with pytest.raises(oi.InstallError) as err:
+            await oi.install(paths, cfg, events.append, asyncio.Event(), client=client)
+    assert err.value.code == "in_use"  # not "disk"
+    assert events[-1]["code"] == "in_use"
+    assert not final.with_name(final.name + ".tmp").exists()
+    assert oi.detect_variant(final / "ovms") == "python_on"
+
+
+def test_running_from_matches_only_ovms_under_the_folder(tmp_path, monkeypatch):
+    import psutil
+
+    folder = tmp_path / "runtime" / "ovms-2026.4.0"
+
+    class Proc:
+        def __init__(self, pid, name, exe):
+            self.pid, self.info, self._exe = pid, {"name": name}, exe
+
+        def exe(self):
+            if self._exe is None:
+                raise psutil.AccessDenied(self.pid)
+            return self._exe
+
+    procs = [
+        Proc(1, "ovms.exe", str(folder / "ovms" / "ovms.exe")),
+        Proc(2, "OVMS.EXE", str(folder).upper() + "\\ovms\\ovms.exe"),
+        Proc(3, "ovms.exe", str(tmp_path / "elsewhere" / "ovms.exe")),
+        Proc(4, "ovms.exe", str(folder) + "-old\\ovms.exe"),  # a sibling, not inside
+        Proc(5, "python.exe", str(folder / "ovms" / "python" / "python.exe")),
+        Proc(6, "ovms.exe", None),
+    ]
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
+    assert oi.running_from(folder) == [1, 2]
+
+
 def test_status_not_installed(tmp_path):
     paths = SimpleNamespace(runtime_dir=tmp_path / "runtime")
     cfg = SimpleNamespace(ovms_version="2026.4.0", ovms_variant="python_on")

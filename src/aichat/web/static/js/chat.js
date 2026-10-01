@@ -6,11 +6,16 @@
 //   isNearBottom/scrollToBottom/showScrollButton/updateScrollBadge (1785-1940),
 //   updateSendEnabled/autosize (1941-1956), sendMessage (1957),
 //   streamBuffers/scheduleStreamRender/beginStream/renderStreamMarkdown (4760-4870).
-// Stripped: auth/Safe Mode, websockets, bots/threads, avatars, reactions, attachments, i18n.
+// Stripped: auth/Safe Mode, websockets, bots/threads, avatars, reactions, DisPatch's upload
+// pipeline, i18n.
 // New: model chip + status dot + compile/idle status line, think block, tool chips, error
-// actions, inline key card, bridge events (chat.*, runtime.status, key.status, ...).
+// actions, inline key card, bridge events (chat.*, runtime.status, key.status, ...),
+// attachments (paperclip -> attach_files, drag-and-drop and paste -> attach_data, chips that
+// go with the message), document cards for files create_document saved, and the context
+// divider (chat.context / "notice" items: where the model's view of a long conversation
+// starts, plus a note on a message that was cut to fit).
 import { api, on, ready } from './bridge.js';
-import { el, railIcon } from './util.js?v=13';
+import { el, railIcon, RAIL_ICONS } from './util.js?v=13';
 import { renderMarkdown, enhanceContent, installMarkdownHandlers } from './markdown.js';
 import { t } from './i18n.js?v=3';
 import { createKeyCard } from './keycard.js';
@@ -22,11 +27,20 @@ const STREAM_PAINT_MS = 100;      // ~10 repaints/sec: reads as smooth, costs 6x
 const STREAM_PAINT_CHARS = 160;   // ...but a burst that big repaints immediately
 const MD_OPTS = { noMedia: true, noLocal: true };
 
+// attachments.py MAX_FILES / MAX_FILE_BYTES. Checked here as well, so a dropped file that
+// cannot be attached is refused before its bytes cross the bridge.
+const MAX_FILES = 10;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const TOO_MANY_FILES = `Only ${MAX_FILES} files can be attached to one message.`;
+
 const ICON = {
   wrench: ['M14.7 6.3a4 4 0 0 0 5 5L13 18a2.1 2.1 0 0 1-3-3z', 'M14.7 6.3l3-3 3 3'],
   brain: ['M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 3 4 3 3 0 0 0 5 1V5a2 2 0 0 0-3-1z', 'M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-3 4 3 3 0 0 1-5 1'],
   warn: ['M12 4l10 17H2z', 'M12 10v4', 'M12 17.5v.01'],
   copy: ['M8 8h11v11H8z', 'M5 16V5h11'],
+  close: ['M6 6l12 12', 'M18 6L6 18'],
+  file: RAIL_ICONS['viewer-file'],
+  folder: RAIL_ICONS.folder,
 };
 
 const S = {
@@ -38,10 +52,15 @@ const S = {
   pinned: false,
   busy: false,
   reqId: null,
+  sendSeq: 0,             // bumped by every send(): tells a late send_message reply it was abandoned
   ignore: new Set(),      // request ids we no longer care about (stopped / new chat)
   cur: null,              // the assistant turn being streamed
   lastText: '',           // last text sent (for Retry)
+  lastFiles: [],          // ...and the files sent with it: their ids stay valid after an error
   lastUserEl: null,
+  ctxBefore: null,        // where the context divider was when this request started (for errors)
+  files: [],              // composer attachments: the bridge's view + {key, state: loading|ready}
+  picking: false,         // the native file dialog is open (attach_files in flight)
   keyCard: null,
   menuOpen: false,
   unseen: 0,
@@ -53,8 +72,17 @@ const S = {
 // =================================================================== helpers ====
 
 function providerById(id) { return S.providers.find((p) => p.id === id) || null; }
+function providerName(id) { const p = providerById(id); return p ? p.display_name : id; }
 function selectedProvider() { return providerById(S.selected.provider); }
 function isLocalProvider(p) { return !!p && p.kind === 'ovms'; }
+/** A provider that can answer right now: the local runtime, a server that needs no key
+ *  (StudioForge), or a provider whose key is saved or set in the environment. */
+function isConfigured(p) {
+  if (!p) return false;
+  if (isLocalProvider(p)) return true;
+  const key = p.key || {};
+  return key.required === false || (!!key.source && key.source !== 'none');
+}
 function shortModel(id) { return String(id || '').split('/').pop(); }
 function maxChars() { return Number(S.limits.max_prompt_chars) || 4000; }
 function showReasoning() { return (S.config.chat && S.config.chat.show_reasoning) !== 'hidden'; }
@@ -102,6 +130,29 @@ function shortArg(args) {
   }
   v = String(v).replace(/\s+/g, ' ').trim();
   return v.length > 42 ? `${v.slice(0, 41)}…` : v;
+}
+
+/** "812 B", "14 KB", "2.4 MB". */
+function fmtSize(bytes) {
+  const n = Math.max(0, Number(bytes) || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  const mb = n / (1024 * 1024);
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}
+
+/** "830 chars", "12.5k chars", "200k chars": short enough for a chip. */
+function fmtChars(chars) {
+  const n = Math.max(0, Math.round(Number(chars) || 0));
+  if (n < 1000) return `${n} chars`;
+  const k = n / 1000;
+  return `${k < 100 ? Number(k.toFixed(1)) : Math.round(k)}k chars`;
+}
+
+/** "DOCX" for "report.docx"; '' when the name has no extension. */
+function fileExt(name) {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(name || ''));
+  return m ? m[1].toUpperCase() : '';
 }
 
 // ===================================================================== scroll ====
@@ -161,15 +212,153 @@ function addRow(node, { assistant = false } = {}) {
   stickOrBadge(assistant);
 }
 
-function userRow(text, ts) {
-  const bubble = el('div', { class: 'bubble', dir: 'auto', text });
-  const col = el('div', { class: 'msg-col' }, [bubble, el('div', { class: 'msg-time', text: clockTime(ts) })]);
-  return el('div', { class: 'msg user' }, [col]);
+/** A user message: its attached files as chips over the bubble. A files-only message
+ *  has no bubble. `ts` (the engine's _ts, also set later from chat.start) lets chat.context
+ *  find the row; `cut` marks a message that was cut to fit the context window. */
+function userRow(text, ts, files = [], { cut = false } = {}) {
+  const kids = [];
+  if (files.length) {
+    kids.push(el('div', { class: 'msg-files', role: 'list', 'aria-label': 'Attached files' }, files.map((f) => fileChip(f))));
+  }
+  if (text || !files.length) kids.push(el('div', { class: 'bubble', dir: 'auto', text }));
+  kids.push(el('div', { class: 'msg-time', text: clockTime(ts) }));
+  const row = el('div', { class: 'msg user', dataset: ts != null ? { ts: String(ts) } : null }, [el('div', { class: 'msg-col' }, kids)]);
+  if (cut) setCutNote(row, true);
+  return row;
+}
+
+// ============================================================ context window ====
+// When a conversation no longer fits the model's context window, the engine leaves its
+// oldest turns out of the prompt (chat.context live, a "notice" item in a snapshot). A thin
+// divider marks where the model's view starts; a message cut to fit says so in its meta line.
+
+const CONTEXT_CUT_TEXT = 'Older messages are past the context window (too long for context).';
+const CUT_NOTE = '(Too long for context)';
+
+function contextDivider(text = CONTEXT_CUT_TEXT) {
+  return el('div', { class: 'ctx-divider', role: 'separator', 'aria-label': text }, [
+    el('span', { class: 'ctx-divider-text', text }),
+  ]);
+}
+
+function setCutNote(row, cut) {
+  const note = row.querySelector('.ctx-cut');
+  if (!cut) { if (note) note.remove(); return; }
+  const meta = row.querySelector('.msg-time');
+  if (note || !meta) return;
+  meta.append(el('span', { class: 'ctx-cut', title: 'Too long for the model’s context window: only part of this message was sent.', text: ` ${CUT_NOTE}` }));
+}
+
+/** Put the divider before the first user message sent at or after `firstTs` (the engine's
+ *  first_kept_ts), or remove it when nothing was dropped. A row this popup has no time for
+ *  falls back to the message being answered: then the divider claims less than the model sees,
+ *  never more. */
+function placeContextDivider(firstTs, dropped) {
+  const box = messagesBox();
+  const current = box.querySelector('.ctx-divider');
+  let row = null;
+  if (dropped) {
+    const start = Number(firstTs);
+    if (firstTs != null && Number.isFinite(start)) {
+      row = [...box.querySelectorAll('.msg.user')].find((r) => r.dataset.ts != null && Number(r.dataset.ts) >= start) || null;
+    }
+    if (!row && S.lastUserEl && S.lastUserEl.isConnected) row = S.lastUserEl;
+  }
+  // Nothing before the row means nothing on screen is out of view.
+  const before = row && row.previousElementSibling;
+  if (!before || (before === current && !current.previousElementSibling)) {
+    if (current) current.remove();
+    return;
+  }
+  if (before !== current) row.before(current || contextDivider());
+}
+
+/** The divider's place (the row after it), to put it back if a request fails. */
+function dividerAnchor() {
+  const d = messagesBox().querySelector('.ctx-divider');
+  return d ? { next: d.nextElementSibling } : null;
+}
+
+function restoreDivider(anchor) {
+  const d = messagesBox().querySelector('.ctx-divider');
+  if (anchor && anchor.next && anchor.next.isConnected) {
+    if (anchor.next.previousElementSibling !== d) anchor.next.before(d || contextDivider());
+  } else if (d) d.remove();
+}
+
+/** One attached file: name, size · characters, a "partial" badge when only part of its
+ *  text is used, and (in the composer) a remove button. `f` is the bridge's view
+ *  {id, name, kind, chars, size, truncated, warning}, or a saved message's {name, kind,
+ *  chars, truncated}. */
+function fileChip(f, { onRemove = null } = {}) {
+  const loading = f.state === 'loading';
+  const name = String(f.name || 'file');
+  const meta = loading ? 'Reading…'
+    : [f.size != null ? fmtSize(f.size) : null, f.chars != null ? fmtChars(f.chars) : null].filter(Boolean).join(' · ');
+  const note = f.warning || (f.truncated ? 'Only part of this file is used.' : '');
+  const title = [
+    name,
+    f.size != null ? fmtSize(f.size) : null,
+    !loading && f.chars != null ? `${Number(f.chars).toLocaleString()} characters of text` : null,
+  ].filter(Boolean).join(', ');
+  const chip = el('span', { class: 'att-chip', role: 'listitem', title: note ? `${title}. ${note}` : title,
+    dataset: { state: loading ? 'loading' : 'ready' } }, [
+    railIcon(ICON.file),
+    el('span', { class: 'att-name', dir: 'auto', text: name }),
+    meta ? el('span', { class: 'att-meta', text: meta }) : null,
+    note ? el('span', { class: 'att-warn', role: 'img', 'aria-label': note }, [
+      railIcon(ICON.warn),
+      f.truncated ? el('span', { 'aria-hidden': 'true', text: 'partial' }) : null,
+    ]) : null,
+  ]);
+  if (onRemove && !loading) {
+    const b = el('button', { class: 'att-remove', type: 'button', 'aria-label': `Remove ${name}`, title: 'Remove' }, [railIcon(ICON.close)]);
+    b.addEventListener('click', onRemove);
+    chip.append(b);
+  }
+  return chip;
+}
+
+/** A file create_document saved: name, type · size, Open and Show in folder. */
+function docCard(doc) {
+  const name = String(doc.name || 'document');
+  const meta = [fileExt(name) || null, doc.size != null ? fmtSize(doc.size) : null].filter(Boolean).join(' · ');
+  const open = el('button', { class: 'btn btn-sm doc-open', type: 'button', 'aria-label': `Open ${name}`, text: 'Open' });
+  const reveal = el('button', { class: 'btn btn-sm doc-reveal', type: 'button', 'aria-label': `Show in folder: ${name}` }, [
+    railIcon(ICON.folder), el('span', { text: 'Show in folder' }),
+  ]);
+  open.addEventListener('click', () => documentAction('open_document', doc.path, open));
+  reveal.addEventListener('click', () => documentAction('reveal_document', doc.path, reveal));
+  return el('div', { class: 'doc-card', role: 'group', 'aria-label': `Document ${name}`, title: doc.path || name }, [
+    el('span', { class: 'doc-icon' }, [railIcon(ICON.file)]),
+    el('div', { class: 'doc-info' }, [
+      el('div', { class: 'doc-name', dir: 'auto', text: name }),
+      meta ? el('div', { class: 'doc-meta', text: meta }) : null,
+    ]),
+    el('div', { class: 'doc-actions' }, [open, reveal]),
+  ]);
+}
+
+/** open_document / reveal_document. The bridge only accepts files in the documents
+ *  folder; a moved or deleted file comes back as not_found, said in a toast. */
+async function documentAction(method, path, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  const r = await api.call(method, path);
+  button.disabled = false;
+  if (!r || !r.ok) toast((r && r.error && r.error.message) || 'The document could not be opened.');
+}
+
+function addDocCard(turn, doc) {
+  if (!doc || !doc.path) return;
+  turn.docs.hidden = false;
+  turn.docs.append(docCard(doc));
 }
 
 function toolChip(call) {
   const arg = shortArg(call.arguments);
-  const state = call.ok === undefined ? 'running' : (call.ok ? 'ok' : 'fail');
+  // ok is null in a snapshot for a call that has no result yet; only false means failed.
+  const state = call.ok == null ? 'running' : (call.ok ? 'ok' : 'fail');
   const chip = el('span', { class: 'tool-chip', dataset: { state, callId: call.call_id || '' } }, [
     railIcon(ICON.wrench),
     el('span', { class: 'tool-name', text: call.name }),
@@ -193,17 +382,20 @@ function setChipState(chip, state, summary) {
   chip.title = summary ? `${chip.querySelector('.tool-name').textContent}: ${summary}` : chip.querySelector('.tool-name').textContent;
 }
 
-/** The assistant turn: think block, tool chips, bubble (+ typing placeholder while waiting). */
+/** The assistant turn: think block, tool chips, bubble (+ typing placeholder while waiting),
+ *  then the cards of documents it saved. The bubble goes in before the cards, so a card
+ *  that arrives with its tool result still ends up under the text that mentions it. */
 function newTurn({ streaming }) {
   const col = el('div', { class: 'msg-col' });
   const node = el('div', { class: `msg assistant${streaming ? ' streaming' : ''}` }, [col]);
   const turn = {
     node, col, content: '', reasoning: '', think: null, thinkBody: null, thinkLabel: null, thinkText: null,
-    tools: el('div', { class: 'tools' }), bubble: null, md: null, cursor: null, typing: null, phaseEl: null,
-    chips: new Map(), paint: { at: 0, len: 0 }, timer: 0, queued: false,
+    tools: el('div', { class: 'tools' }), docs: el('div', { class: 'docs' }), bubble: null, md: null,
+    cursor: null, typing: null, phaseEl: null, chips: new Map(), paint: { at: 0, len: 0 }, timer: 0, queued: false,
   };
   turn.tools.hidden = true;
-  col.append(turn.tools);
+  turn.docs.hidden = true;
+  col.append(turn.tools, turn.docs);
   return turn;
 }
 
@@ -223,7 +415,7 @@ function ensureBubble(turn) {
   if (turn.typing) { turn.typing.remove(); turn.typing = null; }
   turn.md = el('div', { class: 'ui-markdown' });
   turn.bubble = el('div', { class: 'bubble', dir: 'auto' }, [turn.md]);
-  turn.col.append(turn.bubble);
+  turn.col.insertBefore(turn.bubble, turn.docs);
 }
 
 function addTypingPlaceholder(turn, text) {
@@ -232,7 +424,7 @@ function addTypingPlaceholder(turn, text) {
     el('span', { class: 'dots', 'aria-hidden': 'true' }, [el('span'), el('span'), el('span')]),
     turn.phaseEl,
   ]);
-  turn.col.append(turn.typing);
+  turn.col.insertBefore(turn.typing, turn.docs);
 }
 
 function paintThinkLabel(turn, streaming) {
@@ -282,8 +474,17 @@ function assistantRowFromData(m) {
     turn.md.innerHTML = renderMarkdown(m.content, MD_OPTS);
     enhanceContent(turn.md, { noLocal: true });
   }
-  finishMeta(turn, { ts: m.ts, model: m.model });
+  for (const d of (m.documents || [])) addDocCard(turn, d);
+  finishMeta(turn, { ts: m.ts, model: m.model, note: m.stopped ? 'stopped' : undefined });
   return turn.node;
+}
+
+/** The meta note of a stopped reply: "stopped", or the engine's reason when it gave one
+ *  ("Stopped: the local model was unloaded." -> "stopped: the local model was unloaded"). */
+function stoppedNote(message) {
+  const m = String(message || '').trim().replace(/\.$/, '');
+  if (!m || m.toLowerCase() === 'stopped') return 'stopped';
+  return m.charAt(0).toLowerCase() + m.slice(1);
 }
 
 // ===================================================================== streaming ====
@@ -299,7 +500,11 @@ function scheduleStreamRender(turn) {
 }
 
 function paintStream(turn) {
-  if (!turn.md) return;
+  // A frame queued before the turn ended must not repaint it: chat.done usually lands in
+  // the same event batch as the last delta, and this raw repaint would replace the
+  // finalized, enhanced reply (code highlighting, table wrappers, link chrome). The same
+  // goes for a turn dropped by New chat, chat.reset or chat.fallback.
+  if (!turn.md || !turn.node.isConnected || !turn.node.classList.contains('streaming')) return;
   turn.paint = { at: performance.now(), len: turn.content.length };
   turn.md.innerHTML = renderMarkdown(turn.content, MD_OPTS);
   stickOrBadge(false);
@@ -371,10 +576,10 @@ function errorRow(err) {
     actions.append(b);
   };
   if (err.action === 'add_key') {
-    btn('Add key', () => { row.remove(); showKeyCard(S.selected.provider, S.lastText); });
+    btn('Add key', () => { row.remove(); showKeyCard(S.selected.provider, S.lastText, S.lastFiles); });
   } else if (err.action === 'open_settings') {
     btn('Open settings', openSettings);
-    if (S.lastText) btn('Retry', () => { row.remove(); retry(); });
+    if (S.lastText || S.lastFiles.length) btn('Retry', () => { row.remove(); retry(); });
   } else if (err.action === 'retry') {
     btn('Retry', () => { row.remove(); retry(); });
   }
@@ -390,24 +595,32 @@ function showError(err) {
 
 // =============================================================== key card flow ====
 
-function showKeyCard(providerId, pendingText) {
+function showKeyCard(providerId, pendingText, pendingFiles = []) {
   closeKeyCard();
   const provider = providerById(providerId) || { id: providerId, display_name: providerId, region: null };
+  // The key works (saved by the card, or in Settings while the card was open): close the
+  // card and send the pending message, taking it (text and files) back out of the composer.
+  // The files are read from the card's state when it finishes: a chip removed meanwhile
+  // (removeFile) is gone from the backend, and sending its id would fail the whole message.
+  const finish = async () => {
+    const files = kc.pendingFiles;
+    closeKeyCard();
+    await refreshProviders();
+    const text = pendingText;
+    const input = $('input');
+    if (text && input.value.trim() === text) { input.value = ''; autosize(); }
+    if (files.length && sameFiles(readyFiles(), files)) setComposerFiles([]);
+    if (text || files.length) send(text, { files });
+    input.focus();
+  };
   const card = createKeyCard({
     api,
     provider,
-    onSuccess: async () => {
-      closeKeyCard();
-      await refreshProviders();
-      const text = pendingText;
-      const input = $('input');
-      if (text && input.value.trim() === text) { input.value = ''; autosize(); }
-      if (text) send(text);
-      input.focus();
-    },
+    onSuccess: finish,
     onCancel: () => { closeKeyCard(); $('input').focus(); },
   });
-  S.keyCard = { card, providerId, pendingText };
+  const kc = { card, providerId, pendingText, pendingFiles: [...pendingFiles], finish };
+  S.keyCard = kc;
   const row = el('div', { class: 'msg card' }, [card.node]);
   S.keyCard.row = row;
   addRow(row, { assistant: true });
@@ -427,12 +640,239 @@ async function refreshProviders() {
   if (r && r.ok && Array.isArray(r.providers)) { S.providers = r.providers; renderChip(); renderEmpty(); }
 }
 
+// ================================================================ attachments ====
+// Files attached in the composer (S.files). The ids are the backend's: send_message takes
+// them with the message, remove_attachment forgets one. A sent file leaves the composer
+// WITHOUT remove_attachment: the backend keeps it until the reply finishes or is stopped,
+// so Retry and the key card can send the same ids again.
+
+let fileKey = 0;
+
+function readyFiles() { return S.files.filter((f) => f.state === 'ready'); }
+function filesLoading() { return S.files.some((f) => f.state === 'loading'); }
+/** The bridge's view of an attachment, without the composer's own fields. */
+function fileView({ key, state, ...view }) { return view; }
+function sameFiles(a, b) { return a.length === b.length && a.every((f, i) => f.id === b[i].id); }
+
+function setComposerFiles(views) {
+  S.files = views.map((v) => ({ ...fileView(v), key: ++fileKey, state: 'ready' }));
+  renderFiles();
+}
+
+function renderFiles() {
+  const keepBottom = isNearBottom();   // the chips shrink the conversation: stay at the end
+  const list = $('attach-list');
+  list.replaceChildren(...S.files.map((f) => fileChip(f, { onRemove: () => removeFile(f.key) })));
+  list.hidden = !S.files.length;
+  $('attach').setAttribute('aria-busy', S.picking ? 'true' : 'false');
+  $('attach').disabled = S.picking;
+  if (keepBottom && messagesBox().querySelector('.msg')) scrollToBottom(true);
+  updateSendEnabled();
+}
+
+function removeFile(key) {
+  const i = S.files.findIndex((f) => f.key === key);
+  if (i < 0) return;
+  const [f] = S.files.splice(i, 1);
+  if (f.id) {
+    api.call('remove_attachment', f.id);
+    // A chip put back after no_key may still be pending for the key card or Retry: the
+    // backend no longer has it, so it is not sent again.
+    const keep = (p) => p.id !== f.id;
+    if (S.keyCard) S.keyCard.pendingFiles = S.keyCard.pendingFiles.filter(keep);
+    S.lastFiles = S.lastFiles.filter(keep);
+  }
+  renderFiles();
+  // Keep the keyboard in the list: the chip that took its place, else the message box.
+  const buttons = $('attach-list').querySelectorAll('.att-remove');
+  (buttons[Math.min(i, buttons.length - 1)] || $('input')).focus();
+  announce(`Removed ${f.name}`);
+}
+
+function clearAttachErrors() {
+  const box = $('attach-errors');
+  box.replaceChildren();
+  box.hidden = true;
+}
+
+/** List files that could not be attached ({name, message}) above the composer. They stay
+ *  until dismissed, or until the next attach or send. */
+function addAttachErrors(errors) {
+  if (!errors || !errors.length) return;
+  const box = $('attach-errors');
+  let list = box.querySelector('.att-err-list');
+  if (!list) {
+    list = el('div', { class: 'att-err-list' });
+    const close = el('button', { class: 'att-err-close', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss' }, [railIcon(ICON.close)]);
+    close.addEventListener('click', () => { clearAttachErrors(); $('input').focus(); });
+    box.replaceChildren(list, close);
+  }
+  for (const e of errors) {
+    list.append(el('div', { class: 'att-err' }, [
+      e.name ? el('span', { class: 'att-err-name', dir: 'auto', text: e.name }) : null,
+      el('span', { class: 'att-err-msg', text: e.message || 'The file could not be attached.' }),
+    ]));
+  }
+  box.hidden = false;
+}
+
+function announceAttached(added) {
+  if (added.length === 1) announce(`Attached ${added[0].name}`);
+  else if (added.length > 1) announce(`Attached ${added.length} files`);
+}
+
+/** The paperclip: the app's native file dialog (attach_files). */
+async function pickFiles() {
+  if (S.picking) return;
+  clearAttachErrors();
+  if (S.files.length >= MAX_FILES) {
+    addAttachErrors([{ name: '', message: `${TOO_MANY_FILES} Remove one to add another.` }]);
+    return;
+  }
+  S.picking = true;   // the dialog takes the focus: the blur handler must not hide the popup
+  renderFiles();
+  const r = await api.call('attach_files');
+  S.picking = false;
+  const added = [];
+  const errors = [];
+  if (!r || !r.ok) {
+    errors.push({ name: '', message: (r && r.error && r.error.message) || 'The files could not be attached.' });
+  } else {
+    errors.push(...(r.errors || []));
+    for (const a of r.attachments || []) {
+      // The dialog does not know how many files the composer already holds.
+      if (S.files.length >= MAX_FILES) {
+        api.call('remove_attachment', a.id);
+        errors.push({ name: a.name, message: TOO_MANY_FILES });
+        continue;
+      }
+      const f = { ...a, key: ++fileKey, state: 'ready' };
+      S.files.push(f);
+      added.push(f);
+    }
+  }
+  renderFiles();
+  addAttachErrors(errors);
+  announceAttached(added);
+  $('input').focus();
+}
+
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Dropped or pasted files: each is checked here (count, 20 MB), shown as a "Reading…"
+ *  chip, read as a data: URL and handed to attach_data, one at a time. */
+async function attachLocalFiles(fileList) {
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return;
+  clearAttachErrors();
+  const errors = [];
+  const jobs = [];
+  for (const file of files) {
+    const name = String(file.name || 'file');
+    if (S.files.length >= MAX_FILES) { errors.push({ name, message: TOO_MANY_FILES }); continue; }
+    if (Number(file.size) > MAX_FILE_BYTES) { errors.push({ name, message: 'The file is larger than 20 MB.' }); continue; }
+    const entry = { key: ++fileKey, name, size: Number(file.size) || 0, state: 'loading' };
+    S.files.push(entry);
+    jobs.push([entry, file]);
+  }
+  renderFiles();
+  addAttachErrors(errors);
+  const added = [];
+  for (const [entry, file] of jobs) {
+    let r;
+    try {
+      r = await api.call('attach_data', entry.name, await readAsDataUrl(file));
+    } catch {
+      r = { ok: true, attachments: [], errors: [{ name: entry.name, message: 'The file could not be read.' }] };
+    }
+    const got = r && r.ok ? (r.attachments || [])[0] : null;
+    const i = S.files.indexOf(entry);
+    if (i < 0) {   // the composer was emptied meanwhile
+      if (got) api.call('remove_attachment', got.id);
+      continue;
+    }
+    if (got) {
+      S.files[i] = { ...got, key: entry.key, state: 'ready' };
+      added.push(S.files[i]);
+    } else {
+      S.files.splice(i, 1);
+    }
+    renderFiles();
+    addAttachErrors(r && r.ok ? (r.errors || [])
+      : [{ name: entry.name, message: (r && r.error && r.error.message) || 'The file could not be attached.' }]);
+  }
+  announceAttached(added);
+}
+
+/** Drag-and-drop anywhere on the popup, and pasting files. */
+function wireAttachments() {
+  $('attach').addEventListener('click', pickFiles);
+  const zone = $('drop-zone');
+  const carriesFiles = (e) => !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  // dragenter/dragleave fire for every element crossed: count them to know when the drag
+  // has left the window.
+  let depth = 0;
+  document.addEventListener('dragenter', (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    zone.hidden = false;
+  });
+  // Without preventDefault on dragover the drop never comes, and WebView2 navigates to the file.
+  document.addEventListener('dragover', (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!carriesFiles(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (!depth) zone.hidden = true;
+  });
+  document.addEventListener('drop', (e) => {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    zone.hidden = true;
+    attachLocalFiles(e.dataTransfer.files);
+  });
+  document.addEventListener('paste', (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    let files = Array.from(cd.files || []);
+    if (!files.length) {
+      files = Array.from(cd.items || []).filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean);
+    }
+    if (!files.length) return;
+    // Copying from Word or Excel puts a picture of the selection on the clipboard next to
+    // its text: the text is what was meant, so it pastes as usual.
+    if ((cd.getData('text/plain') || '').trim()) return;
+    e.preventDefault();
+    attachLocalFiles(files);
+  });
+  // The toast sits just above the composer, which grows with the chips.
+  if (typeof ResizeObserver === 'function') {
+    const composer = $('composer');
+    new ResizeObserver(() => {
+      document.documentElement.style.setProperty('--composer-h', `${composer.offsetHeight}px`);
+    }).observe(composer);
+  }
+}
+
 // ==================================================================== sending ====
 
 function updateSendEnabled() {
   const text = $('input').value;
-  const has = text.trim().length > 0;
-  $('send').disabled = !has || text.length > maxChars() || S.busy;
+  // A message can be files only. Not while a dropped file is still being read.
+  const has = text.trim().length > 0 || readyFiles().length > 0;
+  $('send').disabled = !has || text.length > maxChars() || S.busy || filesLoading();
 }
 
 function reflectComposer() {
@@ -463,27 +903,48 @@ function autosize() {
   updateSendEnabled();
 }
 
-/** Send `text`. `showUser` false when re-sending (Retry, key card) and the bubble is already there. */
-async function send(text, { showUser = true } = {}) {
+/** Send `text` with the attached `files` (bridge views with their ids). `showUser` false
+ *  when re-sending (Retry, key card) and the bubble is already there. */
+async function send(text, { showUser = true, files = [] } = {}) {
   text = String(text || '').trim();
-  if (!text || S.busy) return;
+  files = files.map(fileView);
+  if ((!text && !files.length) || S.busy) return;
   if (text.length > maxChars()) { toast(`Message is longer than ${maxChars().toLocaleString()} characters.`); return; }
-  S.busy = true; S.reqId = null; S.stopping = false; S.lastText = text;
-  if (showUser) { S.lastUserEl = userRow(text); addRow(S.lastUserEl); scrollToBottom(true); }   // your own message always follows you down
+  S.busy = true; S.reqId = null; S.stopping = false; S.lastText = text; S.lastFiles = files;
+  S.ctxBefore = dividerAnchor();
+  const mine = ++S.sendSeq;
+  if (showUser) { S.lastUserEl = userRow(text, undefined, files); addRow(S.lastUserEl); scrollToBottom(true); }   // your own message always follows you down
   startTurn();
   reflectComposer();
-  const r = await api.call('send_message', text);
+  // Without files send_message is called exactly as before attachments existed.
+  const ids = files.map((f) => f.id);
+  const r = ids.length ? await api.call('send_message', text, ids) : await api.call('send_message', text);
+  // Abandoned while send_message was in flight (New chat, the Stop safety net, or a reply
+  // that already finished and a newer send): the engine may still be generating for this
+  // id, so stop it and ignore its events, or the next send would adopt them. (Not S.cur:
+  // chat.reset / chat.fallback can replace the turn before this reply arrives.)
+  if (S.sendSeq !== mine || !S.busy) {
+    if (r && r.ok && r.request_id) { S.ignore.add(r.request_id); api.call('stop_generation', r.request_id); }
+    return;
+  }
   if (!r || !r.ok) {
     dropTurn();
     endRequest();
     showError((r && r.error) || { message: 'Could not send the message.', action: 'retry' });
     return;
   }
-  if (!S.reqId && !S.ignore.has(r.request_id)) S.reqId = r.request_id;
+  // This reply's id is authoritative: an id accept() picked up from a stray event of an
+  // abandoned request is ignored from now on.
+  if (S.reqId && S.reqId !== r.request_id) S.ignore.add(S.reqId);
+  S.reqId = r.request_id;
+  // Stop was pressed before the id was known: send it now.
+  if (S.stopping) api.call('stop_generation', S.reqId);
 }
 
 function retry() {
-  if (S.lastText) send(S.lastText, { showUser: false });
+  // The files' ids are still valid: the backend forgets them only when a reply finishes
+  // or is stopped.
+  if (S.lastText || S.lastFiles.length) send(S.lastText, { showUser: false, files: S.lastFiles });
 }
 
 function dropTurn() {
@@ -495,24 +956,30 @@ async function stopGeneration() {
   if (!S.busy || S.stopping) return;
   S.stopping = true;
   reflectComposer();
-  const id = S.reqId;
-  if (id) await api.call('stop_generation', id);
-  // Safety net: if the cancelled event never comes, release the button.
+  const mine = S.sendSeq;
+  // Without an id yet (send_message has not answered), send() stops it once the id arrives.
+  if (S.reqId) await api.call('stop_generation', S.reqId);
+  // Safety net: if the cancelled event never comes, release the button. Keyed to this
+  // request, not to its id: the id may arrive after Stop was pressed.
   setTimeout(() => {
-    if (S.stopping && S.reqId === id) {
+    if (S.stopping && S.sendSeq === mine) {
       if (S.reqId) S.ignore.add(S.reqId);
       finishCancelled();
     }
   }, 8000);
 }
 
-function finishCancelled() {
+/** End a stopped request. `message` is the engine's reason (chat.error{cancelled}). */
+function finishCancelled(message) {
   const turn = S.cur;
+  const note = stoppedNote(message);
   if (turn) {
     if (turnIsEmpty(turn)) turn.node.remove();
-    else finalizeTurn(turn, { model: S.selected.model, note: 'stopped' });
+    else finalizeTurn(turn, { model: turn.fallbackModel || S.selected.model, note });
   }
   endRequest();
+  // Nothing on screen says why when the engine stopped an empty reply on its own.
+  if ((!turn || turnIsEmpty(turn)) && note !== 'stopped') toast(String(message));
 }
 
 async function newChat() {
@@ -524,7 +991,7 @@ async function newChat() {
   closeKeyCard();
   await api.call('new_chat');
   messagesBox().replaceChildren();
-  S.lastText = ''; S.lastUserEl = null;
+  S.lastText = ''; S.lastFiles = []; S.lastUserEl = null;
   showScrollButton(false);
   renderEmpty();
   $('input').focus();
@@ -537,7 +1004,19 @@ function openSettings() {
 
 // ============================================================== bridge events ====
 
-on('chat.start', (e) => { accept(e); });
+// user_ts is the time the engine stores this message with: chat.context finds rows by it.
+on('chat.start', (e) => {
+  if (accept(e) && S.lastUserEl && e.user_ts != null) S.lastUserEl.dataset.ts = String(e.user_ts);
+});
+
+// The conversation does not fit the model's context window (or fits again).
+on('chat.context', (e) => {
+  if (!accept(e)) return;
+  placeContextDivider(e.first_kept_ts, e.dropped_messages);
+  if (S.lastUserEl) setCutNote(S.lastUserEl, !!e.message_cut);
+  if (e.message_cut) announce('Too long for context: only part of this message was sent.');
+  else if (e.dropped_messages) announce('Too long for context: older messages are past the context window.');
+});
 
 on('chat.phase', (e) => {
   if (!accept(e) || !S.cur) return;
@@ -581,6 +1060,32 @@ on('chat.tool_result', (e) => {
     turn.chips.set(e.call_id, chip); turn.tools.hidden = false; turn.tools.append(chip);
   }
   setChipState(chip, e.ok ? 'ok' : 'fail', e.summary);
+  // create_document saved a file: its card goes under the reply.
+  if (e.document) { addDocCard(turn, e.document); stickOrBadge(false); }
+});
+
+// The engine dropped the text streamed so far (a "no real-time data" refusal it is now
+// answering with a tool); the next deltas are the real answer.
+on('chat.reset', (e) => {
+  if (!accept(e) || !S.cur) return;
+  // A fresh turn: the dropped round had no tool chips (recovery only runs before any
+  // tool call), and its text and reasoning are gone from the conversation too. A
+  // fallback that already happened still holds, so it carries over.
+  const { fallbackModel, fallbackProvider } = S.cur;
+  dropTurn();
+  const turn = startTurn();
+  Object.assign(turn, { fallbackModel, fallbackProvider });
+  if (turn.phaseEl) turn.phaseEl.textContent = 'Looking it up…';
+});
+
+// The local model failed; the same message runs again on the fallback provider.
+on('chat.fallback', (e) => {
+  if (!accept(e)) return;
+  dropTurn();
+  const turn = startTurn();
+  turn.fallbackModel = e.model || null;
+  turn.fallbackProvider = e.provider || null;
+  if (turn.phaseEl) turn.phaseEl.textContent = `Local model failed. Asking ${providerName(e.provider) || 'the fallback provider'}…`;
 });
 
 on('chat.done', (e) => {
@@ -596,28 +1101,42 @@ on('chat.done', (e) => {
     ensureBubble(turn);
     turn.md.append(el('span', { class: 'muted', text: '(The model returned an empty reply.)' }));
   }
-  finalizeTurn(turn, { model: S.selected.model, tokPerS: e.tok_per_s });
+  // chat.done names the provider and model that actually answered; a provider other than
+  // the selected one means the fallback answered (even if its chat.fallback was missed).
+  const provider = e.provider || turn.fallbackProvider || S.selected.provider;
+  const fellBack = !!turn.fallbackProvider || provider !== S.selected.provider;
+  finalizeTurn(turn, {
+    model: e.model || turn.fallbackModel || S.selected.model,
+    tokPerS: e.tok_per_s,
+    note: fellBack ? `via ${providerName(provider) || 'the fallback provider'}` : undefined,
+  });
   announce((turn.content || 'Reply finished').slice(0, 300));
   endRequest();
 });
 
 on('chat.error', (e) => {
   if (!accept(e)) return;
-  if (e.code === 'cancelled') { finishCancelled(); return; }
+  if (e.code === 'cancelled') { finishCancelled(e.message); return; }
   const turn = S.cur;
   const hadOutput = turn && !turnIsEmpty(turn);
   if (turn) {
-    if (hadOutput) finalizeTurn(turn, { model: S.selected.model });
+    if (hadOutput) finalizeTurn(turn, { model: turn.fallbackModel || S.selected.model });
     else dropTurn();
   }
+  // The engine rolled the turn back: what it said about the context window no longer holds.
+  restoreDivider(S.ctxBefore);
+  if (S.lastUserEl) setCutNote(S.lastUserEl, false);
   endRequest();
   if (e.code === 'no_key' || e.action === 'add_key') {
-    // The server has not recorded this message: take it back out and keep the text.
+    // The server has not recorded this message: take it back out and keep the text and
+    // the files (their ids are still valid) in the composer.
     const text = S.lastText;
+    const files = S.lastFiles;
     if (S.lastUserEl) { S.lastUserEl.remove(); S.lastUserEl = null; }
     const input = $('input');
     if (!input.value.trim()) { input.value = text; autosize(); }
-    showKeyCard(S.selected.provider, text);
+    if (files.length && !S.files.length) setComposerFiles(files);
+    showKeyCard(e.provider || S.selected.provider, text, files);
     return;
   }
   showError({ message: e.message, hint: e.hint, action: e.action, code: e.code });
@@ -644,18 +1163,20 @@ on('key.status', (e) => {
   // A key saved in Settings while the card is open finishes the card.
   // (Not while the card is itself saving: it finishes through its own onSuccess.)
   if (S.keyCard && !S.keyCard.card.isBusy() && S.keyCard.providerId === e.provider_id && e.source && e.source !== 'none') {
-    const { pendingText } = S.keyCard;
-    closeKeyCard();
-    if (pendingText) send(pendingText);
+    S.keyCard.finish();
   }
 });
 
 on('settings.changed', (e) => {
   applyConfig(e.config || {});
   renderChip(); renderStatus(); renderEmpty(); autosize();
+  // Keys, providers and model lists may have changed (Settings, or the daily refresh):
+  // the model menu reads S.providers, so reload it.
+  refreshProviders();
 });
 
 on('popup.shown', () => {
+  refreshProviders();
   $('input').focus();
   if (isNearBottom(400)) scrollToBottom(true);
 });
@@ -688,8 +1209,7 @@ function dotState() {
       default: return { state: 'offline', text: 'not loaded' };
     }
   }
-  const hasKey = p.key && p.key.source && p.key.source !== 'none';
-  return hasKey ? { state: 'live', text: 'ready' } : { state: 'warning', text: 'needs an API key' };
+  return isConfigured(p) ? { state: 'live', text: 'ready' } : { state: 'warning', text: 'needs an API key' };
 }
 
 function renderChip() {
@@ -769,7 +1289,7 @@ function renderEmpty() {
   const existing = box.querySelector('.empty-state');
   if (box.querySelector('.msg')) { if (existing) existing.remove(); return; }
   const p = selectedProvider();
-  const needsKey = p && !isLocalProvider(p) && !(p.key && p.key.source && p.key.source !== 'none');
+  const needsKey = p && !isConfigured(p);
   const kids = [
     railIcon(['M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z']),
     el('h2', { class: 'empty-title', text: 'Ask anything' }),
@@ -796,8 +1316,9 @@ function renderConversation(items) {
   const box = messagesBox();
   box.replaceChildren();
   for (const m of items || []) {
-    if (m.role === 'user') box.append(userRow(m.content || '', m.ts));
+    if (m.role === 'user') box.append(userRow(m.content || '', m.ts, m.attachments || [], { cut: !!m.cut }));
     else if (m.role === 'assistant') box.append(assistantRowFromData(m));
+    else if (m.role === 'notice' && m.kind === 'context_cut') box.append(contextDivider(m.content || CONTEXT_CUT_TEXT));
   }
   renderEmpty();
   scrollToBottom(true);
@@ -812,7 +1333,9 @@ function menuItems() {
 function buildMenu() {
   const menu = $('model-menu');
   menu.replaceChildren();
-  for (const p of S.providers) {
+  // Only configured providers are offered; the selected one stays visible even without a
+  // key, so the menu never hides what is in use. Keys are added in Settings → Providers.
+  for (const p of S.providers.filter((x) => isConfigured(x) || x.id === S.selected.provider)) {
     const models = p.models && p.models.length ? p.models : (p.default_model ? [p.default_model] : []);
     const group = el('div', { class: 'mm-group', role: 'group', 'aria-label': p.display_name }, [
       el('div', { class: 'mm-head', text: p.display_name }),
@@ -901,6 +1424,7 @@ function wire() {
   });
   $('send').addEventListener('click', doSend);
   $('stop').addEventListener('click', stopGeneration);
+  wireAttachments();
   $('btn-new').addEventListener('click', newChat);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-close').addEventListener('click', () => api.call('hide_popup'));
@@ -941,12 +1465,14 @@ function wire() {
   });
 
   // Hide on blur, debounced. The host ignores it while pinned or while settings is opening.
+  // Not while the file dialog is open either: it takes the focus, and hide_popup is not
+  // held back by the host's suspend_blur.
   let blurTimer = 0;
   window.addEventListener('blur', () => {
     clearTimeout(blurTimer);
     blurTimer = setTimeout(() => {
       if (document.hasFocus()) return;
-      if (S.config.ui.hide_on_blur === false || S.pinned || Date.now() < S.settingsOpeningUntil) return;
+      if (S.config.ui.hide_on_blur === false || S.pinned || S.picking || Date.now() < S.settingsOpeningUntil) return;
       api.call('hide_popup');
     }, 150);
   });
@@ -956,11 +1482,33 @@ function wire() {
 function doSend() {
   const input = $('input');
   const text = input.value.trim();
-  if (!text || S.busy) return;
+  const files = readyFiles().map(fileView);
+  if ((!text && !files.length) || S.busy || filesLoading()) return;
   input.value = '';
+  S.files = [];   // they go with the message (no remove_attachment)
+  clearAttachErrors();
+  renderFiles();
   autosize();
-  send(text);
+  send(text, { files });
 }
+
+function showNotConnected(title, message) {
+  $('chip-label').textContent = 'Not connected';
+  const retryBtn = el('button', { class: 'btn btn-primary', type: 'button', text: 'Try again' });
+  retryBtn.addEventListener('click', () => location.reload());
+  messagesBox().replaceChildren(el('div', { class: 'empty-state' }, [
+    el('h2', { class: 'empty-title', text: title }),
+    el('p', { class: 'empty-sub', text: message }),
+    retryBtn,
+  ]));
+}
+
+// bridge.js has waited a long time for the app's bridge (inside WebView2 it never falls
+// back to the dev mock). It keeps waiting, so boot() still finishes if the bridge arrives.
+on('bridge.unavailable', () => {
+  showNotConnected('Could not connect to AI Chat',
+    'The app has not answered yet. This window connects as soon as it does; if it does not, quit AI Chat from the tray and start it again.');
+});
 
 async function boot() {
   wire();
@@ -970,15 +1518,7 @@ async function boot() {
   const r = await api.call('get_state');
   if (!r || !r.ok) {
     S.bootFailed = true;
-    $('chip-label').textContent = 'Not connected';
-    const box = messagesBox();
-    const retryBtn = el('button', { class: 'btn btn-primary', type: 'button', text: 'Try again' });
-    retryBtn.addEventListener('click', () => location.reload());
-    box.replaceChildren(el('div', { class: 'empty-state' }, [
-      el('h2', { class: 'empty-title', text: 'Could not reach the app' }),
-      el('p', { class: 'empty-sub', text: (r && r.error && r.error.message) || 'The backend did not answer.' }),
-      retryBtn,
-    ]));
+    showNotConnected('Could not reach the app', (r && r.error && r.error.message) || 'The backend did not answer.');
     return;
   }
   S.providers = r.providers || [];

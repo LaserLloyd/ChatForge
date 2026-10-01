@@ -118,6 +118,8 @@ button:disabled { cursor: not-allowed; }
 .link-btn:hover { color: var(--text-link-hover); }
 
 /* ---------------------------------------------------------------- messages ---- */
+/* The wrapper holds the scroll badge, so the badge rides on top of the composer at any height. */
+.messages-wrap { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 12px 8px; outline: none; }
 
 .empty-state {
@@ -149,6 +151,15 @@ button:disabled { cursor: not-allowed; }
 .msg.assistant .bubble { padding: 2px 0 0; color: var(--text-primary); background: transparent; border: 0; }
 .msg-time { margin-top: 4px; padding: 0 2px; font-size: var(--fs-micro); color: var(--text-tertiary); }
 .muted { color: var(--text-secondary); font-style: italic; }
+
+/* Where the model's view of a long conversation starts (chat.context): a thin rule with a
+   short label. The "(Too long for context)" note on a cut message is plain .msg-time text. */
+.ctx-divider {
+  display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 0 2px;
+  font-size: var(--fs-micro); color: var(--text-tertiary); text-align: center;
+}
+.ctx-divider::before, .ctx-divider::after { content: ""; flex: 1 1 0; min-width: 16px; border-top: 1px solid var(--border-subtle); }
+.ctx-divider-text { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 
 .msg-actions { display: flex; margin-top: 2px; }
 .msg-act-btn {
@@ -241,7 +252,7 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 
 /* ------------------------------------------------------------ scroll badge ---- */
 .scroll-bottom {
-  position: absolute; right: 16px; bottom: 92px; z-index: var(--z-sticky);
+  position: absolute; right: 16px; bottom: 12px; z-index: var(--z-sticky);
   display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0;
   background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: 50%;
   color: var(--text-primary); box-shadow: var(--shadow-2);
@@ -279,8 +290,91 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .char-count { font-size: var(--fs-micro); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .char-count[data-over="true"] { color: var(--danger-text); }
 
+/* The paperclip: as tall as the text box, quieter than Send. */
+.attach-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 38px; margin-inline-end: -2px; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.attach-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text-primary); }
+.attach-btn:disabled { color: var(--text-disabled); }
+.attach-btn[aria-busy="true"] .icon { animation: ui-pulse 1.2s var(--ease-standard) infinite; }
+
+/* ------------------------------------------------------------- attachments ---- */
+/* A chip: file icon, name, size · characters, a "partial" badge when the text was cut and,
+ * in the composer, a remove button. Two rows at most above the composer, then it scrolls. */
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 64px; overflow-y: auto; margin: 0 0 8px; }
+.att-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 28px; padding: 0 8px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: var(--fs-xs); color: var(--text-secondary);
+}
+.att-chip:has(.att-remove) { padding-inline-end: 2px; }
+.att-chip > .rail-icon { width: 14px; height: 14px; color: var(--text-tertiary); }
+.att-chip[data-state="loading"] > .rail-icon { animation: ui-pulse 1.2s var(--ease-standard) infinite; }
+.att-name { min-width: 0; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.att-meta { flex: none; white-space: nowrap; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.att-warn { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--warning-text); font-size: var(--fs-micro); }
+.att-warn .rail-icon { width: 13px; height: 13px; }
+.att-remove, .att-err-close {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 22px; height: 22px; padding: 0;
+  background: transparent; border: 0; border-radius: var(--radius-xs); color: var(--text-tertiary);
+}
+.att-remove:hover, .att-err-close:hover { background: var(--surface-3); color: var(--text-primary); }
+.att-remove .rail-icon, .att-err-close .rail-icon { width: 13px; height: 13px; }
+
+/* Files that could not be attached, above the chips until the next attach or send. */
+.attach-errors {
+  display: flex; align-items: flex-start; gap: 6px; max-height: 84px; overflow-y: auto; margin: 0 0 8px; padding: 5px 3px 5px 10px;
+  background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-sm);
+  font-size: var(--fs-xs); line-height: 1.45; color: var(--danger-text);
+}
+.att-err-list { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; padding-top: 1px; }
+.att-err { overflow-wrap: anywhere; }
+.att-err-name { font-weight: var(--fw-semibold); }
+.att-err-name::after { content: ": "; }
+.att-err-close { color: var(--danger-text); }
+
+/* The same chips heading a sent message, right-aligned over its bubble. */
+.msg-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 100%; margin-bottom: 4px; }
+.msg-files .att-chip { background: var(--surface-1); }
+.msg-files .att-name { max-width: 220px; }
+
+/* Documents the model saved (create_document), under the reply that made them. */
+.docs { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px; }
+.doc-card {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 8px 8px 10px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.doc-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px;
+  background: var(--accent-subtle); border-radius: var(--radius-sm); color: var(--text-link);
+}
+.doc-icon .rail-icon { width: 18px; height: 18px; }
+.doc-info { flex: 1 1 120px; min-width: 0; }
+.doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); }
+.doc-meta { font-size: var(--fs-micro); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.doc-actions { display: flex; gap: 6px; flex: none; margin-inline-start: auto; }
+.doc-actions .rail-icon { width: 14px; height: 14px; }
+
+/* Shown while files are dragged over the popup. It takes no pointer events, so the drag
+ * events keep reaching the page underneath. */
+.drop-zone {
+  position: absolute; inset: 0; z-index: var(--z-modal); display: flex; padding: 12px;
+  background: var(--scrim-light); pointer-events: none; animation: ui-overlay-in var(--dur-fast) var(--ease-out);
+}
+.drop-card {
+  display: flex; flex: 1 1 auto; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 16px;
+  background: var(--surface-overlay); border: 2px dashed var(--accent); border-radius: var(--radius-lg); text-align: center;
+}
+.drop-card .icon { width: 32px; height: 32px; color: var(--accent); }
+.drop-title { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.drop-sub { max-width: 260px; font-size: var(--fs-xs); color: var(--text-secondary); }
+
+/* --composer-h is set by chat.js as the composer grows (attachment chips), so the toast
+ * stays just above it. */
 .toast {
-  position: fixed; left: 50%; bottom: 84px; z-index: var(--z-toast); transform: translateX(-50%); max-width: calc(100% - 32px);
+  position: fixed; left: 50%; bottom: calc(var(--composer-h, 72px) + 12px); z-index: var(--z-toast); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 8px 14px; background: var(--surface-overlay); border: 1px solid var(--border-strong); border-radius: var(--radius-md);
   box-shadow: var(--shadow-2); color: var(--text-primary); font-size: var(--fs-sm); animation: ui-toast-in var(--dur-base) var(--ease-out);
 }

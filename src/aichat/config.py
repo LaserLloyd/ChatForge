@@ -38,7 +38,7 @@ from aichat.paths import Paths
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 #: Changes to these keys need the local model reloaded ("reload required").
 RESTART_KEYS: tuple[str, ...] = (
@@ -190,6 +190,18 @@ class ProviderSpec(BaseModel):
     extra_body: dict[str, Any] = Field(default_factory=dict)
     timeouts: Timeouts = Field(default_factory=Timeouts)
     builtin: bool = False
+    #: ``None``: a key is required unless the base URL is loopback. ``False``: the key is
+    #: optional (a LAN server such as StudioForge that may or may not have one set).
+    key_required: bool | None = None
+    #: Where to get a key (shown as a link in Settings).
+    docs_url: str | None = None
+    #: The context window in tokens (prompt + reply) when no per-model value is known.
+    #: ``None`` uses the cloud default (``chat.history.CLOUD_CAP_TOKENS``).
+    context_tokens: int | None = Field(default=None, ge=2048, le=10_000_000)
+    #: Context windows reported by the provider's ``GET /models`` (StudioForge reports the
+    #: loaded context of each model), filled by "Refresh models". Wins over
+    #: ``context_tokens`` for the models it names.
+    model_context: dict[str, int] = Field(default_factory=dict)
 
     @field_validator("id")
     @classmethod
@@ -222,9 +234,26 @@ class ProviderSpec(BaseModel):
             raise ValueError("api_key_env must match ^[A-Z][A-Z0-9_]{0,63}$")
         return v
 
+    @field_validator("docs_url")
+    @classmethod
+    def _check_docs_url(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        if not v.startswith(("https://", "http://")):
+            raise ValueError("docs_url must be an http(s) URL")
+        return v
 
+
+#: StudioForge (an OpenAI-compatible GPU LLM server) on this PC by default; point it at the GPU box in Settings → Providers.
+STUDIOFORGE_DEFAULT_URL = "http://localhost:1234/v1"
+
+
+# Adapted from DisPatch backend/app/llm_api.py ``PROVIDERS`` (MIT, LaserLloyd): the OpenAI
+# and DeepSeek presets (base URL, key env var, models, key docs link).
 def seed_providers() -> dict[str, ProviderSpec]:
-    """The providers every config starts with (PLAN 1.7), as fresh copies."""
+    """The providers every config starts with (PLAN 1.7), as fresh copies.
+    StudioForge is the owner's own OpenAI-compatible GPU server."""
     return {
         "local-npu": ProviderSpec(
             id="local-npu",
@@ -253,6 +282,48 @@ def seed_providers() -> dict[str, ProviderSpec]:
             temperature=1.0,
             extra_body={"reasoning_split": True},
             timeouts=Timeouts(connect_s=10, stall_s=90, wall_s=600),
+            # MiniMax's models take up to 1M tokens of context.
+            context_tokens=1_000_000,
+        ),
+        "studioforge": ProviderSpec(
+            id="studioforge",
+            kind="openai",
+            display_name="StudioForge",
+            base_url=STUDIOFORGE_DEFAULT_URL,
+            api_key_env="STUDIOFORGE_API_KEY",
+            models=["unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q5_K_S"],
+            default_model="unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q5_K_S",
+            supports_tools=True,
+            max_output_tokens=4096,
+            # The first request may load a 20+ GB model into VRAM.
+            timeouts=Timeouts(connect_s=10, stall_s=300, wall_s=900),
+            key_required=False,
+        ),
+        "openai": ProviderSpec(
+            id="openai",
+            kind="openai",
+            display_name="OpenAI",
+            base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+            models=["gpt-4o-mini", "gpt-4o"],
+            default_model="gpt-4o-mini",
+            quirks=["openai"],
+            supports_tools=True,
+            max_output_tokens=4096,
+            docs_url="https://platform.openai.com/api-keys",
+        ),
+        "deepseek": ProviderSpec(
+            id="deepseek",
+            kind="openai",
+            display_name="DeepSeek",
+            base_url="https://api.deepseek.com/v1",
+            api_key_env="DEEPSEEK_API_KEY",
+            models=["deepseek-chat", "deepseek-reasoner"],
+            default_model="deepseek-chat",
+            quirks=["deepseek"],
+            supports_tools=True,
+            max_output_tokens=4096,
+            docs_url="https://platform.deepseek.com/api_keys",
         ),
     }
 
@@ -266,15 +337,54 @@ def _upper(v: Any) -> Any:
     return v.strip().upper() if isinstance(v, str) else v
 
 
+#: The v1 default system prompt; a config still carrying it is moved to the new default.
+LEGACY_SYSTEM_PROMPT = (
+    "You are AI Chat, a concise desktop assistant. Answer briefly. Use tools only when "
+    "they help (current facts, web pages, dates, arithmetic)."
+)
+#: The persona only. The tool guidance (live internet access, "never say you cannot look it
+#: up") is added by ``chat.prompts`` when tools are actually offered, so a model without
+#: tools is never told it can reach the internet.
+DEFAULT_SYSTEM_PROMPT = (
+    "You are AI Chat, a concise desktop assistant. Answer briefly, and work things out step "
+    "by step when a question needs it."
+)
+#: Earlier defaults that a migration (or the next save) moves to the current default.
+OLD_DEFAULT_PROMPTS: frozenset[str] = frozenset(
+    {
+        LEGACY_SYSTEM_PROMPT,
+        "You are AI Chat, a concise desktop assistant with live internet access through your "
+        "tools. Answer briefly. Work things out step by step with your tools when a question "
+        "needs it, and never claim you cannot access current information.",
+    }
+)
+
+
 class ChatCfg(BaseModel):
     provider: str = "local-npu"
     model: str = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
-    system_prompt: str = (
-        "You are AI Chat, a concise desktop assistant. Answer briefly. Use tools only when "
-        "they help (current facts, web pages, dates, arithmetic)."
-    )
-    max_prompt_chars: int = Field(default=4000, ge=1, le=200_000)
-    max_tool_rounds: int = Field(default=4, ge=0, le=20)
+    #: The personality: who the assistant is and how it talks (Settings → General).
+    system_prompt: str = Field(default=DEFAULT_SYSTEM_PROMPT, max_length=20_000)
+    #: Standing instructions from the user: facts about them, preferences, rules ("answer
+    #: in metric", "I work in IT"). Sent after the personality with every message.
+    instructions: str = Field(default="", max_length=20_000)
+    #: The composer limit for one message. Large contexts (MiniMax: 1M tokens, about 4M
+    #: characters) make long pastes and attached files reasonable.
+    max_prompt_chars: int = Field(default=4000, ge=1, le=4_000_000)
+    max_tool_rounds: int = Field(default=6, ge=0, le=20)
+    #: When the local model fails (load error, crash, timeout), re-run the message on this
+    #: provider ("" = no fallback). ``fallback_model`` "" uses the provider's default model.
+    fallback_provider: str = ""
+    fallback_model: str = ""
+    #: Re-read the remote providers' model lists (``GET /models``) once a day.
+    auto_refresh_models: bool = True
+
+    @field_validator("system_prompt")
+    @classmethod
+    def _current_default(cls, v: str) -> str:
+        """An unedited earlier default becomes the current default."""
+        return DEFAULT_SYSTEM_PROMPT if v in OLD_DEFAULT_PROMPTS else v
+
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_output_tokens: int = Field(default=1024, ge=1, le=131_072)
     show_reasoning: Literal["collapsed", "hidden"] = "collapsed"
@@ -298,10 +408,34 @@ class LocalCfg(BaseModel):
         return _upper(v)
 
 
+#: Tools added in schema v2; a v1 config gets them switched on once, by the migration.
+TOOLS_ADDED_V2: tuple[str, ...] = (
+    "news_search",
+    "weather",
+    "wikipedia",
+    "exchange_rate",
+)
+#: Tools added in schema v3 (v2 configs were written before ``create_document`` existed).
+TOOLS_ADDED_V3: tuple[str, ...] = ("create_document",)
+
+
 class ToolsCfg(BaseModel):
     enabled: list[str] = Field(
-        default_factory=lambda: ["web_search", "fetch_url", "current_datetime", "calculator"]
+        default_factory=lambda: [
+            "web_search",
+            "news_search",
+            "fetch_url",
+            "weather",
+            "wikipedia",
+            "exchange_rate",
+            "current_datetime",
+            "calculator",
+            "create_document",
+        ]
     )
+    #: Home location for weather and "near me" questions, e.g. "Lisbon, Portugal".
+    location: str = Field(default="", max_length=100)
+    units: Literal["metric", "imperial"] = "metric"
     web_search_max_results: int = Field(default=5, ge=1, le=20)
     web_search_min_interval_s: float = Field(default=2.0, ge=0)
     fetch_max_bytes: int = Field(default=1_000_000, ge=1)
@@ -309,12 +443,23 @@ class ToolsCfg(BaseModel):
     tool_result_max_chars_local: int = Field(default=1500, ge=1)
     tool_result_max_chars_cloud: int = Field(default=6000, ge=1)
     block_private_addresses: bool = True
+    #: The most text one attached file contributes (longer files are cut when read).
+    attachment_max_chars: int = Field(default=200_000, ge=1000, le=4_000_000)
+    #: Where ``create_document`` saves files; "" = "AI Chat" in the user's Documents.
+    documents_dir: str = Field(default="", max_length=1000)
+
+    @field_validator("documents_dir")
+    @classmethod
+    def _strip_documents_dir(cls, v: str) -> str:
+        return v.strip()
 
 
 class UiCfg(BaseModel):
     theme: str = "laserlloyd"
     hotkey: str = "Ctrl+Alt+C"
     hide_on_blur: bool = True
+    #: Bring the hidden popup back (without taking the focus) when a reply finishes.
+    show_on_reply: bool = True
     width: int = Field(default=420, ge=200, le=4000)  # logical px
     height: int = Field(default=620, ge=200, le=4000)
     margin: int = Field(default=12, ge=0, le=200)
@@ -441,6 +586,13 @@ class AppConfig(BaseSettings):
                 out[pid] = spec
         return out
 
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _strip_location(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("location"), str):
+            value = {**value, "location": " ".join(value["location"].split())}
+        return value
+
     @model_validator(mode="after")
     def _ensure_seeds(self) -> AppConfig:
         for pid, spec in self.providers.items():
@@ -451,6 +603,13 @@ class AppConfig(BaseSettings):
                 self.providers[pid] = seed
         # The local runtime is not a user-managed provider: it can never lose its flag.
         self.providers["local-npu"].builtin = True
+        # The fallback must be a remote provider that exists. A stale value (provider
+        # removed by hand) is dropped rather than failing the whole config load.
+        fb = self.chat.fallback_provider
+        if fb and (fb not in self.providers or self.providers[fb].kind == "ovms"):
+            _log.warning("chat.fallback_provider %r is not a remote provider; ignoring it", fb)
+            self.chat.fallback_provider = ""
+            self.chat.fallback_model = ""
         return self
 
     def get(self, dotted: str) -> Any:
@@ -600,6 +759,48 @@ def _unlink_quiet(path: Path) -> None:
         path.unlink()
 
 
+def migrate_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Bring a raw ``config.toml`` table up to :data:`SCHEMA_VERSION`; ``(raw, changed)``.
+
+    v1 → v2: the tools added in v2 are switched on (a v1 file lists its enabled tools
+    explicitly, so new defaults would never reach it), and the v1 default system prompt
+    becomes the v2 default. A prompt the user edited is left alone.
+
+    v2 → v3: ``create_document`` is switched on the same way.
+    """
+    try:
+        version = int(raw.get("schema_version", 1))
+    except (TypeError, ValueError):
+        version = 1
+    if version >= SCHEMA_VERSION:
+        return raw, False
+    raw = copy.deepcopy(raw)
+    if version < 2:
+        _enable_new_tools(raw, TOOLS_ADDED_V2)
+        chat = raw.get("chat")
+        if isinstance(chat, dict) and chat.get("system_prompt") in OLD_DEFAULT_PROMPTS:
+            chat["system_prompt"] = DEFAULT_SYSTEM_PROMPT
+        if isinstance(chat, dict) and chat.get("max_tool_rounds") == 4:  # the v1 default
+            chat["max_tool_rounds"] = 6
+    if version < 3:
+        _enable_new_tools(raw, TOOLS_ADDED_V3)
+    raw["schema_version"] = SCHEMA_VERSION
+    return raw, True
+
+
+def _enable_new_tools(raw: dict[str, Any], added: tuple[str, ...]) -> None:
+    """Append ``added`` to an explicit ``tools.enabled`` list (in place).
+
+    A file lists its enabled tools explicitly, so a new default would never reach it. An
+    empty list means "no tools" on purpose and stays empty.
+    """
+    tools = raw.get("tools")
+    if isinstance(tools, dict) and isinstance(tools.get("enabled"), list):
+        enabled = [t for t in tools["enabled"] if isinstance(t, str)]
+        if enabled:
+            tools["enabled"] = enabled + [t for t in added if t not in enabled]
+
+
 def load_config(paths: Paths, *, recover: bool = False) -> AppConfig:
     """Load ``config.toml`` (creating it with defaults when missing) plus env overrides.
 
@@ -616,7 +817,13 @@ def load_config(paths: Paths, *, recover: bool = False) -> AppConfig:
         return _build({})
     try:
         raw = _read_raw(path)
+        raw, migrated = migrate_raw(raw)
         cfg = _build(raw)
+        if migrated:
+            try:
+                save_config(validate_config(raw), paths)
+            except (ValidationError, ConfigError) as exc:  # keep running on the old file
+                _log.warning("could not save the migrated config.toml: %s", exc)
     except ConfigError as exc:
         if not recover:
             raise
@@ -701,7 +908,9 @@ def update_config(
     disk_base = cfg
     if paths.config_file.exists():
         try:
-            disk_base = validate_config(_read_raw(paths.config_file))
+            # Migrated like load_config does, so a save never writes the new schema version
+            # over an un-migrated file (that would skip the migration for good).
+            disk_base = validate_config(migrate_raw(_read_raw(paths.config_file))[0])
         except (ConfigError, ValidationError):
             disk_base = cfg
     save_config(apply(disk_base), paths)

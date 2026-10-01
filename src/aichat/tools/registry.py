@@ -7,6 +7,7 @@ come back as ``ToolResult(ok=False)`` so the model can see and correct them. Onl
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Iterable, Mapping
@@ -23,6 +24,8 @@ class ToolResult:
     ok: bool
     content: str  # text fed back to the model
     summary: str = ""  # short label for the UI
+    #: A file the tool saved for the user: ``{name, path, size, kind}`` (``create_document``).
+    document: dict[str, Any] | None = None
 
 
 class ToolNotAllowed(AppError):
@@ -44,31 +47,135 @@ def _schema(name: str, description: str, properties: dict[str, Any], required: l
     }
 
 
+@dataclass(frozen=True)
+class ToolSpec:
+    """One tool: its OpenAI schema, a UI label, and whether the small local model gets it.
+
+    The local NPU model has a 4096-token prompt window and gets confused by long tool
+    lists, so only the ``local`` tools are offered to it; cloud and LAN models get all.
+    """
+
+    name: str
+    label: str
+    schema: dict
+    local: bool
+
+
+def _spec(
+    name: str,
+    label: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str],
+    *,
+    local: bool,
+) -> ToolSpec:
+    return ToolSpec(name, label, _schema(name, description, properties, required), local)
+
+
+def _str(description: str) -> dict[str, str]:
+    return {"type": "string", "description": description}
+
+
 # Canonical order; descriptions are deliberately terse (4096-token NPU prompt window).
-_SCHEMAS: dict[str, dict] = {
-    "web_search": _schema(
-        "web_search",
-        "Search the web for current information.",
-        {"query": {"type": "string", "description": "search query"}},
-        ["query"],
-    ),
-    "fetch_url": _schema(
-        "fetch_url",
-        "Fetch a web page and return its text.",
-        {"url": {"type": "string", "description": "http(s) URL"}},
-        ["url"],
-    ),
-    "current_datetime": _schema(
-        "current_datetime", "Get the current local date, time and timezone.", {}, []
-    ),
-    "calculator": _schema(
-        "calculator",
-        "Evaluate a math expression.",
-        {"expression": {"type": "string", "description": "e.g. sqrt(2)*10"}},
-        ["expression"],
-    ),
+_SPECS: dict[str, ToolSpec] = {
+    s.name: s
+    for s in (
+        _spec(
+            "web_search",
+            "Web search",
+            "Search the web for current facts, events and prices.",
+            {"query": _str("search query")},
+            ["query"],
+            local=True,
+        ),
+        _spec(
+            "news_search",
+            "News search",
+            "Search recent news articles.",
+            {"query": _str("news topic")},
+            ["query"],
+            local=False,
+        ),
+        _spec(
+            "fetch_url",
+            "Fetch a web page",
+            "Fetch a web page and return its text.",
+            {"url": _str("http(s) URL")},
+            ["url"],
+            local=True,
+        ),
+        _spec(
+            "weather",
+            "Weather",
+            "Current weather and forecast for a place.",
+            {
+                "location": _str("city, optionally ', country'; empty = user's home"),
+                "days": {"type": "integer", "description": "forecast days 1-7"},
+            },
+            [],
+            local=True,
+        ),
+        _spec(
+            "wikipedia",
+            "Wikipedia",
+            "Summary of a Wikipedia article.",
+            {"topic": _str("article topic")},
+            ["topic"],
+            local=False,
+        ),
+        _spec(
+            "exchange_rate",
+            "Exchange rates",
+            "Convert money between currencies (ECB rates).",
+            {
+                "from": _str("3-letter code, e.g. USD"),
+                "to": _str("3-letter code, e.g. JPY"),
+                "amount": {"type": "number"},
+            },
+            ["from", "to"],
+            local=False,
+        ),
+        _spec(
+            "current_datetime",
+            "Current date and time",
+            "Get the current local date, time and timezone.",
+            {},
+            [],
+            local=True,
+        ),
+        _spec(
+            "calculator",
+            "Calculator",
+            "Evaluate a math expression.",
+            {"expression": _str("e.g. sqrt(2)*10")},
+            ["expression"],
+            local=True,
+        ),
+        _spec(
+            "create_document",
+            "Create documents",
+            "Save a file for the user, e.g. report.docx or data.csv.",
+            {
+                "filename": _str("file name with extension: .md .txt .csv .docx .json ..."),
+                "content": _str("the full text; Markdown for .docx"),
+                "format": _str("optional file type if the name has none, e.g. docx"),
+            },
+            ["filename", "content"],
+            local=False,
+        ),
+    )
 }
-TOOL_NAMES: tuple[str, ...] = tuple(_SCHEMAS)
+_SCHEMAS: dict[str, dict] = {name: spec.schema for name, spec in _SPECS.items()}
+TOOL_NAMES: tuple[str, ...] = tuple(_SPECS)
+LOCAL_TOOL_NAMES: tuple[str, ...] = tuple(n for n, s in _SPECS.items() if s.local)
+#: Enabled for a new config (every tool).
+DEFAULT_ENABLED: tuple[str, ...] = TOOL_NAMES
+
+
+def tool_catalog() -> list[dict[str, Any]]:
+    """``[{name, label, local}]`` in canonical order, for Settings."""
+    return [{"name": s.name, "label": s.label, "local": s.local} for s in _SPECS.values()]
 
 
 def assert_tool_allowed(name: str, enabled: Iterable[str]) -> None:
@@ -151,7 +258,8 @@ class ToolRegistry:
 
     ``cfg`` is the ``[tools]`` config section (any object or mapping exposing
     ``web_search_max_results``, ``web_search_min_interval_s``, ``fetch_max_bytes``,
-    ``fetch_timeout_s`` and ``block_private_addresses``); missing values use the defaults.
+    ``fetch_timeout_s``, ``block_private_addresses``, ``location``, ``units`` and
+    ``documents_dir``); missing values use the defaults.
     """
 
     def __init__(self, cfg: Any = None, *, transport: Any = None) -> None:
@@ -160,16 +268,38 @@ class ToolRegistry:
         self._fetch_max_bytes = int(_opt(cfg, "fetch_max_bytes", 1_000_000))
         self._fetch_timeout_s = float(_opt(cfg, "fetch_timeout_s", 10))
         self._block_private = bool(_opt(cfg, "block_private_addresses", True))
+        self._location = str(_opt(cfg, "location", "") or "").strip()
+        self._units = str(_opt(cfg, "units", "metric") or "metric")
+        #: ``tools.documents_dir`` ("" = Documents\AI Chat), for ``create_document``.
+        self._documents_dir = str(_opt(cfg, "documents_dir", "") or "")
         self._transport = transport
         self._search = WebSearch(
             max_results=int(_opt(cfg, "web_search_max_results", 5)),
             min_interval_s=float(_opt(cfg, "web_search_min_interval_s", 2.0)),
         )
+        self._handlers = {
+            "web_search": self._web_search,
+            "news_search": self._news_search,
+            "fetch_url": self._fetch_url,
+            "weather": self._weather,
+            "wikipedia": self._wikipedia,
+            "exchange_rate": self._exchange_rate,
+            "current_datetime": self._current_datetime,
+            "calculator": self._calculator,
+            "create_document": self._create_document,
+        }
 
-    def schemas(self, enabled: Iterable[str]) -> list[dict]:
-        """OpenAI ``tools`` array for the enabled tools (canonical order, unknown names ignored)."""
+    @property
+    def location(self) -> str:
+        """The home location from Settings ("" when unset)."""
+        return self._location
+
+    def schemas(self, enabled: Iterable[str], *, local: bool = False) -> list[dict]:
+        """OpenAI ``tools`` array for the enabled tools (canonical order, unknown names
+        ignored). ``local`` keeps only the tools offered to the small local model."""
         wanted = set(enabled)
-        return [_SCHEMAS[name] for name in TOOL_NAMES if name in wanted]
+        names = LOCAL_TOOL_NAMES if local else TOOL_NAMES
+        return [_SCHEMAS[name] for name in names if name in wanted]
 
     async def call(
         self, name: str, arguments_json: str, *, enabled: Iterable[str], max_chars: int
@@ -197,28 +327,39 @@ class ToolRegistry:
         return result
 
     async def _dispatch(self, name: str, args: dict[str, Any], max_chars: int) -> ToolResult:
-        if name == "current_datetime":
-            from aichat.tools import clock
+        return await self._handlers[name](args, max_chars)
 
-            return await clock.run()
-        if name == "calculator":
-            from aichat.tools import calculator
+    async def _current_datetime(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        from aichat.tools import clock
 
-            expr = args.get("expression")
-            if not isinstance(expr, str):
-                return _missing(name, "expression")
-            return await calculator.run(expr)
-        if name == "web_search":
-            query = args.get("query")
-            if not isinstance(query, str) or not query.strip():
-                return _missing(name, "query")
-            return await self._search.search(query)
-        # fetch_url
+        return await clock.run()
+
+    async def _calculator(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        from aichat.tools import calculator
+
+        expr = args.get("expression")
+        if not isinstance(expr, str):
+            return _missing("calculator", "expression")
+        return await calculator.run(expr)
+
+    async def _web_search(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return _missing("web_search", "query")
+        return await self._search.search(query)
+
+    async def _news_search(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return _missing("news_search", "query")
+        return await self._search.search(query, kind="news")
+
+    async def _fetch_url(self, args: dict[str, Any], max_chars: int) -> ToolResult:
         from aichat.tools import fetch_url
 
         url = args.get("url")
         if not isinstance(url, str) or not url.strip():
-            return _missing(name, "url")
+            return _missing("fetch_url", "url")
         return await fetch_url.fetch(
             url,
             max_chars=max_chars if max_chars > 0 else 1500,
@@ -226,6 +367,56 @@ class ToolRegistry:
             timeout_s=self._fetch_timeout_s,
             block_private=self._block_private,
             transport=self._transport,
+        )
+
+    async def _weather(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        from aichat.tools import weather
+
+        location = args.get("location")
+        if location is not None and not isinstance(location, str):
+            return _missing("weather", "location")
+        days = args.get("days")
+        if isinstance(days, str) and days.strip().isdigit():
+            days = int(days)
+        return await weather.run(
+            location,
+            days=days if isinstance(days, int) and not isinstance(days, bool) else None,
+            units=self._units,
+            default_location=self._location,
+            transport=self._transport,
+        )
+
+    async def _wikipedia(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        from aichat.tools import wikipedia
+
+        topic = args.get("topic") or args.get("query")
+        if not isinstance(topic, str) or not topic.strip():
+            return _missing("wikipedia", "topic")
+        return await wikipedia.run(topic, transport=self._transport)
+
+    async def _exchange_rate(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        from aichat.tools import currency
+
+        return await currency.run(
+            args.get("from"), args.get("to"), args.get("amount", 1), transport=self._transport
+        )
+
+    async def _create_document(self, args: dict[str, Any], max_chars: int) -> ToolResult:
+        from aichat.tools import documents
+
+        filename = args.get("filename") or args.get("name")
+        content = args.get("content")
+        if not isinstance(filename, str) or not filename.strip():
+            return _missing("create_document", "filename")
+        if not isinstance(content, str):
+            return _missing("create_document", "content")
+        fmt = args.get("format")
+        return await asyncio.to_thread(
+            documents.create_document,
+            filename,
+            content,
+            fmt if isinstance(fmt, str) else None,
+            folder=self._documents_dir,
         )
 
 

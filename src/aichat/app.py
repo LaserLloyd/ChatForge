@@ -20,8 +20,10 @@ import contextlib
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from aichat import autostart, single_instance
@@ -34,6 +36,23 @@ log = get_logger(__name__)
 Mode = str  # "hidden" | "show" | "settings"
 
 QUIT_TIMEOUT_S = 20.0
+#: The taskbar identity (groups AI Chat's windows apart from other Python programs).
+APP_USER_MODEL_ID = "LaserLloyd.AIChat"
+#: Bump the version when the artwork changes, so the new icon is written.
+APP_ICON_FILE = "app-icon-v1.ico"
+MODEL_REFRESH_FIRST_DELAY_S = 60.0
+MODEL_REFRESH_INTERVAL_S = 24 * 3600.0
+#: ``CreateProcess`` flags for the copy that Restart starts: no visible console, and not in
+#: this process's console group (a Ctrl+C or Ctrl+Break here must not reach it). Not
+#: ``DETACHED_PROCESS``: a venv's ``python.exe`` is a launcher that starts the real
+#: interpreter as its own child, and a detached launcher's child gets a new, visible console.
+#: ``CREATE_NO_WINDOW`` gives the launcher a hidden console that its child shares.
+RESTART_CREATIONFLAGS = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    if os.name == "nt"
+    else 0
+)
 
 
 class App:
@@ -104,6 +123,7 @@ class App:
 
         # Adoption of models that were copied in by hand (needs the network; never fatal).
         s.loop.create_task(self._adopt_unadopted(), name="adopt-models")
+        s.loop.create_task(self._refresh_models_daily(), name="refresh-models")
 
     def _build_manager(self) -> Any:
         try:
@@ -155,6 +175,20 @@ class App:
             get_config=self.get_config,
             conversation_file=self.paths.conversation_file,
         )
+
+    async def _refresh_models_daily(self) -> None:
+        """Re-read the remote providers' model lists a minute after start, then daily
+        (``chat.auto_refresh_models``). Providers without a key are skipped; a failure is
+        logged and retried at the next interval, never surfaced as an error."""
+        await asyncio.sleep(MODEL_REFRESH_FIRST_DELAY_S)
+        while True:
+            api = getattr(self, "api", None)
+            if api is not None and self.cfg.chat.auto_refresh_models:
+                try:
+                    await api._refresh_models_async(None)  # noqa: SLF001 - same package
+                except Exception as exc:  # noqa: BLE001 - background chore
+                    log.warning("model list refresh failed", error=type(exc).__name__)
+            await asyncio.sleep(MODEL_REFRESH_INTERVAL_S)
 
     async def _adopt_unadopted(self) -> None:
         s = self.services
@@ -210,7 +244,7 @@ class App:
             self.tray.update(
                 state_for_runtime(state, local_selected=local_selected),
                 text,
-                model_loaded=state in ("ready", "starting", "compiling"),
+                runtime_state=str(state or "unloaded"),
             )
 
     def _on_download_progress(self, payload: dict[str, Any]) -> None:
@@ -242,6 +276,23 @@ class App:
             with contextlib.suppress(Exception):
                 self.api._warm_local_model()  # noqa: SLF001 - same package
 
+    def _on_reply_end(self, _request_id: str) -> None:
+        """A reply finished or failed (``Services.on_reply_end``, on the core loop, so it
+        must not block): with ``ui.show_on_reply``, bring the hidden popup back in its
+        corner without taking the focus. The popup call waits on the GUI thread, so it runs
+        on a thread of its own."""
+        popup = self.services.popup
+        if popup is None or self._quitting or not self.cfg.ui.show_on_reply:
+            return
+
+        def show() -> None:
+            try:
+                popup.show_inactive(source="reply")
+            except Exception:  # noqa: BLE001
+                log.exception("showing the popup for a finished reply failed")
+
+        threading.Thread(target=show, name="aichat-reply-show", daemon=True).start()
+
     def _set_autostart(self, want: bool) -> str | None:
         reply = self.api.set_autostart(want)
         if reply.get("ok"):
@@ -272,6 +323,7 @@ class App:
             on_opening=s.popup.note_settings_opening,
         )
         s.on_config_changed = self._on_config_changed
+        s.on_reply_end = self._on_reply_end
 
         self.tray = Tray(
             on_open=lambda: s.popup.toggle(source="tray"),
@@ -279,6 +331,7 @@ class App:
             on_load=lambda: self.api.load_model(),
             on_unload=lambda: self.api.unload_model(),
             on_quit=self.quit,
+            on_restart=self.restart,
             logs_dir=self.paths.logs_dir,
             autostart_enabled=lambda: autostart.status().enabled,
             set_autostart=self._set_autostart,
@@ -318,6 +371,27 @@ class App:
 
     # --- run / quit ----------------------------------------------------------------------
 
+    def _app_icon(self) -> str | None:
+        """The app's own taskbar identity and window icon.
+
+        Without these, Windows groups the windows under ``pythonw.exe`` and pywebview copies
+        its Python icon. The AppUserModelID gives AI Chat its own taskbar button; the
+        ``.ico`` (written once, versioned by name) is used for every window.
+        """
+        if os.name != "nt":
+            return None
+        with contextlib.suppress(Exception):
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        try:
+            from aichat.desktop.icon import write_app_ico
+
+            return str(write_app_ico(self.paths.home / APP_ICON_FILE))
+        except Exception as exc:  # noqa: BLE001 - a missing icon must not stop the app
+            log.warning("app icon unavailable", error=type(exc).__name__)
+            return None
+
     def run(self) -> int:
         from aichat.desktop.core_loop import CoreLoop
         from aichat.desktop.webserver import StaticServer
@@ -341,6 +415,7 @@ class App:
                 private_mode=False,
                 storage_path=str(self.paths.webview_dir),
                 debug=False,
+                icon=self._app_icon(),
             )
         finally:
             self._shutdown_after_webview()
@@ -348,8 +423,12 @@ class App:
 
     def _install_signal_handlers(self) -> None:
         # The main thread sits in webview.start(), which polls its GUI thread, so Python
-        # signal handlers do run there. Ctrl+C / Ctrl+Break quit cleanly (the launch
-        # check relies on CTRL_BREAK_EVENT).
+        # signal handlers do run there. Ctrl+Break and SIGTERM quit through quit() (the
+        # launch check relies on CTRL_BREAK_EVENT). SIGINT is ours only until
+        # webview.start(): pywebview then installs its own Ctrl+C handler, which calls
+        # Application.Exit() on the GUI thread. The popup lets that close through
+        # (Popup._on_form_closing), so webview.start() returns and
+        # _shutdown_after_webview() quits the same way.
         def _handler(_signum: int, _frame: Any) -> None:
             threading.Thread(target=self.quit, name="aichat-signal-quit", daemon=True).start()
 
@@ -390,6 +469,25 @@ class App:
             if s.popup is not None:
                 s.popup.destroy()
 
+    def restart(self) -> bool:
+        """Tray "Restart": start a fresh copy, then quit the same way as Quit (the model is
+        unloaded). The copy waits for this process to exit (``--after-pid``) before it
+        takes the single-instance port. Returns False, and keeps running, when the copy
+        could not be started."""
+        with self._quit_lock:
+            if self._quitting:
+                return False
+        try:
+            proc = spawn_restart(self.paths.home)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            log.warning("restart failed", error=str(exc)[:200])
+            if self.tray is not None:
+                self.tray.notify(f"Could not restart AI Chat: {exc}")
+            return False
+        log.info("restarting", new_pid=getattr(proc, "pid", None))
+        self.quit()
+        return True
+
     def _shutdown_after_webview(self) -> None:
         self.quit()
         s = self.services
@@ -403,6 +501,29 @@ class App:
             with contextlib.suppress(OSError):
                 self.instance_sock.close()
         flush_logging()
+
+
+def restart_command(pid: int | None = None) -> list[str]:
+    """The command line of the copy Restart starts: the same one start at login uses
+    (``pythonw.exe`` next to this interpreter, so the tray app owns no console, even when
+    this copy was started with ``python.exe``), hidden in the tray, after ``pid`` (this
+    process by default) has exited."""
+    after = os.getpid() if pid is None else int(pid)
+    return [*autostart.launch_argv(), "--after-pid", str(after)]
+
+
+def spawn_restart(home: Path) -> subprocess.Popen[bytes]:
+    """Start the replacement copy apart from this process (no visible console, own process
+    group, no inherited handles), in ``home``. Raises ``OSError`` when it cannot start."""
+    return subprocess.Popen(  # noqa: S603 - our own interpreter and module
+        restart_command(),
+        cwd=str(home),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=RESTART_CREATIONFLAGS,
+    )
 
 
 def _status_text(status: dict[str, Any]) -> str:

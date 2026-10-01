@@ -18,7 +18,7 @@ from aichat.errors import AppError
 from aichat.llm.client import ChatRequest, OpenAICompatClient
 from aichat.llm.errors import LLMError, is_loopback_url, normalize_base_url
 from aichat.llm.minimax import MiniMaxQuirks
-from aichat.llm.quirks import GenericQuirks, OvmsQuirks, Quirks
+from aichat.llm.quirks import DeepSeekQuirks, GenericQuirks, OpenAIQuirks, OvmsQuirks, Quirks
 
 MINIMAX_BASE: dict[str, str] = {
     "international": "https://api.minimax.io/v1",
@@ -58,13 +58,36 @@ def resolve_base_url(spec: ProviderSpec) -> str:
 
 
 def key_required(spec: ProviderSpec) -> bool:
-    """Remote providers need a key, except OpenAI-compatible servers on loopback."""
+    """Remote providers need a key, except OpenAI-compatible servers on loopback and
+    providers that declare the key optional (``key_required = false``)."""
     if spec.kind == "ovms":
         return False
+    if spec.key_required is not None:
+        return spec.key_required
     try:
         return not is_loopback_url(resolve_base_url(spec))
     except LLMError:
         return True
+
+
+def context_tokens_for(spec: ProviderSpec, model: str) -> int | None:
+    """The context window for ``model``: what the provider reported for it (by "Refresh
+    models"), capped by the provider's own setting; else the setting; else ``None`` (the
+    cloud default). The setting is a cap because a reported value can be a model's trained
+    maximum rather than the context it is actually loaded with."""
+    reported = spec.model_context.get(model)
+    if reported and spec.context_tokens:
+        return min(reported, spec.context_tokens)
+    return reported or spec.context_tokens
+
+
+def prompt_tokens_for(spec: ProviderSpec, model: str) -> int | None:
+    """How much of the context window the prompt may use: the window minus room for the
+    reply. ``None`` keeps the cloud default."""
+    ctx = context_tokens_for(spec, model)
+    if not ctx:
+        return None
+    return max(1024, ctx - spec.max_output_tokens - 256)
 
 
 def make_quirks(spec: ProviderSpec, *, enable_thinking: bool = False) -> Quirks:
@@ -72,6 +95,10 @@ def make_quirks(spec: ProviderSpec, *, enable_thinking: bool = False) -> Quirks:
         return OvmsQuirks(enable_thinking=enable_thinking)
     if is_minimax(spec):
         return MiniMaxQuirks()
+    if "deepseek" in spec.quirks:
+        return DeepSeekQuirks()
+    if "openai" in spec.quirks:
+        return OpenAIQuirks()
     return GenericQuirks()
 
 
@@ -172,7 +199,11 @@ class RemoteProvider:
         chars = _get(
             self._settings(), "tools.tool_result_max_chars_cloud", _DEFAULT_TOOL_CHARS["cloud"]
         )
-        return {"max_prompt_tokens": None, "tool_result_chars": int(chars)}
+        return {
+            "max_prompt_tokens": prompt_tokens_for(self.spec, model),
+            "tool_result_chars": int(chars),
+            "local": False,
+        }
 
     def budget(self, model: str) -> Any:
         return _prompt_budget(**self.budget_params(model))
