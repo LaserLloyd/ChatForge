@@ -672,6 +672,7 @@ function initModels() {
 async function loadSettings() {
   const res = await api.call('get_settings');
   if (isOk(res) && res.config) S.cfg = res.config;
+  if (isOk(res) && res.quick_actions) QA.data = res.quick_actions;
   return res;
 }
 
@@ -978,8 +979,11 @@ function providerCard(v, spec) {
     models.splice(0, models.length, ...r.models);
     currentModel = view.default_model || (r.models.includes(currentModel) ? currentModel : r.models[0] || '');
     const modelContext = { ...(spec.model_context || {}), ...(r.contexts || {}) };
-    Object.assign(spec, { models: [...r.models], default_model: currentModel, model_context: modelContext });
-    if (S.cfg && S.cfg.providers) S.cfg.providers[id] = { ...(S.cfg.providers[id] || {}), models: [...r.models], default_model: currentModel, model_context: modelContext };
+    // Which models see pictures, as the provider reported it (kept so a later save keeps it).
+    const modelVision = { ...(spec.model_vision || {}), ...(r.vision || {}) };
+    const refreshed = { models: [...r.models], default_model: currentModel, model_context: modelContext, model_vision: modelVision };
+    Object.assign(spec, refreshed);
+    if (S.cfg && S.cfg.providers) S.cfg.providers[id] = { ...(S.cfg.providers[id] || {}), ...refreshed };
     fillModels();
     paintCtxHint();
     fetched.hidden = true; clear(fetched);
@@ -1128,6 +1132,7 @@ function fillGeneral() {
   $('g-location').value = (c.tools && c.tools.location) || '';
   $('g-units').value = (c.tools && c.tools.units) || 'metric';
   fillFallback();
+  fillQuickActions();
   S.generalDirty = false;
 }
 
@@ -1177,6 +1182,7 @@ function initGeneral() {
   form.addEventListener('input', () => { S.generalDirty = true; $('g-msg').textContent = ''; });
   form.addEventListener('change', () => { S.generalDirty = true; });
   $('g-fallback').addEventListener('change', () => { $('g-fallback-model').value = ''; fillFallbackModels(); });
+  initQuickActions();
 
   $('g-autostart').addEventListener('change', async (e) => {
     const want = e.target.checked;
@@ -1206,6 +1212,7 @@ function initGeneral() {
     if (location.length > 100) fail('tools.location', 'Keep the location under 100 characters.', $('g-location'));
     const fbModel = $('g-fallback-model').value.trim();
     if (/\s/.test(fbModel)) fail('chat.fallback_model', 'Model names cannot contain spaces.', $('g-fallback-model'));
+    const quick = collectQuickActions(fail);
     if (bad) { bad.focus(); return; }
 
     const fallback = $('g-fallback').value;
@@ -1218,6 +1225,7 @@ function initGeneral() {
         instructions: $('g-instructions').value.trim(),
         fallback_provider: fallback,
         fallback_model: fallback ? fbModel : '',
+        ...quick,
       },
       ui: { hide_on_blur: $('g-blur').checked, show_on_reply: $('g-reply').checked },
       tools: {
@@ -1232,6 +1240,8 @@ function initGeneral() {
     let ok_ = isOk(res);
     const notes = [];
     if (res && res.config) S.cfg = { ...S.cfg, ...res.config };
+    // Saved: the editor shows the list as the app now has it (new custom ids, edited flags).
+    if (ok_ && res.quick_actions) { QA.data = res.quick_actions; fillQuickActions(); }
     if (!ok_) {
       const left = showFieldErrors(res.errors);
       notes.push(left.length ? left.join('; ') : errText(res));
@@ -1253,6 +1263,145 @@ function initGeneral() {
     $('g-save').disabled = false;
     if (ok_) { S.generalDirty = false; $('g-msg').textContent = 'Saved.'; $('g-msg').className = 'ok-text small'; }
     else { $('g-msg').textContent = notes.length ? notes.join(' ') : 'Some settings were not saved. See the messages above.'; $('g-msg').className = 'danger-text small'; }
+  });
+}
+
+// ------------------------------------------------------------ quick actions ----
+// The quick actions (chat/actions.py) as an editable list in the General form: a name and
+// instructions per action, two switches, Remove, Add action and Restore defaults; Save
+// writes them with the rest of the form. Only what differs from the built-in actions is
+// stored: chat.quick_actions holds edited built-in ones (by id; empty instructions keep
+// the built-in text) and custom ones, chat.hidden_quick_actions the removed built-in ones.
+
+const QA = { data: null };   // get_settings / update_settings quick_actions: {defaults, items}
+const QA_MAX = 50;           // config.ChatCfg.quick_actions max_length
+const QA_LABEL_MAX = 40;     // config.QuickActionCfg.label
+const QA_INSTRUCTIONS_MAX = 4000;
+let qaSeq = 0;
+
+function qaDefaults() { return (QA.data && QA.data.defaults) || []; }
+
+/** One editable row. `a`: {id, label, hint, instructions, tools, match_style, builtin}. */
+function quickActionRow(a, { open = false } = {}) {
+  const n = ++qaSeq;
+  const label = el('input', { id: `qa-label-${n}`, class: 'input qa-label', type: 'text', maxlength: String(QA_LABEL_MAX),
+    autocomplete: 'off', spellcheck: 'true', placeholder: 'Name, e.g. Make it friendlier' });
+  label.value = a.label || '';
+  const text = el('textarea', { id: `qa-text-${n}`, class: 'input qa-instructions', rows: '4', maxlength: String(QA_INSTRUCTIONS_MAX),
+    spellcheck: 'true', placeholder: 'What the model should do with the pasted text, and how to answer. For example: Rewrite the text in a warmer tone. Reply with only the new text in one ```text block.' });
+  text.value = a.instructions || '';
+  const tools = el('input', { type: 'checkbox', class: 'qa-tools', id: `qa-tools-${n}` });
+  tools.checked = !!a.tools;
+  const style = el('input', { type: 'checkbox', class: 'qa-style', id: `qa-style-${n}` });
+  style.checked = !!a.match_style;
+  const remove = btn('Remove', { cls: 'btn-danger-ghost qa-remove' });
+  const li = el('li', { class: 'qa-row', dataset: { id: a.id || '', builtin: a.builtin ? '1' : '0', hint: a.hint || '' } }, [
+    el('div', { class: 'qa-head' }, [
+      label,
+      chip(a.builtin ? 'Built in' : 'Custom', a.builtin ? 'neutral' : 'accent'),
+      remove,
+    ]),
+    el('details', { class: 'qa-more' }, [
+      el('summary', { text: 'Instructions' }),
+      text,
+      el('div', { class: 'qa-flags' }, [
+        el('label', { class: 'check', for: tools.id }, [tools, el('span', { text: 'Can look things up on the web' })]),
+        el('label', { class: 'check', for: style.id }, [style, el('span', { text: 'Match the formatting of my text' })]),
+      ]),
+    ]),
+  ]);
+  if (open) li.querySelector('details').open = true;
+  label.setAttribute('aria-label', 'Quick action name');
+  const sync = () => {
+    const name = label.value.trim() || 'this action';
+    remove.setAttribute('aria-label', `Remove ${name}`);
+    text.setAttribute('aria-label', `Instructions for ${name}`);
+  };
+  label.addEventListener('input', sync);
+  sync();
+  remove.addEventListener('click', () => {
+    const next = li.nextElementSibling || li.previousElementSibling;
+    li.remove();
+    S.generalDirty = true;
+    syncQuickActionButtons();
+    (next ? next.querySelector('.qa-remove') : $('qa-add')).focus();
+  });
+  return li;
+}
+
+function renderQuickActionRows(items) {
+  $('qa-list').replaceChildren(...items.map((a) => quickActionRow(a)));
+  syncQuickActionButtons();
+}
+
+function syncQuickActionButtons() {
+  $('qa-add').disabled = $('qa-list').children.length >= QA_MAX;
+}
+
+function fillQuickActions() {
+  if (!QA.data) return;
+  renderQuickActionRows(QA.data.items || []);
+}
+
+/** The editor as a settings patch ({quick_actions, hidden_quick_actions}), or the first
+ *  problem reported through `fail(key, message, input)`. */
+function collectQuickActions(fail) {
+  const defaults = new Map(qaDefaults().map((d) => [d.id, d]));
+  const present = new Set();
+  const quick_actions = [];
+  let problem = false;
+  const report = (message, input) => {
+    if (problem) return;
+    problem = true;
+    input.setAttribute('aria-invalid', 'true');
+    const more = input.closest('details');
+    if (more) more.open = true;
+    fail('chat.quick_actions', message, input);
+  };
+  [...$('qa-list').querySelectorAll('.qa-row')].forEach((li, i) => {
+    const labelIn = li.querySelector('.qa-label');
+    const textIn = li.querySelector('.qa-instructions');
+    const label = labelIn.value.replace(/\s+/g, ' ').trim();
+    const instructions = textIn.value.trim();
+    const tools = li.querySelector('.qa-tools').checked;
+    const matchStyle = li.querySelector('.qa-style').checked;
+    const hint = li.dataset.hint || '';
+    const base = li.dataset.builtin === '1' ? defaults.get(li.dataset.id) : null;
+    if (!label) { report(`Give quick action ${i + 1} a name.`, labelIn); return; }
+    if (!base && !instructions) { report(`Write the instructions for “${label}”.`, textIn); return; }
+    if (!base) {
+      quick_actions.push({ id: li.dataset.id || '', label, instructions, hint, tools, match_style: matchStyle });
+      return;
+    }
+    present.add(base.id);
+    const text = instructions === base.instructions ? '' : instructions;   // '' keeps the built-in text
+    const ownHint = hint === base.hint ? '' : hint;
+    if (label !== base.label || text || ownHint || tools !== base.tools || matchStyle !== base.match_style) {
+      quick_actions.push({ id: base.id, label, instructions: text, hint: ownHint, tools, match_style: matchStyle });
+    }
+  });
+  const hidden_quick_actions = [...defaults.keys()].filter((id) => !present.has(id));
+  return { quick_actions, hidden_quick_actions };
+}
+
+function initQuickActions() {
+  $('qa-add').addEventListener('click', () => {
+    if ($('qa-list').children.length >= QA_MAX) return;
+    const li = quickActionRow({ id: '', label: '', instructions: '', tools: false, match_style: true, builtin: false }, { open: true });
+    $('qa-list').append(li);
+    S.generalDirty = true;
+    syncQuickActionButtons();
+    li.querySelector('.qa-label').focus();
+  });
+  $('qa-restore').addEventListener('click', () => {
+    renderQuickActionRows(qaDefaults());
+    S.generalDirty = true;
+    $('g-msg').className = 'ui-text-secondary small';
+    $('g-msg').textContent = 'The built-in quick actions are back. Press Save to keep them.';
+  });
+  // A name or instructions being fixed clears its error.
+  $('qa-list').addEventListener('input', (e) => {
+    if (e.target.getAttribute('aria-invalid')) { e.target.removeAttribute('aria-invalid'); setError('chat.quick_actions', ''); }
   });
 }
 

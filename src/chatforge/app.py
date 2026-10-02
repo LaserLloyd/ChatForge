@@ -165,6 +165,7 @@ class App:
 
     def _build_engine(self) -> Any:
         try:
+            from chatforge import ocr
             from chatforge.chat.engine import ChatEngine
         except ImportError as exc:  # pragma: no cover - WS6 not merged
             log.warning("chat engine unavailable", error=str(exc))
@@ -174,6 +175,9 @@ class App:
             tools=self.services.tools,
             get_config=self.get_config,
             conversation_file=self.paths.conversation_file,
+            attachments_dir=self.paths.attachments_dir,
+            # Windows OCR reads the text in pictures for models that cannot see them.
+            ocr=ocr.recognize if ocr.available() else None,
         )
 
     async def _refresh_models_daily(self) -> None:

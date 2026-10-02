@@ -241,3 +241,74 @@ test('Logs tab shows the tail and stops its timer when left', async () => {
   assert.match($('log-count').textContent, /lines?/);
   $('tab-models').click();
 });
+
+// ------------------------------------------------------------- quick actions ----
+
+const qaRows = () => [...doc.querySelectorAll('#qa-list .qa-row')];
+const qaNames = () => qaRows().map((li) => li.querySelector('.qa-label').value);
+async function saveGeneral() {
+  $('g-msg').textContent = '';
+  $('general-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 40 && !/Saved\.|not saved|Give|Write/.test($('g-msg').textContent + $('err-chat.quick_actions').textContent); i++) await sleep(20);
+}
+
+test('General lists the quick actions: the built-in ones, Proof / Improve / Check me / News insight first', () => {
+  $('tab-general').click();
+  $('g-mpc').value = '4000';   // an earlier test left an invalid value here
+  assert.deepEqual(qaNames().slice(0, 4), ['Proof this', 'Improve this', 'Check me on this', 'News insight']);
+  assert.equal(qaRows().length, 12);
+  const proof = qaRows()[0];
+  assert.match(proof.querySelector('.chip').textContent, /Built in/);
+  assert.match(proof.querySelector('.qa-instructions').value, /Proofread/);
+  assert.equal(proof.querySelector('.qa-style').checked, true);
+  assert.equal(qaRows()[3].querySelector('.qa-tools').checked, true, 'News insight may look things up');
+  assert.equal(proof.querySelector('.qa-remove').getAttribute('aria-label'), 'Remove Proof this');
+});
+
+test('editing the quick actions saves only what differs from the built-in ones', async () => {
+  const api = window.pywebview.api;
+  qaRows()[0].querySelector('.qa-label').value = 'Proofread';
+  qaRows().find((li) => li.querySelector('.qa-label').value === 'Translate').querySelector('.qa-remove').click();
+  assert.equal(qaRows().length, 11);
+  $('qa-add').click();
+  const added = qaRows().at(-1);
+  assert.equal(doc.activeElement, added.querySelector('.qa-label'), 'a new row takes the focus');
+  assert.equal(added.querySelector('details').open, true);
+  added.querySelector('.qa-label').value = 'Haiku';
+
+  // A custom action needs instructions: the save stops and says so.
+  await saveGeneral();
+  assert.match($('err-chat.quick_actions').textContent, /Write the instructions for “Haiku”/);
+  assert.equal(added.querySelector('.qa-instructions').getAttribute('aria-invalid'), 'true');
+  assert.equal(doc.activeElement, added.querySelector('.qa-instructions'));
+
+  added.querySelector('.qa-instructions').value = 'Turn the text into a haiku.';
+  await saveGeneral();
+  assert.equal($('g-msg').textContent, 'Saved.');
+  const chat = (await api.get_settings()).config.chat;
+  assert.deepEqual(chat.quick_actions, [
+    { id: 'proof', label: 'Proofread', instructions: '', hint: '', tools: false, match_style: true },
+    { id: '', label: 'Haiku', instructions: 'Turn the text into a haiku.', hint: '', tools: false, match_style: true },
+  ]);
+  assert.deepEqual(chat.hidden_quick_actions, ['translate']);
+  // The list is redrawn as the app has it now: the custom action has its id and its chip.
+  const last = qaRows().at(-1);
+  assert.equal(last.dataset.id, 'custom-haiku');
+  assert.match(last.querySelector('.chip').textContent, /Custom/);
+  const state = await api.get_state();
+  assert.equal(state.config.quick_actions[0].label, 'Proofread');
+  assert.ok(!state.config.quick_actions.some((a) => a.id === 'translate'));
+});
+
+test('Restore defaults brings back the built-in quick actions once saved', async () => {
+  const api = window.pywebview.api;
+  $('qa-restore').click();
+  assert.match($('g-msg').textContent, /Press Save to keep them/);
+  assert.equal(qaRows().length, 12);
+  assert.equal(qaNames()[0], 'Proof this');
+  await saveGeneral();
+  assert.equal($('g-msg').textContent, 'Saved.');
+  const chat = (await api.get_settings()).config.chat;
+  assert.deepEqual(chat.quick_actions, []);
+  assert.deepEqual(chat.hidden_quick_actions, []);
+});

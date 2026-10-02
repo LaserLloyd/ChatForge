@@ -60,9 +60,16 @@
     <footer id="composer" class="composer">
       <div id="attach-errors" class="attach-errors" role="alert" hidden></div>
       <div id="attach-list" class="attach-list" role="list" aria-label="Attached files" hidden></div>
+      <div id="attach-note" class="attach-note" role="status" hidden></div>
+      <!-- The quick action picked for the next message (chat.js renders the pill). -->
+      <div id="action-bar" class="action-bar" hidden></div>
+      <div id="quick-menu" class="quick-menu" role="menu" aria-label="Quick actions" hidden></div>
       <div class="composer-row">
         <button type="button" id="attach" class="attach-btn" aria-label="Attach files" title="Attach files (or drop or paste them here)">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5l-7.6 7.6a4.6 4.6 0 0 1-6.5-6.5l7.9-7.9a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.55 1.55 0 0 1-2.2-2.2L15.4 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" id="quick" class="attach-btn quick-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="quick-menu" aria-label="Quick actions" title="Quick actions: Proof, Improve, Check me…">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5L4.5 13.5h6.5l-1 8 8.5-11h-6.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <textarea id="input" rows="1" dir="auto" placeholder="Message ChatForge" aria-label="Message" autocomplete="off" spellcheck="true"></textarea>
         <button type="button" id="send" class="send-btn" aria-label="Send" title="Send (Enter)" disabled>
@@ -81,7 +88,7 @@
       <div class="drop-card">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5l-7.6 7.6a4.6 4.6 0 0 1-6.5-6.5l7.9-7.9a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.55 1.55 0 0 1-2.2-2.2L15.4 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="drop-title">Drop files to attach</span>
-        <span class="drop-sub">Text, code, Word, Excel, PowerPoint or PDF, up to 20 MB each</span>
+        <span class="drop-sub">Text, code, Word, Excel, PowerPoint, PDF or pictures, up to 20 MB each</span>
       </div>
     </div>
   </div>

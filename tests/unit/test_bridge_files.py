@@ -99,9 +99,16 @@ def test_attach_data_reply_shape(api: Api, services: Services) -> None:
 
 
 def test_attach_data_problems_are_error_entries(api: Api, services: Services, monkeypatch) -> None:
-    reply = api.attach_data("photo.png", b64(b"\x89PNG\r\n\x1a\n"))
+    reply = api.attach_data("photo.png", b64(b"\x89PNG\r\n\x1a\n"))  # only a signature
     assert reply["ok"] is True and reply["attachments"] == []
-    assert reply["errors"] == [{"name": "photo.png", "message": att.IMAGES_UNSUPPORTED}]
+    assert reply["errors"] == [
+        {
+            "name": "photo.png",
+            "message": "The picture could not be read; it may be damaged or not really a PNG file.",
+        }
+    ]
+    reply = api.attach_data("layers.psd", b64(b"8BPS\x00\x01"))
+    assert reply["errors"] == [{"name": "layers.psd", "message": att.IMAGES_UNSUPPORTED}]
     reply = api.attach_data("x.txt", "@@@ not base64 @@@")
     assert reply["errors"][0]["message"] == "The file data could not be read."
     monkeypatch.setattr(att, "MAX_FILE_BYTES", 4)

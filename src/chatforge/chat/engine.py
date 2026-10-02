@@ -5,6 +5,8 @@ One request, as events (every event also carries ``type`` and ``request_id``)::
     chat.start      {provider, model, user_ts}       ``user_ts``: the ``_ts`` this message is
                                                      stored with
     chat.phase      {phase: loading_model}           local model not ready yet
+    chat.phase      {phase: reading_image}           reading the text in attached pictures
+                                                     (OCR) for a model that cannot see them
     chat.context    {dropped_messages, first_kept_ts, message_cut}
                                                      the conversation does not fit the
                                                      model's context window: older turns
@@ -55,6 +57,24 @@ message as ``_attachments`` with their text, next to the typed text; ``chat.hist
 adds them to the prompt as ``<file name="...">`` blocks, cut to fit each model's budget.
 ``chat.max_prompt_chars`` limits the typed text only.
 
+Attached pictures (``chatforge.images``) are written to ``attachments_dir`` as
+``<sha256>.jpg`` / ``.png`` when their message runs; the record keeps only the file name,
+size and thumbnail. A model that can see pictures (``PromptBudget.vision``) gets them as
+``image_url`` parts (``images.inline`` reads the files right before each request). For one
+that cannot, the text in the latest message's pictures is first read with ``ocr`` (Windows
+OCR, in a worker thread; stored on the record as ``ocr`` so it runs once) and the model
+gets a note plus that text. Stored pictures that no message refers to any more are removed
+when the engine starts, after a turn (the conversation may have been trimmed) and on New
+chat.
+
+Quick actions (``send(..., action=id)``, ``chat.actions``): the user message is stored with
+the typed text as ``_text``, the action as ``_action`` and the expanded prompt the model sees
+as ``content``; Regenerate keeps all three. An action without tools is answered without
+any (and without the local model's up-front lookups: pasted text is content, not a
+question). After a rewrite action's reply, its fenced text blocks are made to match the
+pasted text's surface conventions (``actions.guard_reply``) in the stored reply and in
+``chat.done.content``.
+
 Context window (``chat.history.fit_prompt``, no summarising): every round's prompt keeps
 the system prompt, this message and this turn's tool calls and results, and leaves out
 the oldest whole turns that do not fit; if this message alone does not fit, its end is
@@ -79,9 +99,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from chatforge import images
 from chatforge.attachments import MAX_FILES, as_record
+from chatforge.chat import actions, prompts, research
 from chatforge.chat import conversation as conv_store
-from chatforge.chat import prompts, research
 from chatforge.chat.conversation import Conversation
 from chatforge.chat.history import Fitted, fit_prompt
 from chatforge.llm.errors import LLMError, normalize_base_url
@@ -103,9 +124,14 @@ NOTE_DUPLICATE = (
 NOTE_NO_TOOLS = "Not run: tools are not available for this answer."
 #: The local model's temperature cap once tool results are in the prompt.
 GROUNDED_TEMPERATURE = 0.3
+#: The longest wait for the text in one picture (``ocr``), and in all of one message's
+#: pictures, in seconds. After a timeout the rest are not read.
+OCR_WAIT_S = 30.0
+OCR_TOTAL_S = 60.0
 #: Added to the system prompt when ``create_document`` is offered.
 DOCUMENTS_SENTENCE = (
-    "When the user asks for a file or document, write it with create_document and mention its name."
+    "When the user asks for a file (Word, Excel, PowerPoint, CSV, text), write it with "
+    "create_document and mention its name."
 )
 
 
@@ -144,6 +170,14 @@ class _Request:
     #: index it came from, put back if the new reply fails or says nothing.
     restore: list[dict] | None = None
     restore_at: int = 0
+    #: Sharper copies of this message's pictures to read text from (``Picture.ocr_data``),
+    #: by stored file name.
+    ocr_sources: dict[str, bytes] = field(default_factory=dict)
+    #: Quick action: the id ``send`` was given, then the ``_action`` record
+    #: (``QuickAction.stored``) and the prompt the model sees for it (``actions.expand``).
+    action_id: str | None = None
+    action: dict[str, Any] | None = None
+    prompt: str | None = None
 
 
 #: What OVMS says (HTTP 400) when the prompt is over ``--max_prompt_len``.
@@ -193,12 +227,54 @@ def _with_documents_sentence(system: dict) -> dict:
     return {**system, "content": content}
 
 
+def _recognise(ocr: Callable[[Path], str], path: Path, sharp: bytes | None) -> str:
+    """The text ``ocr`` reads in a picture: from ``sharp`` (a sharper copy, written next to
+    the stored picture as ``<file>.ocr.tmp`` and deleted afterwards; one left behind by a
+    crash is swept by ``images.cleanup``) when there is one, else from ``path``."""
+    if not sharp:
+        return ocr(path)
+    tmp = path.with_name(f"{path.name}.ocr.tmp")
+    try:
+        tmp.write_bytes(sharp)
+        return ocr(tmp)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def _add_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
     for key, value in (usage or {}).items():
         if isinstance(value, bool):
             continue
         if isinstance(value, int | float):
             total[key] = total.get(key, 0) + value
+
+
+# --------------------------------------------------------------------------- #
+# Quick actions (``chat.actions``)
+# --------------------------------------------------------------------------- #
+
+
+def _with_action(msg: dict[str, Any], req: _Request, text: str) -> None:
+    """A quick action's user message: the model sees the expanded prompt (``content``),
+    the popup the typed text (``_text``) and the action (``_action``)."""
+    msg["content"] = req.prompt if req.prompt is not None else text
+    msg["_text"] = text
+    msg["_action"] = dict(req.action or {})
+
+
+def _resume_action(req: _Request, user: dict[str, Any]) -> str:
+    """Regenerate a quick action's message: the same action and prompt; its typed text."""
+    req.action = dict(user["_action"])
+    content = user.get("content")
+    req.prompt = content if isinstance(content, str) else None
+    typed = user.get("_text")
+    return typed if isinstance(typed, str) else ""
+
+
+def _tools_allowed(req: _Request) -> bool:
+    """A quick action without tools (Proof, Improve...) is answered from the text alone."""
+    return req.action is None or bool(req.action.get("tools"))
 
 
 class ChatEngine:
@@ -210,6 +286,10 @@ class ChatEngine:
     * ``get_config``: returns the live ``AppConfig`` (read at every send).
     * ``conversation_file``: ``Paths.conversation_file``; loaded now and saved after
       every turn while ``chat.persist_conversation`` is on (deleted when it is off).
+    * ``attachments_dir``: where attached pictures are stored (``Paths.attachments_dir``;
+      default: ``attachments`` next to ``conversation_file``).
+    * ``ocr``: reads the text in a picture file (``chatforge.ocr.recognize``), for models
+      that cannot see pictures; ``None``: pictures reach them as a note only.
     """
 
     def __init__(
@@ -222,6 +302,8 @@ class ChatEngine:
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] | None = None,
+        attachments_dir: Path | None = None,
+        ocr: Callable[[Path], str] | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -233,8 +315,14 @@ class ChatEngine:
         self._active: dict[str, _Request] = {}
         self._send_lock = asyncio.Lock()
         self._conv = Conversation()
+        if attachments_dir is not None:
+            self._pictures: Path | None = Path(attachments_dir)
+        else:
+            self._pictures = self._file.parent / "attachments" if self._file else None
+        self._ocr = ocr
         if self._file is not None and self._persist_enabled():
             self._conv = conv_store.load(self._file)
+        self._clean_pictures()
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -285,15 +373,26 @@ class ChatEngine:
         self.cancel_all("new_chat")
         self._conv = Conversation()
         self._persist()
+        self._clean_pictures()
 
     async def send(
-        self, text: str, request_id: str, emit: Emit, attachments: list[Any] | None = None
+        self,
+        text: str,
+        request_id: str,
+        emit: Emit,
+        attachments: list[Any] | None = None,
+        action: str | None = None,
     ) -> None:
         """Run one user message to completion; progress and outcome arrive as events.
         ``attachments`` are ``attachments.Extracted`` files (or ``{name, kind, chars,
-        truncated, text}`` dicts). Never raises (except when the task itself is cancelled
-        from outside)."""
-        await self._execute(request_id, emit, text, [as_record(f) for f in attachments or []])
+        truncated, text}`` dicts); a picture's cleaned image is stored when the message
+        runs. ``action`` is a quick action's id (``chat.actions``). Never raises (except
+        when the task itself is cancelled from outside)."""
+        files = list(attachments or [])
+        pictures = [f.image for f in files if getattr(f, "image", None) is not None]
+        await self._execute(
+            request_id, emit, text, [as_record(f) for f in files], pictures, action=action
+        )
 
     async def regenerate(self, request_id: str, emit: Emit) -> None:
         """Answer the latest user message again (Regenerate): its reply is replaced by a
@@ -304,12 +403,23 @@ class ChatEngine:
         await self._execute(request_id, emit, None, [])
 
     async def _execute(
-        self, request_id: str, emit: Emit, text: str | None, files: list[dict[str, Any]]
+        self,
+        request_id: str,
+        emit: Emit,
+        text: str | None,
+        files: list[dict[str, Any]],
+        pictures: list[Any] | None = None,
+        *,
+        action: str | None = None,
     ) -> None:
         """``send`` (``text`` given) or ``regenerate`` (``text`` None)."""
         loop = asyncio.get_running_loop()
         req = _Request(id=request_id, emit=emit, task=asyncio.current_task(), loop=loop)
         req.files = files
+        req.ocr_sources = {
+            p.file: p.ocr_data for p in pictures or [] if getattr(p, "ocr_data", None)
+        }
+        req.action_id = action or None
         self._active[request_id] = req
         # The conversation and its rollback mark are taken only once this request holds
         # the lock: a request still queued behind another must never roll back, repair or
@@ -325,6 +435,8 @@ class ChatEngine:
                 if text is None:
                     text = self._take_last_turn(req, conv)
                     mark = len(conv)
+                # Stored only now: a cleanup by the request before this one cannot take them.
+                self._store_pictures(pictures or [])
                 await self._run(req, conv, text, self._mono())
         except asyncio.CancelledError:
             if not req.cancelled:
@@ -390,6 +502,8 @@ class ChatEngine:
         msg: dict[str, Any] = {"role": "user", "content": text, "_ts": ts}
         if req.files:
             msg["_attachments"] = [dict(f) for f in req.files]
+        if req.action is not None:
+            _with_action(msg, req, text)
         return msg
 
     def _take_last_turn(self, req: _Request, conv: Conversation) -> str:
@@ -409,6 +523,8 @@ class ChatEngine:
         req.restore, req.restore_at = conv.messages[idx:], idx
         conv.rollback(idx)
         log.info("regenerate", request_id=req.id, dropped=len(req.restore) - 1)
+        if isinstance(user.get("_action"), dict):
+            return _resume_action(req, user)
         content = user.get("content")
         return content if isinstance(content, str) else ""
 
@@ -517,6 +633,8 @@ class ChatEngine:
                 code="bad_request",
                 hint="Shorten it, or raise the limit in Settings → General.",
             )
+        if req.action_id is not None and req.action is None:
+            self._start_action(req, cfg, text)
         pid = cfg.chat.provider
         provider = self._providers.get(pid)
         model = _model_for(cfg.chat.model, provider.spec)
@@ -555,6 +673,7 @@ class ChatEngine:
             )
             await self._attempt(req, conv, text, cfg, fb_provider, fb_model)
 
+        self._match_style(req, conv, text)
         content = "\n\n".join(p.strip() for p in req.turn_parts if p and p.strip())
         self._store_context(req, conv)
         self._emit(
@@ -571,6 +690,7 @@ class ChatEngine:
         )
         conv.trim()
         self._persist()
+        self._clean_pictures()
 
     async def _attempt(
         self, req: _Request, conv: Conversation, text: str, cfg: Any, provider: Any, model: str
@@ -584,6 +704,8 @@ class ChatEngine:
                 self._phase(req, "loading_model")
         client = await provider.client_for(model)  # remote: LLMError(no_key); local: loads
         try:
+            if not getattr(provider.budget(model), "vision", False):
+                await self._read_pictures(req)
             conv.append(self._user_message(req, text))
             req.user_recorded = True
             if local and manager is not None:
@@ -652,7 +774,7 @@ class ChatEngine:
     ) -> None:
         max_rounds = int(cfg.chat.max_tool_rounds)
         local = provider.spec.kind == "ovms"
-        use_tools = bool(provider.spec.supports_tools) and max_rounds > 0
+        use_tools = bool(provider.spec.supports_tools) and max_rounds > 0 and _tools_allowed(req)
         if use_tools and manager is not None and hasattr(manager, "model_supports_tools"):
             use_tools = bool(manager.model_supports_tools(model))
         enabled = list(cfg.tools.enabled) if use_tools else []
@@ -679,7 +801,7 @@ class ChatEngine:
         # tool, so a clear live-data intent runs the tool before its first round.
         helped = False
         if local and offered and max_rounds > 0:
-            plan = research.plan(text, offered, eager=True)
+            plan = self._lookup_plan(req, text, offered, eager=True)
             if plan is not None:
                 helped = True
                 tool_rounds += 1
@@ -689,7 +811,8 @@ class ChatEngine:
             round_tools = [] if final_round else schemas
             fitted = fit_prompt(system, conv.llm_history(), round_tools, round_budget, halve=halve)
             self._report_context(req, conv, fitted)
-            request = provider.make_request(model, fitted.messages, round_tools or None)
+            messages = images.inline(fitted.messages, self._pictures)
+            request = provider.make_request(model, messages, round_tools or None)
             if local and tool_rounds and request.temperature is not None:
                 # The small model embroiders tool results at its chat temperature.
                 request.temperature = min(request.temperature, GROUNDED_TEMPERATURE)
@@ -715,7 +838,7 @@ class ChatEngine:
                     and tool_rounds == 0
                     and research.needs_lookup(msg.content)
                 ):
-                    plan = research.plan(text, offered, eager=False)
+                    plan = self._lookup_plan(req, text, offered, eager=False)
                     if plan is not None:
                         helped = True
                         tool_rounds += 1
@@ -760,6 +883,66 @@ class ChatEngine:
             self._phase(req, "calling_tool")
             for call in msg.tool_calls:
                 await self._run_tool(req, conv, call, enabled, budget.tool_result_chars)
+
+    # -- quick actions ------------------------------------------------------ #
+
+    def _start_action(self, req: _Request, cfg: Any, text: str) -> None:
+        """Resolve ``send``'s quick action id: the ``_action`` record and the prompt.
+        An id the config no longer has is refused before anything is recorded."""
+        action = actions.find(cfg, req.action_id)
+        if action is None:
+            raise LLMError(
+                "That quick action no longer exists",
+                code="bad_request",
+                hint="Pick it again from the quick actions.",
+            )
+        req.action = action.stored()
+        req.prompt = actions.expand(action, text, has_files=bool(req.files))
+        log.info("quick_action", request_id=req.id, action=action.id)
+
+    def _lookup_plan(
+        self, req: _Request, text: str, offered: set[str], *, eager: bool
+    ) -> research.Plan | None:
+        """The tool call the engine makes for the model (``research.plan``). A quick
+        action's text is content, not a question: up front only a bare link is fetched."""
+        if req.action is not None:
+            plan = actions.url_plan(text, offered)
+            if plan is not None or eager:
+                return plan
+        return research.plan(text, offered, eager=eager)
+
+    def _match_style(self, req: _Request, conv: Conversation, text: str) -> None:
+        """A rewrite action's reply: its text blocks get the pasted text's surface
+        conventions (``actions.guard_reply``), in what ``chat.done`` carries and in the
+        stored reply alike."""
+        style = (req.action or {}).get("style")
+        if not style:
+            return
+        original = (
+            text if text.strip() else "\n\n".join(str(f.get("text") or "") for f in req.files)
+        )
+        if not original.strip():
+            return
+        strict = style == actions.STRICT
+
+        def fix(value: Any) -> Any:
+            if not isinstance(value, str):
+                return value
+            return actions.guard_reply(value, original, strict=strict)
+
+        req.turn_parts = [fix(p) for p in req.turn_parts]
+        if conv is not self._conv:
+            return
+        start = next(
+            (i for i in range(len(conv) - 1, -1, -1) if conv.messages[i].get("role") == "user"),
+            len(conv),
+        )
+        for msg in conv.messages[start + 1 :]:
+            if msg.get("role") != "assistant":
+                continue
+            for key in ("content", "_visible"):
+                if key in msg:
+                    msg[key] = fix(msg[key])
 
     def _report_context(self, req: _Request, conv: Conversation, fitted: Fitted) -> None:
         """Remember what this round's prompt left out, and send ``chat.context`` when the
@@ -932,6 +1115,62 @@ class ChatEngine:
         if extra:
             message["_document"] = extra["document"]
         conv.append(message)
+
+    # ------------------------------------------------------------------ #
+    # Pictures
+    # ------------------------------------------------------------------ #
+
+    def _store_pictures(self, pictures: list[Any]) -> None:
+        """Write the attached pictures to the pictures folder. One that cannot be written
+        reaches the model as "no longer available"."""
+        if self._pictures is None:
+            return
+        for picture in pictures:
+            try:
+                images.store(picture, self._pictures)
+            except OSError as exc:
+                log.warning("picture_store_failed", error=type(exc).__name__)
+
+    def _clean_pictures(self) -> None:
+        """Remove the stored pictures the conversation no longer refers to."""
+        if self._pictures is None:
+            return
+        try:
+            images.cleanup(self._pictures, images.referenced(self._conv.messages))
+        except Exception:  # noqa: BLE001 - housekeeping must never fail a turn
+            log.exception("picture_cleanup_failed")
+
+    async def _read_pictures(self, req: _Request) -> None:
+        """Read the text in this message's pictures (for a model that cannot see them),
+        once: the result, even an empty one, is kept on the record as ``ocr``."""
+        if self._ocr is None or self._pictures is None:
+            return
+        todo = [
+            f
+            for f in req.files
+            if images.is_image_record(f) and "ocr" not in f and images.stored_file(f)
+        ]
+        if not todo:
+            return
+        self._phase(req, "reading_image")
+        deadline = self._mono() + OCR_TOTAL_S
+        gave_up = False
+        for record in todo:
+            name = str(images.stored_file(record))
+            path, sharp = self._pictures / name, req.ocr_sources.get(name)
+            wait = min(OCR_WAIT_S, deadline - self._mono())
+            found = ""
+            if not gave_up and wait > 0:
+                try:
+                    found = await asyncio.wait_for(
+                        asyncio.to_thread(_recognise, self._ocr, path, sharp), wait
+                    )
+                except TimeoutError:
+                    log.warning("picture_ocr_timeout", wait_s=round(wait, 1))
+                    gave_up = True  # a hung reader would hang on the next one too
+                except Exception as exc:  # noqa: BLE001 - no text is the fallback
+                    log.warning("picture_ocr_failed", error=type(exc).__name__)
+            record["ocr"] = str(found or "").strip()
 
     # ------------------------------------------------------------------ #
     # Persistence

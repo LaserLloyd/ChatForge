@@ -232,7 +232,9 @@ def test_remote_make_request_and_budget() -> None:
         "max_prompt_tokens": 1_000_000 - 4096 - 256,
         "tool_result_chars": 6000,
         "local": False,
+        "vision": True,  # MiniMax-M3 sees pictures
     }
+    assert provider.budget_params("MiniMax-M2.7")["vision"] is False
     # No window known: the cloud default (None), still not local.
     plain = RemoteProvider(spec.model_copy(update={"context_tokens": None}), settings=_settings)
     assert plain.budget_params("m")["max_prompt_tokens"] is None
@@ -292,7 +294,11 @@ def test_local_budget_and_request() -> None:
     provider = LocalOvmsProvider(
         SEED_PROVIDERS["local-npu"], FakeManager(), settings=lambda: _settings(max_prompt_len=4096)
     )
-    assert provider.budget_params("m") == {"max_prompt_tokens": 3968, "tool_result_chars": 1500}
+    assert provider.budget_params("m") == {
+        "max_prompt_tokens": 3968,
+        "tool_result_chars": 1500,
+        "vision": False,
+    }
     req = provider.make_request("m", [], None)
     assert req.temperature == 0.7 and req.max_tokens == 1024
 

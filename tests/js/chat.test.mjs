@@ -49,11 +49,20 @@ const PROVIDERS = [
   { id: 'local-npu', display_name: 'Local (NPU)', kind: 'ovms', models: ['OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov'],
     default_model: 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov', region: null, base_url: null, builtin: true, docs_url: null, key: key('none', false, null) },
   { id: 'minimax', display_name: 'MiniMax', kind: 'openai', models: ['MiniMax-M3'], default_model: 'MiniMax-M3',
-    region: 'international', base_url: 'https://api.minimax.io/v1', builtin: true, docs_url: null, key: key('none', true, 'MINIMAX_API_KEY') },
+    region: 'international', base_url: 'https://api.minimax.io/v1', builtin: true, docs_url: null, key: key('none', true, 'MINIMAX_API_KEY'),
+    vision: { 'MiniMax-M3': true } },
   { id: 'studioforge', display_name: 'StudioForge', kind: 'openai', models: ['qwen-27b'], default_model: 'qwen-27b',
-    region: null, base_url: 'http://localhost:1234/v1', builtin: true, docs_url: null, key: key('none', false, 'STUDIOFORGE_API_KEY') },
+    region: null, base_url: 'http://localhost:1234/v1', builtin: true, docs_url: null, key: key('none', false, 'STUDIOFORGE_API_KEY'),
+    vision: { 'qwen-27b': true } },
 ];
 const LOCAL = { provider: 'local-npu', model: 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov' };
+// get_state.config.quick_actions (chat/actions.py views): the first four built-in ones.
+const QUICK = [
+  { id: 'proof', label: 'Proof this', hint: 'Paste the text to proofread…', tools: false },
+  { id: 'improve', label: 'Improve this', hint: 'Paste the text to improve…', tools: false },
+  { id: 'check', label: 'Check me on this', hint: 'Paste a goal, plan or idea to check…', tools: false },
+  { id: 'insight', label: 'News insight', hint: 'Paste a news article or a link…', tools: true },
+];
 const DOC = { name: 'Plan.docx', path: 'C:\\Users\\you\\Documents\\ChatForge\\Plan.docx', size: 14336, kind: 'docx' };
 // The snapshot the popup boots with: a message with two files and the document its reply
 // saved, the context divider (the model no longer sees that first turn), then a message cut to
@@ -66,7 +75,7 @@ const SNAPSHOT = [
   { role: 'assistant', content: 'I saved **Plan.docx**.', ts: 1699999995, model: 'MiniMax-M3', documents: [DOC],
     tools: [{ call_id: 'c0', name: 'create_document', arguments: '{"filename":"Plan.docx"}', ok: true, summary: 'Saved Plan.docx' }] },
   { role: 'notice', kind: 'context_cut', content: 'Older messages are past the context window (too long for context).' },
-  { role: 'user', content: 'look it up', ts: 1700000000, cut: true },
+  { role: 'user', content: 'look it up', ts: 1700000000, cut: true, action: { id: 'improve', label: 'Improve this' } },
   { role: 'assistant', content: 'Partial answer', ts: 1700000005, model: 'MiniMax-M3', stopped: true,
     tools: [
       { call_id: 'c1', name: 'web_search', arguments: '{"query":"npu"}', ok: null, summary: '' },
@@ -79,12 +88,14 @@ const sends = [];   // pending send_message replies: {text, ids, resolve}
 const regens = [];  // pending regenerate replies: {resolve}
 const picks = [];   // pending attach_files replies (the native dialog): {resolve}
 const datas = [];   // pending attach_data replies: {name, data, resolve}
+const saves = [];   // pending save_document replies (the Save As dialog): {path, resolve}
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const ok = (extra = {}) => ({ ok: true, ...extra });
 win.pywebview = {
   api: {
     get_state: async () => ok({
-      config: { chat: { ...LOCAL, show_reasoning: 'collapsed', max_prompt_chars: 4000 }, ui: { theme: 'laserlloyd', hide_on_blur: true }, local: {} },
+      config: { chat: { ...LOCAL, show_reasoning: 'collapsed', max_prompt_chars: 4000 }, ui: { theme: 'laserlloyd', hide_on_blur: true }, local: {},
+        quick_actions: clone(QUICK) },
       providers: clone(PROVIDERS), selected: { ...LOCAL }, runtime: { state: 'ready', model_id: LOCAL.model },
       conversation: clone(SNAPSHOT), limits: { max_prompt_chars: 4000 }, theme: 'laserlloyd',
     }),
@@ -99,6 +110,8 @@ win.pywebview = {
     remove_attachment: async (id) => { calls.push(['remove_attachment', id]); return ok({ removed: true }); },
     open_document: async (path) => { calls.push(['open_document', path]); return docReply(path); },
     reveal_document: async (path) => { calls.push(['reveal_document', path]); return docReply(path); },
+    // The Save As dialog: answered by the test through `saves` (pending replies).
+    save_document: (path) => new Promise((resolve) => { calls.push(['save_document', path]); saves.push({ path, resolve }); }),
     stop_generation: async (id) => { calls.push(['stop_generation', id]); return ok(); },
     new_chat: async () => { calls.push(['new_chat']); return ok(); },
     list_providers: async () => ok({ providers: clone(PROVIDERS) }),
@@ -210,7 +223,7 @@ test('snapshot: a user message shows its files, and a reply the documents it sav
   assert.ok(card, 'no document card from history');
   assert.equal(card.querySelector('.doc-name').textContent, 'Plan.docx');
   assert.equal(card.querySelector('.doc-meta').textContent, 'DOCX · 14 KB');
-  assert.deepEqual([...card.querySelectorAll('button')].map((b) => b.textContent), ['Open', 'Show in folder']);
+  assert.deepEqual([...card.querySelectorAll('button')].map((b) => b.textContent), ['Open', 'Download', 'Show in folder']);
   // Under the text that mentions it, above the time line.
   const kids = [...reply.querySelector('.msg-col').children].map((n) => n.className);
   assert.deepEqual(kids.slice(1, 4), ['bubble', 'docs', 'msg-time']);
@@ -337,7 +350,7 @@ test('a provider whose key is optional (StudioForge) is ready without one', asyn
   const empty = $('messages').querySelector('.empty-state');
   assert.ok(empty, 'no empty state');
   assert.doesNotMatch(empty.textContent, /Add your StudioForge key/);
-  assert.ok(empty.querySelector('.suggestions'), 'suggestions should show instead of the key button');
+  assert.ok(empty.querySelector('.qa-grid'), 'the quick actions should show instead of the key button');
 
   await fresh({ provider: 'minimax', model: 'MiniMax-M3' });   // a key is required and missing
   assert.equal($('status-dot').dataset.state, 'warning');
@@ -602,6 +615,101 @@ test('pasting a file attaches it; pasting text that comes with a picture pastes 
   assert.deepEqual(chipNames($('attach-list')), ['table.csv']);
 });
 
+// ---------------------------------------------------------------- pictures ----
+
+const THUMB = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==';
+const PHOTO = view('att_p', 'whiteboard.jpg', { kind: 'image', chars: 0, size: 1258291, width: 1568, height: 1176, thumb: THUMB });
+const NO_VISION = 'This model can’t see images — pick a vision model in the menu.';
+const SEEING = { provider: 'studioforge', model: 'qwen-27b' };
+
+test('a picture chip shows its thumbnail and size, and warns while the model cannot see it', async () => {
+  await fresh();   // the local model cannot see pictures
+  await attachViaDialog([PHOTO, REPORT]);
+  const [chip, other] = [...$('attach-list').querySelectorAll('.att-chip')];
+  const img = chip.querySelector('img.att-thumb');
+  assert.equal(img.getAttribute('src'), THUMB);
+  assert.equal(img.getAttribute('alt'), 'whiteboard.jpg', 'the alt text is the file name');
+  assert.equal(chip.querySelector('.att-meta').textContent, '1568 × 1176 · 1.2 MB');
+  assert.equal(chip.querySelector('.att-warn').getAttribute('aria-label'), NO_VISION);
+  assert.equal(other.querySelector('.att-warn'), null, 'a document is not a picture');
+  assert.equal($('attach-note').hidden, false);
+  assert.equal($('attach-note').textContent, NO_VISION);
+
+  // A model that sees pictures: no warning; back to the local model: the warning is back.
+  emit({ type: 'settings.changed', config: { chat: { ...SEEING } } });
+  await settle();
+  assert.equal($('attach-note').hidden, true);
+  assert.equal($('attach-list').querySelector('.att-warn'), null);
+  emit({ type: 'settings.changed', config: { chat: { ...LOCAL } } });
+  await settle();
+  assert.equal($('attach-note').hidden, false);
+
+  // Sent: the thumbnail heads the message, and the note goes with the chips.
+  $('send').click();
+  await settle();
+  const user = [...$('messages').querySelectorAll('.msg.user')].at(-1);
+  const sent = user.querySelector('.msg-files .att-image img.att-thumb');
+  assert.equal(sent.getAttribute('src'), THUMB);
+  assert.equal(sent.getAttribute('alt'), 'whiteboard.jpg');
+  assert.equal(user.querySelector('.att-image .att-warn'), null, 'a sent message does not warn');
+  assert.equal($('attach-note').hidden, true);
+  assert.deepEqual(calls.filter((c) => c[0] === 'send_message'), [['send_message', '', ['att_p', 'att_a']]]);
+  sends.shift().resolve(ok({ request_id: 'req_pic' }));
+  await settle();
+  emit({ type: 'chat.phase', request_id: 'req_pic', phase: 'reading_image' });
+  assert.match(lastAssistant().textContent, /Reading the text in the picture…/);
+  emit({ type: 'chat.done', request_id: 'req_pic', content: 'A whiteboard.', provider: 'local-npu', model: LOCAL.model });
+  await settle();
+});
+
+test('choosing a model that sees pictures from the menu clears the warning', async () => {
+  await fresh();
+  await attachViaDialog([PHOTO]);
+  assert.equal($('attach-note').hidden, false);
+  $('model-chip').click();
+  await settle();
+  const item = $('model-menu').querySelector('[data-provider="studioforge"][data-model="qwen-27b"]');
+  assert.equal(item.querySelector('.mm-vision').getAttribute('aria-label'), 'sees pictures');
+  assert.equal($('model-menu').querySelector('[data-provider="local-npu"] .mm-vision'), null);
+  item.click();
+  await settle();
+  assert.equal($('attach-note').hidden, true);
+  assert.equal($('attach-list').querySelector('.att-warn'), null);
+});
+
+test('a saved conversation shows picture thumbnails, and only real picture data', () => {
+  win.__chat.renderConversation([{ role: 'user', content: 'see', ts: 1, attachments: [
+    { name: 'a.png', kind: 'image', chars: 0, truncated: false, width: 800, height: 600, thumb: THUMB },
+    { name: 'b.png', kind: 'image', chars: 0, truncated: false, width: null, height: null, thumb: 'javascript:alert(1)' },
+  ] }]);
+  const chips = [...$('messages').querySelectorAll('.msg.user .att-chip')];
+  assert.equal(chips[0].querySelector('img').getAttribute('src'), THUMB);
+  assert.equal(chips[0].querySelector('img').getAttribute('alt'), 'a.png');
+  assert.equal(chips[0].querySelector('.att-meta').textContent, '800 × 600');
+  assert.equal(chips[1].querySelector('img'), null, 'a thumbnail that is not picture data is never loaded');
+  assert.ok(chips[1].querySelector('svg'), 'a picture icon instead');
+});
+
+test('pasting a screenshot attaches it under a readable name', async () => {
+  await fresh();
+  const shot = new win.File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'image.png', { type: 'image/png' });
+  const e = new win.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(e, 'clipboardData', { value: { files: [shot], items: [], getData: () => '' } });
+  $('input').dispatchEvent(e);
+  assert.equal(e.defaultPrevented, true);
+  const loading = $('attach-list').querySelector('.att-chip');
+  assert.equal(loading.dataset.state, 'loading');
+  assert.ok(loading.classList.contains('att-image'), 'a picture is being read');
+  for (let i = 0; i < 50 && !datas.length; i++) await settle();
+  const { name, data } = datas[0];
+  assert.match(name, /^Pasted image \d\d\.\d\d\.\d\d\.png$/);
+  assert.match(data, /^data:image\/png;base64,/);
+  datas.shift().resolve(ok({ attachments: [{ ...PHOTO, id: 'att_shot', name }], errors: [] }));
+  await settle();
+  assert.deepEqual(chipNames($('attach-list')), [name]);
+  assert.equal($('attach-list').querySelector('img.att-thumb').getAttribute('alt'), name);
+});
+
 test('a key added after no_key sends the files again and takes them out of the composer', async () => {
   await fresh({ provider: 'minimax', model: 'MiniMax-M3' });
   await attachViaDialog([REPORT]);
@@ -647,7 +755,7 @@ test('a chip removed while the key card is open is not sent when the key arrives
 
 // --------------------------------------------------------------- documents ----
 
-test('a saved document shows as a card under the reply, with Open and Show in folder', async () => {
+test('a saved document shows as a card under the reply, with Open, Download and Show in folder', async () => {
   await fresh();
   await sendAs('write the plan as a Word file', 'req_doc');
   emit({ type: 'chat.tool_call', request_id: 'req_doc', call_id: 'd1', name: 'create_document', arguments: '{"filename":"Plan.docx"}' });
@@ -683,6 +791,64 @@ test('opening a document that was moved says so', async () => {
   assert.equal($('toast').hidden, false);
   assert.equal($('toast').textContent, 'That document no longer exists.');
   assert.equal(card.querySelector('.doc-open').disabled, false);
+});
+
+test('Download on a document card: Save As, then "Saved to …"; cancel says nothing; errors are shown', async () => {
+  await fresh();
+  await sendAs('save the plan as Excel', 'req_dl');
+  const sheet = { name: 'Plan.xlsx', path: 'C:\\Users\\you\\Documents\\ChatForge\\Plan.xlsx', size: 6200, kind: 'xlsx' };
+  emit({ type: 'chat.tool_result', request_id: 'req_dl', call_id: 'x1', name: 'create_document', ok: true, summary: 'Saved Plan.xlsx', document: sheet });
+  emit({ type: 'chat.done', request_id: 'req_dl', content: 'Saved.', provider: 'local-npu', model: LOCAL.model });
+  const card = lastAssistant().querySelector('.doc-card');
+  // Open, Download, Show in folder: real buttons, so Tab, Enter and Space reach them.
+  const buttons = [...card.querySelectorAll('.doc-actions button')];
+  assert.deepEqual(buttons.map((b) => b.textContent), ['Open', 'Download', 'Show in folder']);
+  const save = card.querySelector('.doc-save');
+  assert.equal(save.getAttribute('type'), 'button');
+  assert.equal(save.getAttribute('aria-label'), 'Download Plan.xlsx');
+  assert.ok(save.querySelector('svg'), 'the download icon');
+  assert.equal(save.tabIndex, 0);
+  $('toast').hidden = true;
+
+  save.focus();   // a keyboard user: the focus comes back to Download after the dialog
+  save.click();
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'save_document'), [['save_document', sheet.path]]);
+  assert.equal(save.disabled, true, 'disabled while the dialog is open');
+  // A browser drops the focus of a button that gets disabled (to the body); jsdom does not.
+  $('input').focus();
+  $('input').blur();
+  assert.equal(win.document.activeElement, win.document.body);
+  save.click();   // a second click while the dialog is up does nothing
+  await settle();
+  assert.equal(saves.length, 1);
+  saves.shift().resolve({ ok: true, path: 'C:\\Users\\you\\Downloads\\Plan.xlsx' });
+  await settle();
+  assert.equal(save.disabled, false);
+  assert.equal(win.document.activeElement, save, 'the focus is back on Download');
+  assert.equal($('toast').hidden, false);
+  assert.equal($('toast').textContent, 'Saved to Downloads\\Plan.xlsx');
+
+  $('toast').hidden = true;
+  save.click();
+  await settle();
+  saves.shift().resolve({ ok: true, cancelled: true });
+  await settle();
+  assert.equal($('toast').hidden, true, 'a cancelled Save As says nothing');
+  assert.equal(save.disabled, false);
+
+  save.click();
+  await settle();
+  saves.shift().resolve({ ok: false, error: { code: 'in_use', message: 'Plan.xlsx could not be saved there.', hint: '', action: null } });
+  await settle();
+  assert.equal($('toast').textContent, 'Plan.xlsx could not be saved there.');
+
+  save.click();
+  await settle();
+  saves.shift().resolve({ ok: false });   // an error without a message
+  await settle();
+  assert.equal($('toast').textContent, 'The document could not be saved.');
+  assert.equal(saves.length, 0);
 });
 
 // ---------------------------------------------------------------- context window ----
@@ -920,4 +1086,156 @@ test('the status line says when a model compiles in the background or runs off t
     unload_at: null, background: false, device_fallback: null });
   await settle();
   assert.equal($('status-line').hidden, true);
+});
+// ------------------------------------------------------------- quick actions ----
+
+const press = (target, k, extra = {}) => target.dispatchEvent(new win.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...extra }));
+const qaChips = () => [...$('messages').querySelectorAll('.empty-state .qa-chip')];
+const pill = () => $('action-bar').querySelector('.action-pill');
+
+test('snapshot: a message sent with a quick action shows the action over its bubble', () => {
+  const [plain, withAction] = bootRows.querySelectorAll('.msg.user');
+  assert.equal(plain.querySelector('.msg-action'), null);
+  const tag = withAction.querySelector('.msg-col').firstElementChild;
+  assert.equal(tag.className, 'msg-action');
+  assert.equal(tag.textContent, 'Improve this');
+  assert.equal(withAction.querySelector('.bubble').textContent, 'look it up');
+});
+
+test('an empty chat shows the quick actions, Proof / Improve / Check me / News insight first, after every Clear chat', async () => {
+  await fresh();
+  assert.deepEqual(qaChips().map((b) => b.textContent), ['Proof this', 'Improve this', 'Check me on this', 'News insight']);
+  assert.equal(qaChips()[0].title, 'Paste the text to proofread…');
+  assert.match($('messages').querySelector('.empty-state').textContent, /Pick a quick action, then paste your text/);
+  await sendAs('hello', 'req_qa0');
+  assert.equal(qaChips().length, 0, 'the chips go once there is a message');
+  emit({ type: 'chat.done', request_id: 'req_qa0', content: 'Hi.', model: LOCAL.model, provider: 'local-npu' });
+  $('btn-new').click();
+  await settle();
+  assert.equal(qaChips().length, 4, 'Clear chat brings them back');
+  // Settings changed the list: the chips follow.
+  emit({ type: 'settings.changed', config: { quick_actions: [...QUICK.slice(1), { id: 'custom-haiku', label: 'Haiku', hint: '', tools: false }] } });
+  await settle();
+  assert.deepEqual(qaChips().map((b) => b.textContent), ['Improve this', 'Check me on this', 'News insight', 'Haiku']);
+  emit({ type: 'settings.changed', config: { quick_actions: clone(QUICK) } });
+  await settle();
+});
+
+test('a chip puts the action in the composer, keeps the typed text, and Enter sends it with the action', async () => {
+  await fresh();
+  const input = $('input');
+  input.value = 'Teh cat sat.';
+  input.dispatchEvent(new win.Event('input'));
+  qaChips()[0].click();
+  assert.equal($('action-bar').hidden, false);
+  assert.equal(pill().querySelector('.action-pill-label').textContent, 'Proof this');
+  assert.equal(input.placeholder, 'Paste the text to proofread…');
+  assert.equal(input.value, 'Teh cat sat.', 'the typed text stays');
+  assert.equal(win.document.activeElement, input, 'the box is ready for a paste');
+
+  press(input, 'Enter');
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'send_message'), [['send_message', 'Teh cat sat.', [], 'proof']]);
+  assert.equal($('action-bar').hidden, true, 'the pill went with the message');
+  assert.equal(input.placeholder, 'Message ChatForge');
+  const user = [...$('messages').querySelectorAll('.msg.user')].at(-1);
+  assert.equal(user.querySelector('.msg-col').firstElementChild.textContent, 'Proof this');
+  assert.equal(user.querySelector('.bubble').textContent, 'Teh cat sat.');
+
+  sends.shift().resolve(ok({ request_id: 'req_qa1' }));
+  await settle();
+  const fixed = 'The cat sat on the mat, and then it sat on the other mat for a very long time indeed.';
+  const reply = `\`\`\`text\n${fixed}\n\`\`\`\n\n- Fixed "Teh"`;
+  emit({ type: 'chat.done', request_id: 'req_qa1', content: reply, model: LOCAL.model, provider: 'local-npu' });
+  // The corrected text is a prose block: wrapped from the start, Copy copies it exactly.
+  const block = lastAssistant().querySelector('.code-block-wrapper');
+  assert.ok(block.classList.contains('wrapped'), 'a ```text block should wrap by default');
+  assert.equal(block.querySelector('.code-block-wrap').getAttribute('aria-pressed'), 'true');
+  assert.equal(block.querySelector('.code-block-copy').dataset.code, fixed);
+});
+
+test('Retry after an error sends the message again with its quick action', async () => {
+  await fresh();
+  win.__chat.send('Plan: get fit', { action: QUICK[2] });
+  await settle();
+  sends.shift().resolve(ok({ request_id: 'req_qa2' }));
+  await settle();
+  emit({ type: 'chat.error', request_id: 'req_qa2', code: 'server', message: 'boom', action: 'retry' });
+  await settle();
+  [...$('messages').querySelectorAll('.err-actions button')].find((b) => b.textContent === 'Retry').click();
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'send_message').at(-1), ['send_message', 'Plan: get fit', [], 'check']);
+  sends.shift().resolve(ok({ request_id: 'req_qa3' }));
+  await settle();
+  emit({ type: 'chat.done', request_id: 'req_qa3', content: 'ok', model: LOCAL.model, provider: 'local-npu' });
+});
+
+test('the quick-actions menu: arrow keys, Escape closes only the menu, picking one fills the composer', async () => {
+  await fresh();
+  const button = $('quick');
+  assert.equal(button.getAttribute('aria-haspopup'), 'menu');
+  button.click();
+  const menu = $('quick-menu');
+  assert.equal(menu.hidden, false);
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  const items = [...menu.querySelectorAll('[role="menuitem"]')];
+  assert.deepEqual(items.map((b) => (b.querySelector('.qm-label') || b).textContent),
+    ['Proof this', 'Improve this', 'Check me on this', 'News insight', 'Edit quick actions…']);
+  assert.equal(items[3].querySelector('.qm-tag').textContent, 'web', 'an action that looks things up says so');
+  assert.equal(win.document.activeElement, items[0]);
+  press(menu, 'ArrowDown');
+  assert.equal(win.document.activeElement, items[1]);
+  press(menu, 'End');
+  assert.equal(win.document.activeElement, items[4]);
+  press(menu, 'ArrowDown');
+  assert.equal(win.document.activeElement, items[0], 'the keys wrap around');
+  press(win.document.activeElement, 'Escape');
+  assert.equal(menu.hidden, true);
+  assert.equal(button.getAttribute('aria-expanded'), 'false');
+  assert.equal(win.document.activeElement, button);
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'hide_popup').length, 0, 'Escape in the menu must not hide the popup');
+
+  press(button, 'ArrowDown');   // opens it from the keyboard too
+  assert.equal(menu.hidden, false);
+  [...menu.querySelectorAll('[role="menuitem"]')][2].click();
+  assert.equal(menu.hidden, true);
+  assert.equal(pill().querySelector('.action-pill-label').textContent, 'Check me on this');
+  assert.equal($('input').placeholder, 'Paste a goal, plan or idea to check…');
+  // The current action is marked when the menu opens again, and gets the focus.
+  button.click();
+  const current = menu.querySelector('.qm-item.is-current');
+  assert.equal(current.querySelector('.qm-label').textContent, 'Check me on this');
+  assert.equal(win.document.activeElement, current);
+  win.document.body.click();   // a click elsewhere closes it
+  assert.equal(menu.hidden, true);
+});
+
+test('the pill comes out with its × or Backspace in an empty box, and goes when Settings removes the action', async () => {
+  await fresh();
+  qaChips()[1].click();
+  assert.ok(pill());
+  pill().querySelector('.action-pill-remove').click();
+  assert.equal($('action-bar').hidden, true);
+  assert.equal($('input').placeholder, 'Message ChatForge');
+
+  qaChips()[1].click();
+  const input = $('input');
+  input.value = 'x';
+  press(input, 'Backspace');
+  assert.ok(pill(), 'Backspace with text in the box edits the text');
+  input.value = '';
+  press(input, 'Backspace');
+  assert.equal(pill(), null);
+
+  qaChips()[0].click();
+  emit({ type: 'settings.changed', config: { quick_actions: [{ ...QUICK[0], label: 'Proofread', hint: 'Paste it…' }, ...QUICK.slice(1)] } });
+  await settle();
+  assert.equal(pill().querySelector('.action-pill-label').textContent, 'Proofread', 'a renamed action follows');
+  assert.equal(input.placeholder, 'Paste it…');
+  emit({ type: 'settings.changed', config: { quick_actions: QUICK.slice(1) } });
+  await settle();
+  assert.equal(pill(), null, 'a removed action leaves the composer');
+  emit({ type: 'settings.changed', config: { quick_actions: clone(QUICK) } });
+  await settle();
 });

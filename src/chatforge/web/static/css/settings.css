@@ -392,6 +392,24 @@ fieldset.tools .err { grid-column: 1 / -1; }
 .toast[hidden] { display: none; }
 .toast[data-kind="bad"] { border-color: var(--danger-border); color: var(--danger-text); }
 
+/* ------------------------------------------------------------ quick actions -- */
+/* settings.js "quick actions": one row per action (name, built-in/custom chip, Remove),
+ * its instructions and two switches folded under "Instructions". */
+fieldset.quick-actions { grid-template-columns: 1fr; gap: var(--space-2); }
+.qa-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.qa-row {
+  display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3);
+  border: var(--stroke-default) solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-1);
+}
+.qa-head { display: flex; align-items: center; gap: var(--space-2); }
+.qa-head .qa-label { flex: 1 1 auto; min-width: 0; }
+.qa-head .chip, .qa-head .btn { flex: none; }
+.qa-more > summary { cursor: pointer; width: max-content; font-size: var(--fs-xs); color: var(--text-secondary); padding: var(--space-1) 0; }
+.qa-more[open] > summary { margin-bottom: var(--space-1); }
+.qa-instructions { width: 100%; resize: vertical; }
+.qa-flags { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin-top: var(--space-1); }
+.qa-flags .check { font-size: var(--fs-xs); }
+
 /* ------------------------------------------------------------ narrow windows -- */
 
 @media (max-width: 720px) {

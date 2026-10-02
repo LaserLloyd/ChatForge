@@ -33,6 +33,9 @@ const MAX_FILES = 10;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const TOO_MANY_FILES = `Only ${MAX_FILES} files can be attached to one message.`;
 const EMPTY_REPLY = '(The model returned an empty reply.)';
+// Said on the composer (and on each picture chip) while the chosen model cannot see pictures:
+// it then gets a note, and any text Windows can read in the picture, instead.
+const NO_VISION = 'This model can’t see images — pick a vision model in the menu.';
 
 const ICON = {
   wrench: ['M14.7 6.3a4 4 0 0 0 5 5L13 18a2.1 2.1 0 0 1-3-3z', 'M14.7 6.3l3-3 3 3'],
@@ -43,6 +46,8 @@ const ICON = {
   close: ['M6 6l12 12', 'M18 6L6 18'],
   file: RAIL_ICONS['viewer-file'],
   folder: RAIL_ICONS.folder,
+  download: RAIL_ICONS['viewer-download'],
+  image: ['M4 5h16v14H4z', 'M4 16l5-5 4 4 2.5-2.5L20 17', 'M15 9.5h.01'],
 };
 
 const S = {
@@ -65,12 +70,16 @@ const S = {
   ctxBefore: null,        // where the context divider was when this request started (for errors)
   files: [],              // composer attachments: the bridge's view + {key, state: loading|ready}
   picking: false,         // the native file dialog is open (attach_files in flight)
+  filesBlind: null,       // the chips were drawn for a model that cannot see pictures
   keyCard: null,
   menuOpen: false,
   unseen: 0,
   settingsOpeningUntil: 0,
   stopping: false,
   bootFailed: false,
+  actions: [],            // quick actions in use (get_state.config.quick_actions): {id, label, hint, tools}
+  action: null,           // the quick action picked in the composer for the next message
+  lastAction: null,       // ...and the one the last message was sent with (for Retry)
 };
 
 // =================================================================== helpers ====
@@ -153,6 +162,20 @@ function fmtChars(chars) {
   return `${k < 100 ? Number(k.toFixed(1)) : Math.round(k)}k chars`;
 }
 
+function isImage(f) { return !!f && f.kind === 'image'; }
+/** A picture's thumbnail from the bridge: only a data: URL of a picture is ever shown. */
+function thumbUrl(f) {
+  const url = String((f && f.thumb) || '');
+  return /^data:image\/(?:jpeg|png|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(url) ? url : '';
+}
+/** "1568 × 1176", or '' when the size is not known. */
+function fmtPixels(f) { return f && f.width && f.height ? `${f.width} × ${f.height}` : ''; }
+/** The selected model sees pictures: the bridge's provider view says so per model. */
+function canSeeImages() {
+  const p = selectedProvider();
+  return !!(p && p.vision && p.vision[S.selected.model]);
+}
+
 /** "DOCX" for "report.docx"; '' when the name has no extension. */
 function fileExt(name) {
   const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(name || ''));
@@ -220,8 +243,9 @@ function addRow(node, { assistant = false } = {}) {
 /** A user message: its attached files as chips over the bubble. A files-only message
  *  has no bubble. `ts` (the engine's _ts, also set later from chat.start) lets chat.context
  *  find the row; `cut` marks a message that was cut to fit the context window. */
-function userRow(text, ts, files = [], { cut = false } = {}) {
+function userRow(text, ts, files = [], { cut = false, action = null } = {}) {
   const kids = [];
+  if (action) kids.push(actionTag(action));   // the quick action it was sent with
   if (files.length) {
     kids.push(el('div', { class: 'msg-files', role: 'list', 'aria-label': 'Attached files' }, files.map((f) => fileChip(f))));
   }
@@ -291,30 +315,42 @@ function restoreDivider(anchor) {
   } else if (d) d.remove();
 }
 
+const PICTURE_NAME = /\.(?:png|jpe?g|jpe|jfif|gif|bmp|dib|webp|tiff?|avif|heic|heif)$/i;
+
 /** One attached file: name, size · characters, a "partial" badge when only part of its
  *  text is used, and (in the composer) a remove button. `f` is the bridge's view
  *  {id, name, kind, chars, size, truncated, warning}, or a saved message's {name, kind,
- *  chars, truncated}. */
-function fileChip(f, { onRemove = null } = {}) {
+ *  chars, truncated}. A picture (kind "image", plus {width, height, thumb}) shows its
+ *  thumbnail (alt text: its name) and its size in pixels; `blind` (the chosen model cannot
+ *  see pictures) adds a warning to it. */
+function fileChip(f, { onRemove = null, blind = false } = {}) {
   const loading = f.state === 'loading';
   const name = String(f.name || 'file');
+  const image = isImage(f) || (loading && PICTURE_NAME.test(name));
   const meta = loading ? 'Reading…'
-    : [f.size != null ? fmtSize(f.size) : null, f.chars != null ? fmtChars(f.chars) : null].filter(Boolean).join(' · ');
-  const note = f.warning || (f.truncated ? 'Only part of this file is used.' : '');
+    : (image ? [fmtPixels(f) || null, f.size != null ? fmtSize(f.size) : null]
+      : [f.size != null ? fmtSize(f.size) : null, f.chars != null ? fmtChars(f.chars) : null]).filter(Boolean).join(' · ');
+  const note = [image && blind && !loading ? NO_VISION : null,
+    f.warning || (f.truncated ? 'Only part of this file is used.' : null)].filter(Boolean).join(' ');
   const title = [
     name,
+    image && !loading ? fmtPixels(f) || null : null,
     f.size != null ? fmtSize(f.size) : null,
-    !loading && f.chars != null ? `${Number(f.chars).toLocaleString()} characters of text` : null,
+    !loading && !image && f.chars != null ? `${Number(f.chars).toLocaleString()} characters of text` : null,
   ].filter(Boolean).join(', ');
-  const chip = el('span', { class: 'att-chip', role: 'listitem', title: note ? `${title}. ${note}` : title,
-    dataset: { state: loading ? 'loading' : 'ready' } }, [
-    railIcon(ICON.file),
+  const thumb = image ? thumbUrl(f) : '';
+  const parts = [
     el('span', { class: 'att-name', dir: 'auto', text: name }),
     meta ? el('span', { class: 'att-meta', text: meta }) : null,
     note ? el('span', { class: 'att-warn', role: 'img', 'aria-label': note }, [
       railIcon(ICON.warn),
       f.truncated ? el('span', { 'aria-hidden': 'true', text: 'partial' }) : null,
     ]) : null,
+  ];
+  const chip = el('span', { class: image ? 'att-chip att-image' : 'att-chip', role: 'listitem',
+    title: note ? `${title}. ${note}` : title, dataset: { state: loading ? 'loading' : 'ready' } }, [
+    thumb ? el('img', { class: 'att-thumb', src: thumb, alt: name, draggable: 'false' }) : railIcon(image ? ICON.image : ICON.file),
+    ...(image ? [el('span', { class: 'att-cap' }, parts)] : parts),
   ]);
   if (onRemove && !loading) {
     const b = el('button', { class: 'att-remove', type: 'button', 'aria-label': `Remove ${name}`, title: 'Remove' }, [railIcon(ICON.close)]);
@@ -324,15 +360,19 @@ function fileChip(f, { onRemove = null } = {}) {
   return chip;
 }
 
-/** A file create_document saved: name, type · size, Open and Show in folder. */
+/** A file create_document saved: name, type · size, Open, Download and Show in folder. */
 function docCard(doc) {
   const name = String(doc.name || 'document');
   const meta = [fileExt(name) || null, doc.size != null ? fmtSize(doc.size) : null].filter(Boolean).join(' · ');
   const open = el('button', { class: 'btn btn-sm doc-open', type: 'button', 'aria-label': `Open ${name}`, text: 'Open' });
+  const save = el('button', { class: 'btn btn-sm doc-save', type: 'button', 'aria-label': `Download ${name}` }, [
+    railIcon(ICON.download), el('span', { text: 'Download' }),
+  ]);
   const reveal = el('button', { class: 'btn btn-sm doc-reveal', type: 'button', 'aria-label': `Show in folder: ${name}` }, [
     railIcon(ICON.folder), el('span', { text: 'Show in folder' }),
   ]);
   open.addEventListener('click', () => documentAction('open_document', doc.path, open));
+  save.addEventListener('click', () => documentAction('save_document', doc.path, save));
   reveal.addEventListener('click', () => documentAction('reveal_document', doc.path, reveal));
   return el('div', { class: 'doc-card', role: 'group', 'aria-label': `Document ${name}`, title: doc.path || name }, [
     el('span', { class: 'doc-icon' }, [railIcon(ICON.file)]),
@@ -340,18 +380,34 @@ function docCard(doc) {
       el('div', { class: 'doc-name', dir: 'auto', text: name }),
       meta ? el('div', { class: 'doc-meta', text: meta }) : null,
     ]),
-    el('div', { class: 'doc-actions' }, [open, reveal]),
+    el('div', { class: 'doc-actions' }, [open, save, reveal]),
   ]);
 }
 
-/** open_document / reveal_document. The bridge only accepts files in the documents
- *  folder; a moved or deleted file comes back as not_found, said in a toast. */
+/** "Downloads\Report.docx" for a full path: the folder and the file, short enough for a toast. */
+function shortPath(path) {
+  const parts = String(path || '').split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? parts.slice(-2).join(path.includes('\\') ? '\\' : '/') : String(path || '');
+}
+
+/** open_document / save_document / reveal_document. The bridge only accepts files in the
+ *  documents folder; a moved or deleted file comes back as not_found, said in a toast.
+ *  save_document shows the Save As dialog: "Saved to …" when a copy was made, nothing when
+ *  it was cancelled. */
 async function documentAction(method, path, button) {
   if (button.disabled) return;
+  const focused = document.activeElement === button;
   button.disabled = true;
   const r = await api.call(method, path);
   button.disabled = false;
-  if (!r || !r.ok) toast((r && r.error && r.error.message) || 'The document could not be opened.');
+  // Disabling the focused button dropped the focus; give it back so the keyboard keeps its place.
+  if (focused && (!document.activeElement || document.activeElement === document.body)) button.focus();
+  const saving = method === 'save_document';
+  if (r && r.ok) {
+    if (saving && !r.cancelled && r.path) toast(`Saved to ${shortPath(r.path)}`);
+    return;
+  }
+  toast((r && r.error && r.error.message) || (saving ? 'The document could not be saved.' : 'The document could not be opened.'));
 }
 
 function addDocCard(turn, doc) {
@@ -562,6 +618,7 @@ const PHASE_TEXT = {
   thinking: 'Thinking…',
   calling_tool: 'Using a tool…',
   generating: 'Writing…',
+  reading_image: 'Reading the text in the picture…',
 };
 
 function endRequest() {
@@ -605,7 +662,7 @@ function errorRow(err) {
     actions.append(b);
   };
   if (err.action === 'add_key') {
-    btn('Add key', () => { row.remove(); showKeyCard(S.selected.provider, S.lastText, S.lastFiles); });
+    btn('Add key', () => { row.remove(); showKeyCard(S.selected.provider, S.lastText, S.lastFiles, S.lastAction); });
   } else if (err.action === 'open_settings') {
     btn('Open settings', openSettings);
     if (S.lastText || S.lastFiles.length || S.retryRegen) btn('Retry', () => { row.remove(); retry(); });
@@ -624,7 +681,7 @@ function showError(err) {
 
 // =============================================================== key card flow ====
 
-function showKeyCard(providerId, pendingText, pendingFiles = []) {
+function showKeyCard(providerId, pendingText, pendingFiles = [], pendingAction = null) {
   closeKeyCard();
   const provider = providerById(providerId) || { id: providerId, display_name: providerId, region: null };
   // The key works (saved by the card, or in Settings while the card was open): close the
@@ -639,7 +696,10 @@ function showKeyCard(providerId, pendingText, pendingFiles = []) {
     const input = $('input');
     if (text && input.value.trim() === text) { input.value = ''; autosize(); }
     if (files.length && sameFiles(readyFiles(), files)) setComposerFiles([]);
-    if (text || files.length) send(text, { files });
+    // The quick action it was sent with goes with it again (and out of the composer).
+    const action = pendingAction;
+    if (action && S.action && S.action.id === action.id) setComposerAction(null, { focus: false });
+    if (text || files.length) send(text, { files, action });
     input.focus();
   };
   const card = createKeyCard({
@@ -667,7 +727,7 @@ function closeKeyCard() {
 
 async function refreshProviders() {
   const r = await api.call('list_providers');
-  if (r && r.ok && Array.isArray(r.providers)) { S.providers = r.providers; renderChip(); renderEmpty(); }
+  if (r && r.ok && Array.isArray(r.providers)) { S.providers = r.providers; renderChip(); renderEmpty(); syncVision(); }
 }
 
 // ================================================================ attachments ====
@@ -692,12 +752,25 @@ function setComposerFiles(views) {
 function renderFiles() {
   const keepBottom = isNearBottom();   // the chips shrink the conversation: stay at the end
   const list = $('attach-list');
-  list.replaceChildren(...S.files.map((f) => fileChip(f, { onRemove: () => removeFile(f.key) })));
+  const blind = !canSeeImages();
+  S.filesBlind = blind;
+  list.replaceChildren(...S.files.map((f) => fileChip(f, { onRemove: () => removeFile(f.key), blind })));
   list.hidden = !S.files.length;
+  // A picture the chosen model cannot see: said once over the chips (each also warns).
+  const note = $('attach-note');
+  const warn = blind && S.files.some((f) => isImage(f) && f.state === 'ready') ? NO_VISION : '';
+  if (note && note.textContent !== warn) note.textContent = warn;
+  if (note) note.hidden = !warn;
   $('attach').setAttribute('aria-busy', S.picking ? 'true' : 'false');
   $('attach').disabled = S.picking;
   if (keepBottom && messagesBox().querySelector('.msg')) scrollToBottom(true);
   updateSendEnabled();
+}
+
+/** The chosen model (or what it can do) changed: redraw the picture chips when whether it
+ *  sees pictures did. */
+function syncVision() {
+  if (S.filesBlind !== !canSeeImages() && S.files.some(isImage)) renderFiles();
 }
 
 function removeFile(key) {
@@ -796,16 +869,31 @@ function readAsDataUrl(file) {
   });
 }
 
+const PASTED_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
+
+/** The name a pasted file is attached under. A pasted screenshot has no name of its own
+ *  (WebView2 calls each one "image.png"), so it is "Pasted image 14.05.33.png", plus
+ *  " (2)" and so on when several come in one paste. */
+function pastedName(file, n) {
+  const name = String(file.name || '');
+  const type = String(file.type || '').toLowerCase();
+  if (!type.startsWith('image/') || (name && !/^image\.\w+$/i.test(name))) return name || 'file';
+  const d = new Date();
+  const hms = [d.getHours(), d.getMinutes(), d.getSeconds()].map((x) => String(x).padStart(2, '0')).join('.');
+  return `Pasted image ${hms}${n ? ` (${n + 1})` : ''}.${PASTED_EXT[type] || 'png'}`;
+}
+
 /** Dropped or pasted files: each is checked here (count, 20 MB), shown as a "Reading…"
- *  chip, read as a data: URL and handed to attach_data, one at a time. */
-async function attachLocalFiles(fileList) {
+ *  chip, read as a data: URL and handed to attach_data, one at a time. `pasted`: name
+ *  pasted screenshots (pastedName). */
+async function attachLocalFiles(fileList, { pasted = false } = {}) {
   const files = Array.from(fileList || []).filter(Boolean);
   if (!files.length) return;
   clearAttachErrors();
   const errors = [];
   const jobs = [];
-  for (const file of files) {
-    const name = String(file.name || 'file');
+  for (const [n, file] of files.entries()) {
+    const name = pasted ? pastedName(file, n) : String(file.name || 'file');
     if (S.files.length >= MAX_FILES) { errors.push({ name, message: TOO_MANY_FILES }); continue; }
     if (Number(file.size) > MAX_FILE_BYTES) { errors.push({ name, message: 'The file is larger than 20 MB.' }); continue; }
     const entry = { key: ++fileKey, name, size: Number(file.size) || 0, state: 'loading' };
@@ -882,10 +970,11 @@ function wireAttachments() {
     }
     if (!files.length) return;
     // Copying from Word or Excel puts a picture of the selection on the clipboard next to
-    // its text: the text is what was meant, so it pastes as usual.
+    // its text: the text is what was meant, so it pastes as usual. A picture alone (a
+    // screenshot) is attached.
     if ((cd.getData('text/plain') || '').trim()) return;
     e.preventDefault();
-    attachLocalFiles(files);
+    attachLocalFiles(files, { pasted: true });
   });
   // The toast sits just above the composer, which grows with the chips.
   if (typeof ResizeObserver === 'function') {
@@ -934,22 +1023,25 @@ function autosize() {
   updateSendEnabled();
 }
 
-/** Send `text` with the attached `files` (bridge views with their ids). `showUser` false
- *  when re-sending (Retry, key card) and the bubble is already there. */
-async function send(text, { showUser = true, files = [] } = {}) {
+/** Send `text` with the attached `files` (bridge views with their ids) and the quick
+ *  `action` ({id, label, hint}) it runs, if any. `showUser` false when re-sending (Retry,
+ *  key card) and the bubble is already there. */
+async function send(text, { showUser = true, files = [], action = null } = {}) {
   text = String(text || '').trim();
   files = files.map(fileView);
   if ((!text && !files.length) || S.busy) return;
   if (text.length > maxChars()) { toast(`Message is longer than ${maxChars().toLocaleString()} characters.`); return; }
   S.busy = true; S.reqId = null; S.stopping = false; S.lastText = text; S.lastFiles = files; S.retryRegen = false;
+  S.lastAction = action;
   S.ctxBefore = dividerAnchor();
   const mine = ++S.sendSeq;
-  if (showUser) { S.lastUserEl = userRow(text, undefined, files); addRow(S.lastUserEl); scrollToBottom(true); }   // your own message always follows you down
+  if (showUser) { S.lastUserEl = userRow(text, undefined, files, { action }); addRow(S.lastUserEl); scrollToBottom(true); }   // your own message always follows you down
   startTurn();
   reflectComposer();
-  // Without files send_message is called exactly as before attachments existed.
+  // Without files (or a quick action) send_message is called exactly as before they existed.
   const ids = files.map((f) => f.id);
-  const r = ids.length ? await api.call('send_message', text, ids) : await api.call('send_message', text);
+  const r = action ? await api.call('send_message', text, ids, action.id)
+    : ids.length ? await api.call('send_message', text, ids) : await api.call('send_message', text);
   adoptRequest(r, mine, 'Could not send the message.');
 }
 
@@ -963,7 +1055,7 @@ async function regenerate() {
   if (!old || !old.classList.contains('assistant')) return;
   const users = rows.filter((r) => r.classList.contains('user'));
   S.busy = true; S.reqId = null; S.stopping = false;
-  S.lastText = ''; S.lastFiles = []; S.retryRegen = true;
+  S.lastText = ''; S.lastFiles = []; S.retryRegen = true; S.lastAction = null;
   S.lastUserEl = users[users.length - 1] || null;
   S.ctxBefore = dividerAnchor();
   S.regen = { old };
@@ -1014,7 +1106,7 @@ function retry() {
   if (S.retryRegen) { regenerate(); return; }
   // The files' ids are still valid: the backend forgets them only when a reply finishes
   // or is stopped.
-  if (S.lastText || S.lastFiles.length) send(S.lastText, { showUser: false, files: S.lastFiles });
+  if (S.lastText || S.lastFiles.length) send(S.lastText, { showUser: false, files: S.lastFiles, action: S.lastAction });
 }
 
 function dropTurn() {
@@ -1221,7 +1313,8 @@ on('chat.error', (e) => {
     const input = $('input');
     if (!input.value.trim()) { input.value = text; autosize(); }
     if (files.length && !S.files.length) setComposerFiles(files);
-    showKeyCard(e.provider || S.selected.provider, text, files);
+    if (S.lastAction && !S.action) setComposerAction(S.lastAction, { focus: false });
+    showKeyCard(e.provider || S.selected.provider, text, files, S.lastAction);
     return;
   }
   showError({ message: e.message, hint: e.hint, action: e.action, code: e.code });
@@ -1254,7 +1347,7 @@ on('key.status', (e) => {
 
 on('settings.changed', (e) => {
   applyConfig(e.config || {});
-  renderChip(); renderStatus(); renderEmpty(); autosize();
+  renderChip(); renderStatus(); renderEmpty(); syncVision(); autosize();
   // Keys, providers and model lists may have changed (Settings, or the daily refresh):
   // the model menu reads S.providers, so reload it.
   refreshProviders();
@@ -1279,6 +1372,7 @@ function applyConfig(cfg) {
     if (cfg.ui.theme && window.UITheme && window.UITheme.current() !== cfg.ui.theme) window.UITheme.set(cfg.ui.theme);
   }
   if (cfg.local) S.config.local = { ...S.config.local, ...cfg.local };
+  if (Array.isArray(cfg.quick_actions)) syncActions(cfg.quick_actions);
 }
 
 function dotState() {
@@ -1371,16 +1465,13 @@ function renderStatus() {
 }
 setInterval(() => { if (S.runtime.state === 'ready') renderStatus(); }, 1000);
 
-const SUGGESTIONS = [
-  'What is today’s date?',
-  'Search the web for the latest OpenVINO release',
-  'What is sqrt(2) * 10?',
-];
-
+/** The empty chat (start, and after Clear chat): who answers, then the quick actions. */
 function renderEmpty() {
   const box = messagesBox();
   const existing = box.querySelector('.empty-state');
   if (box.querySelector('.msg')) { if (existing) existing.remove(); return; }
+  // A re-render (settings.changed, a key saved) keeps the keyboard on the same chip.
+  const focused = existing && existing.contains(document.activeElement) ? document.activeElement.dataset.action : null;
   const p = selectedProvider();
   const needsKey = p && !isConfigured(p);
   const kids = [
@@ -1393,29 +1484,168 @@ function renderEmpty() {
     b.addEventListener('click', () => showKeyCard(p.id, ''));
     kids.push(b);
   } else {
-    const list = el('div', { class: 'suggestions' });
-    for (const s of SUGGESTIONS) {
-      const b = el('button', { class: 'suggestion', type: 'button', text: s });
-      b.addEventListener('click', () => { const i = $('input'); i.value = s; autosize(); i.focus(); });
-      list.append(b);
-    }
-    kids.push(list);
+    kids.push(...actionGrid());
   }
   const node = el('div', { class: 'empty-state' }, kids);
   if (existing) existing.replaceWith(node); else box.prepend(node);
+  if (focused) [...node.querySelectorAll('.qa-chip')].find((b) => b.dataset.action === focused)?.focus();
 }
 
 function renderConversation(items) {
   const box = messagesBox();
   box.replaceChildren();
   for (const m of items || []) {
-    if (m.role === 'user') box.append(userRow(m.content || '', m.ts, m.attachments || [], { cut: !!m.cut }));
+    if (m.role === 'user') box.append(userRow(m.content || '', m.ts, m.attachments || [], { cut: !!m.cut, action: m.action || null }));
     else if (m.role === 'assistant') box.append(assistantRowFromData(m));
     else if (m.role === 'notice' && m.kind === 'context_cut') box.append(contextDivider(m.content || CONTEXT_CUT_TEXT));
   }
   renderEmpty();
   syncRegenerate();
   scrollToBottom(true);
+}
+
+// ================================================================ quick actions ====
+// One-tap prompt templates (chat/actions.py; the list is get_state.config.quick_actions and
+// changes with settings.changed). They show as chips in an empty chat and in the composer's
+// quick-actions menu. Picking one puts a pill in the composer and its hint in the
+// placeholder, keeps what is typed, and focuses the box for a paste; the next message is
+// sent with the action's id and shows the action over its bubble.
+
+const DEFAULT_PLACEHOLDER = 'Message ChatForge';   // index.html
+const ICON_BOLT = ['M13 2.5L4.5 13.5h6.5l-1 8 8.5-11h-6.5z'];
+
+/** The list changed (boot, Settings): a picked action follows its new name and hint, or
+ *  leaves the composer when it was removed. */
+function syncActions(list) {
+  S.actions = list.filter((a) => a && a.id && a.label);
+  if (!S.action) return;
+  const now = S.actions.find((a) => a.id === S.action.id);
+  if (!now) setComposerAction(null, { focus: false });
+  else if (now.label !== S.action.label || now.hint !== S.action.hint) setComposerAction(now, { focus: false });
+}
+
+/** The pill over a sent message's bubble. */
+function actionTag(action) {
+  const label = String(action.label || action.id || '');
+  return el('div', { class: 'msg-action', title: `Sent with the quick action “${label}”` }, [
+    railIcon(ICON_BOLT), el('span', { text: label }),
+  ]);
+}
+
+/** Put `action` ({id, label, hint}) in the composer, or take it out (null). The typed text stays. */
+function setComposerAction(action, { focus = true } = {}) {
+  S.action = action ? { id: action.id, label: String(action.label || action.id), hint: String(action.hint || '') } : null;
+  const bar = $('action-bar');
+  if (!S.action) {
+    bar.replaceChildren();
+    bar.hidden = true;
+  } else {
+    const remove = el('button', { class: 'action-pill-remove', type: 'button', 'aria-label': `Remove the quick action ${S.action.label}`,
+      title: 'Remove (or Backspace in an empty box)' }, [railIcon(ICON.close)]);
+    remove.addEventListener('click', () => { setComposerAction(null); announce('Quick action removed'); });
+    bar.replaceChildren(el('span', { class: 'action-pill', role: 'group', 'aria-label': `Quick action: ${S.action.label}` }, [
+      railIcon(ICON_BOLT), el('span', { class: 'action-pill-label', text: S.action.label }), remove,
+    ]));
+    bar.hidden = false;
+  }
+  $('input').placeholder = S.action ? (S.action.hint || `${S.action.label}…`) : DEFAULT_PLACEHOLDER;
+  if (focus) $('input').focus();
+}
+
+/** A chip or menu item was picked. */
+function chooseAction(action) {
+  closeQuickMenu({ focusButton: false });
+  setComposerAction(action);
+  announce(`${action.label}. ${action.hint || 'Type or paste the text, then press Enter.'}`);
+}
+
+/** The empty chat's quick actions: a line saying what they do, then a grid of chips. */
+function actionGrid() {
+  if (!S.actions.length) return [];
+  const grid = el('div', { class: 'qa-grid', role: 'group', 'aria-label': 'Quick actions' });
+  for (const a of S.actions) {
+    const b = el('button', { class: 'qa-chip', type: 'button', title: a.hint || a.label, dataset: { action: a.id } }, [
+      railIcon(ICON_BOLT), el('span', { class: 'qa-label', text: a.label }),
+    ]);
+    b.addEventListener('click', () => chooseAction(a));
+    grid.append(b);
+  }
+  return [el('p', { class: 'qa-intro', text: 'Pick a quick action, then paste your text.' }), grid];
+}
+
+function quickMenu() { return $('quick-menu'); }
+function quickMenuOpen() { return !quickMenu().hidden; }
+function quickMenuItems() { return [...quickMenu().querySelectorAll('[role="menuitem"]')]; }
+
+function buildQuickMenu() {
+  const items = S.actions.map((a) => {
+    const current = !!S.action && S.action.id === a.id;
+    const b = el('button', { class: `qm-item${current ? ' is-current' : ''}`, type: 'button', role: 'menuitem', tabindex: '-1',
+      title: a.hint || a.label, dataset: { action: a.id } }, [
+      el('span', { class: 'qm-check', 'aria-hidden': 'true', text: current ? '✓' : '' }),
+      el('span', { class: 'qm-label', text: a.label }),
+      a.tools ? el('span', { class: 'qm-tag', text: 'web' }) : null,
+    ]);
+    b.addEventListener('click', () => chooseAction(a));
+    return b;
+  });
+  const edit = el('button', { class: 'qm-item qm-edit', type: 'button', role: 'menuitem', tabindex: '-1', text: 'Edit quick actions…' });
+  edit.addEventListener('click', () => { closeQuickMenu({ focusButton: false }); openSettings(); });
+  quickMenu().replaceChildren(
+    el('div', { class: 'qm-head', 'aria-hidden': 'true', text: 'Quick actions' }),
+    ...(items.length ? items : [el('div', { class: 'qm-empty', text: 'None yet: add some in Settings.' })]),
+    el('div', { class: 'qm-sep', role: 'separator' }),
+    edit,
+  );
+}
+
+function openQuickMenu() {
+  if (S.menuOpen) closeMenu({ focusChip: false });
+  buildQuickMenu();
+  quickMenu().hidden = false;
+  $('quick').setAttribute('aria-expanded', 'true');
+  const items = quickMenuItems();
+  (items.find((b) => b.classList.contains('is-current')) || items[0])?.focus();
+}
+
+function closeQuickMenu({ focusButton = true } = {}) {
+  if (!quickMenuOpen()) return;
+  quickMenu().hidden = true;
+  $('quick').setAttribute('aria-expanded', 'false');
+  if (focusButton) $('quick').focus();
+}
+
+function onQuickMenuKey(e) {
+  const items = quickMenuItems();
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+  else if (e.key === 'Home') { e.preventDefault(); items[0]?.focus(); }
+  else if (e.key === 'End') { e.preventDefault(); items[items.length - 1]?.focus(); }
+  else if (e.key === 'Escape') {
+    // Closes the menu only (the document's Escape would hide the popup).
+    e.preventDefault(); e.stopPropagation(); closeQuickMenu();
+  } else if (e.key === 'Tab') closeQuickMenu({ focusButton: false });
+}
+
+function wireQuickActions() {
+  const button = $('quick');
+  button.addEventListener('click', () => (quickMenuOpen() ? closeQuickMenu() : openQuickMenu()));
+  button.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openQuickMenu(); }
+  });
+  quickMenu().addEventListener('keydown', onQuickMenuKey);
+  document.addEventListener('click', (e) => {
+    if (quickMenuOpen() && !e.target.closest('#quick-menu, #quick')) closeQuickMenu({ focusButton: false });
+  });
+  // Backspace in an empty message box takes the pill out, like a chip in a search box.
+  $('input').addEventListener('keydown', (e) => {
+    if (e.key === 'Backspace' && S.action && !e.target.value && !e.isComposing) {
+      e.preventDefault();
+      setComposerAction(null);
+      announce('Quick action removed');
+    }
+  });
 }
 
 // =================================================================== model menu ====
@@ -1452,6 +1682,8 @@ function menuItem(p, m, { withProvider = false } = {}) {
     dataset: { provider: p.id, model: m } }, [
     el('span', { class: 'mm-check', 'aria-hidden': 'true', text: sel ? '✓' : '' }),
     el('span', { class: 'mm-name', text: shortModel(m) }),
+    // A model that sees pictures says so (the composer's warning points here).
+    p.vision && p.vision[m] ? el('span', { class: 'mm-vision', role: 'img', 'aria-label': 'sees pictures', title: 'Sees pictures' }, [railIcon(ICON.image)]) : null,
     withProvider ? el('span', { class: 'mm-sub', text: p.display_name }) : null,
   ]);
   b.addEventListener('click', () => chooseModel(p.id, m));
@@ -1519,8 +1751,11 @@ async function chooseModel(providerId, modelId) {
   const r = await api.call('select_model', providerId, modelId);
   if (!r || !r.ok) { toast((r && r.error && r.error.message) || 'Could not switch model.'); return; }
   S.selected = { provider: providerId, model: modelId };
+  // Whether the new model sees pictures (the picture chips warn when it does not).
+  const p = providerById(providerId);
+  if (p && typeof r.vision === 'boolean') p.vision = { ...(p.vision || {}), [modelId]: r.vision };
   if (S.keyCard && S.keyCard.providerId !== providerId) closeKeyCard();
-  renderChip(); renderStatus();
+  renderChip(); renderStatus(); syncVision();
   const box = messagesBox();
   if (!box.querySelector('.msg')) renderEmpty();
   $('input').focus();
@@ -1552,6 +1787,7 @@ function wire() {
   $('send').addEventListener('click', doSend);
   $('stop').addEventListener('click', stopGeneration);
   wireAttachments();
+  wireQuickActions();
   $('btn-new').addEventListener('click', newChat);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-close').addEventListener('click', () => api.call('hide_popup'));
@@ -1615,8 +1851,10 @@ function doSend() {
   S.files = [];   // they go with the message (no remove_attachment)
   clearAttachErrors();
   renderFiles();
+  const action = S.action;   // the quick action goes with the message too
+  if (action) setComposerAction(null, { focus: false });
   autosize();
-  send(text, { files });
+  send(text, { files, action });
 }
 
 function showNotConnected(title, message) {
@@ -1664,4 +1902,4 @@ async function boot() {
 boot();
 
 // Debug hook for the browser console when running against dev-mock.js.
-window.__chat = { S, send, showKeyCard };
+window.__chat = { S, send, showKeyCard, renderConversation };

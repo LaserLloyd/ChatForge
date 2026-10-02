@@ -155,11 +155,16 @@ _SPECS: dict[str, ToolSpec] = {
         _spec(
             "create_document",
             "Create documents",
-            "Save a file for the user, e.g. report.docx or data.csv.",
+            "Save a Word, Excel, PowerPoint, CSV or text file.",
             {
-                "filename": _str("file name with extension: .md .txt .csv .docx .json ..."),
-                "content": _str("the full text; Markdown for .docx"),
-                "format": _str("optional file type if the name has none, e.g. docx"),
+                "filename": _str(
+                    "name with extension: .docx .xlsx .pptx .csv .md .txt .html, or code"
+                ),
+                "content": _str(
+                    "Markdown. .docx: headings, lists, tables. .xlsx/.csv: Markdown tables or "
+                    "CSV; a ## heading names each sheet. .pptx: # title, ## per slide, - bullets."
+                ),
+                "format": _str("optional file type if the name has none, e.g. xlsx"),
             },
             ["filename", "content"],
             local=False,

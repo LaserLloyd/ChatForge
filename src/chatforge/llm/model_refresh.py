@@ -39,6 +39,8 @@ class FetchResult:
     code: str | None = None
     #: Context windows the provider reported, by model id.
     contexts: dict[str, int] = field(default_factory=dict)
+    #: Whether each model can see pictures, for the models the provider said so of.
+    vision: dict[str, bool] = field(default_factory=dict)
 
 
 # Where servers put a model's context window, most specific first. StudioForge (and LM
@@ -75,6 +77,43 @@ def context_of(entry: dict[str, Any]) -> int | None:
     sf = entry.get("studioforge")
     if isinstance(sf, dict):
         return _as_tokens(sf.get("n_ctx_train"))
+    return None
+
+
+def _words(value: Any) -> list[str] | None:
+    """A list of capability / modality names (lower case), or ``None`` when ``value`` is
+    not a list."""
+    if not isinstance(value, list):
+        return None
+    return [v.strip().lower() for v in value if isinstance(v, str)]
+
+
+def vision_of(entry: dict[str, Any]) -> bool | None:
+    """Whether a ``GET /models`` entry says the model can see pictures; ``None`` when it
+    does not say. StudioForge: ``studioforge.vision`` (and ``capabilities``); LM Studio:
+    ``type: "vlm"``; OpenRouter-style: ``architecture.input_modalities``; others:
+    ``input_modalities`` / ``modalities`` / ``capabilities.vision``."""
+    sf = entry.get("studioforge")
+    if isinstance(sf, dict) and isinstance(sf.get("vision"), bool):
+        return sf["vision"]
+    mtype = entry.get("type")
+    if isinstance(mtype, str) and mtype.strip().lower() in ("vlm", "vision"):
+        return True
+    caps = entry.get("capabilities")
+    if isinstance(caps, dict) and isinstance(caps.get("vision"), bool):
+        return caps["vision"]
+    arch = entry.get("architecture") if isinstance(entry.get("architecture"), dict) else {}
+    for value in (
+        arch.get("input_modalities"),
+        entry.get("input_modalities"),
+        entry.get("modalities"),
+    ):
+        words = _words(value)
+        if words:
+            return "image" in words or "vision" in words
+    words = _words(caps)
+    if words and "vision" in words:
+        return True
     return None
 
 
@@ -133,7 +172,12 @@ async def fetch_models(
         )
     wanted = set(models)
     contexts = {e["id"]: ctx for e in chat_entries if e["id"] in wanted and (ctx := context_of(e))}
-    return FetchResult(True, models, contexts=contexts)
+    vision = {
+        e["id"]: seen
+        for e in chat_entries
+        if e["id"] in wanted and (seen := vision_of(e)) is not None
+    }
+    return FetchResult(True, models, contexts=contexts, vision=vision)
 
 
 def merge_models(spec: ProviderSpec, fetched: list[str]) -> tuple[list[str], str | None]:
@@ -167,4 +211,5 @@ __all__ = [
     "fetch_models",
     "is_configured",
     "merge_models",
+    "vision_of",
 ]

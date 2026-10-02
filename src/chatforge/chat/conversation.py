@@ -6,9 +6,13 @@ output, user turns, ``role: tool`` results). UI metadata rides along in private
 
 * all:        ``_ts`` (epoch seconds)
 * user:       ``_attachments`` (attached files: ``[{name, kind, chars, truncated, text}]``;
-  ``content`` stays the typed text and ``chat.history`` adds the file blocks per request),
+  ``content`` stays the typed text and ``chat.history`` adds the file blocks per request;
+  a picture, ``kind: "image"``, also has ``{file, media_type, width, height, thumb}`` and,
+  once read for a model that cannot see it, ``ocr``: see ``chatforge.images``),
   ``_cut`` (the message was too long for the model's context window when it was sent, so
-  its end or its files were cut)
+  its end or its files were cut), and for a quick action (``chat.actions``) ``_action``
+  (``{id, label, tools, style}``) and ``_text`` (what the user typed; ``content`` is then
+  the expanded prompt the model sees)
 * assistant:  ``_reasoning`` (display reasoning), ``_model``, ``_stopped`` (cancelled
   partial), and the provider's own ``_origin`` / ``_visible`` (MiniMax echo: these MUST
   survive a save/load round trip or the echo breaks after a restart)
@@ -55,20 +59,30 @@ def visible_content(msg: dict) -> str:
 
 
 def attachment_views(msg: dict) -> list[dict]:
-    """``[{name, kind, chars, truncated}]`` for a user message's attached files (no text)."""
+    """``[{name, kind, chars, truncated}]`` for a user message's attached files (no text),
+    plus ``{width, height, thumb}`` for a picture."""
     files = msg.get("_attachments")
     if not isinstance(files, list):
         return []
-    return [
-        {
+    out: list[dict] = []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        view: dict[str, Any] = {
             "name": str(f.get("name") or "file"),
             "kind": str(f.get("kind") or "text"),
             "chars": int(f.get("chars") or 0),
             "truncated": bool(f.get("truncated", False)),
         }
-        for f in files
-        if isinstance(f, dict)
-    ]
+        if view["kind"] == "image":
+            thumb = f.get("thumb")
+            view.update(
+                width=f.get("width") if isinstance(f.get("width"), int) else None,
+                height=f.get("height") if isinstance(f.get("height"), int) else None,
+                thumb=thumb if isinstance(thumb, str) and thumb.startswith("data:image/") else None,
+            )
+        out.append(view)
+    return out
 
 
 def document_view(msg: dict) -> dict | None:
@@ -82,6 +96,17 @@ def document_view(msg: dict) -> dict | None:
         "size": int(doc.get("size") or 0),
         "kind": doc.get("kind"),
     }
+
+
+def action_view(msg: dict, item: dict) -> None:
+    """A quick action's user message (``_action``): the popup shows the typed text
+    (``_text``, not the expanded prompt) and ``action: {id, label}``."""
+    action = msg.get("_action")
+    if not isinstance(action, dict):
+        return
+    typed = msg.get("_text")
+    item["content"] = typed if isinstance(typed, str) else ""
+    item["action"] = {"id": str(action.get("id") or ""), "label": str(action.get("label") or "")}
 
 
 def _timestamp(value: Any) -> float | None:
@@ -181,8 +206,8 @@ class Conversation:
     def items(self) -> list[dict]:
         """The conversation as the popup renders it::
 
-            {role: "user", content, ts, attachments?: [{name, kind, chars, truncated}],
-             cut?: true}
+            {role: "user", content, ts, attachments?: [{name, kind, chars, truncated,
+             width?, height?, thumb?}], cut?: true, action?: {id, label}}
             {role: "assistant", content, ts, model?, reasoning?, stopped?,
              tools?: [{call_id, name, arguments, ok, summary}],
              documents?: [{name, path, size, kind}]}
@@ -237,6 +262,7 @@ class Conversation:
                     user["attachments"] = attachments
                 if msg.get("_cut"):
                     user["cut"] = True
+                action_view(msg, user)
                 out.append(user)
                 continue
             if role not in ("assistant", "tool"):

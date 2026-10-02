@@ -11,9 +11,10 @@ PowerToys) and a chat popup opens at the lower right of the screen. A small lang
 answers **on the Intel NPU** (no account, and the conversation stays on the PC), or a bigger one
 does: **StudioForge** (your own GPU server on the LAN or tailnet), **MiniMax**, **OpenAI**,
 **DeepSeek** or any OpenAI-compatible service. Answers stream in as rendered Markdown. Attach
-text, code, CSV, JSON, Word, Excel or PowerPoint files (PDF too, with the optional `pypdf`) and
-the model reads them; ask a StudioForge or cloud model for a report and it saves one, as a Word
-document if you like, in `Documents\ChatForge`. The model has nine tools: web and news search,
+photos, text, code, CSV, JSON, PDF, Word, Excel or PowerPoint files (old `.doc`/`.xls`/`.ppt`,
+OpenDocument, RTF and emails too) and the model reads them; ask a StudioForge or cloud model for a report, a spreadsheet or slides and
+it saves a Word, Excel or PowerPoint file (or CSV, Markdown, text) in `Documents\ChatForge`,
+ready to open or download. The model has nine tools: web and news search,
 page fetch, weather, Wikipedia, exchange rates, the current date and time, a calculator, and one
 that creates documents.
 
@@ -64,7 +65,7 @@ at the top.
 | --- | --- | --- |
 | **Tray app** (`pythonw -m chatforge`, one process) | Your PC, as your user | Notification-area icon with a status dot, the global hotkey, a single-instance guard and two windows: the popup and Settings (pywebview on WebView2). Starts at sign-in, hidden; restarts itself from the tray. |
 | **Chat engine** (`chat/engine.py`) | Inside the app, on its asyncio core thread | Streams each answer, runs up to 6 rounds of tool calls per message, looks live data up early for the small model, recovers from refusals, falls back to another provider, fits long conversations to the model's context window. |
-| **Attachments** (`attachments.py`) | Inside the app | Reads attached files as text: plain text and code, CSV, JSON, HTML, Word, Excel and PowerPoint with the standard library, PDF with the optional `pypdf`. See [Files and documents](#files-and-documents). |
+| **Attachments** (`attachments.py`) | Inside the app | Reads attached files as text: plain text and code, CSV, JSON, HTML, Word, Excel, PowerPoint, OpenDocument, RTF, emails and old `.doc` with the standard library, PDF with `pypdf`, old `.xls`/`.ppt` through Microsoft Office when it is installed. Pictures are cleaned and stored for vision models (OCR text for the others). See [Files and documents](#files-and-documents). |
 | **OpenVINO Model Server** (`ovms.exe` 2026.4) | Your PC, a child process under a kill-on-close job object | Serves the local model on the NPU (or GPU or CPU). Installed by `chatforge runtime install`, started when the popup opens with the local model selected, stopped after 10 idle minutes. |
 | **Local model** | Your PC, `%LOCALAPPDATA%\ChatForge\models` | `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` by default, downloaded from Hugging Face in Settings > Models. Compiled once for the NPU and cached. |
 | **StudioForge** | Your GPU server (`http://localhost:1234/v1` by default; set the host in Settings) | LaserLloyd's OpenAI-compatible LLM server; any model it serves. Key optional. |
@@ -113,8 +114,8 @@ at the top.
 - **Another try in one click.** **Regenerate** on the latest reply asks the model again for the
   same message, with the same files; if the new answer fails, the old one is kept.
 - **Files in, documents out.** Pick, drop or paste up to 10 files per message and ask about them;
-  ask a StudioForge or cloud model for a report and get a `.docx` (or `.md`, `.csv`, …) with an
-  **Open** button.
+  ask a StudioForge or cloud model for a report and get a `.docx`, `.xlsx` or `.pptx` (or `.csv`,
+  `.md`, …) with **Open** and **Download** buttons.
 - **Long chats keep going.** When a conversation outgrows the model's context window, the oldest
   turns are left out instead of the request failing, and a divider shows where the model's view
   starts. Each model has its own window: 1M tokens on MiniMax, whatever StudioForge reports for
@@ -182,13 +183,6 @@ after every step, is [`docs/SETUP.md`](docs/SETUP.md).
 4. Get the model: **Settings > Models**, search `Qwen`, then **Download** on the row badged
    *Recommended*, `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` (0.94 GB). A model folder copied in by
    hand under `%LOCALAPPDATA%\ChatForge\models\<publisher>\<repo>` is adopted at the next start.
-
-5. Optional, to attach PDFs: add `pypdf` (it is recorded in `pyproject.toml` and `uv.lock`, so a
-   later `uv sync` keeps it), then **Restart** ChatForge from the tray menu:
-
-   ```powershell
-   py -3.12 -m uv add pypdf
-   ```
 
 No NPU? Set the device to GPU or CPU in Settings > Providers > Local (slower), or use StudioForge
 or a cloud provider only.
@@ -273,6 +267,28 @@ login on or off. Starting a second copy just brings the running popup up.
   login, **Restart** and Quit. Restart starts a new copy hidden in the tray and quits this one
   the normal way; if the new copy cannot start, a tray message says why and this one keeps
   running. Quit unloads the model and ends `ovms.exe`.
+
+### Quick actions
+
+An empty chat (at start and after every **Clear chat**) shows one-tap prompts; the lightning button
+next to the paperclip opens the same list at any time. Pick one, paste your text (or a link for
+the news and fact-check actions) and press Enter. Your message shows only what you pasted, under
+the action's name; the model gets the action's instructions with it.
+
+| Action | What comes back |
+| --- | --- |
+| **Proof this** | The corrected text in a copyable block, then a list of the changes |
+| **Improve this** | A clearer, tighter version in a copyable block, then what changed |
+| **Check me on this** | A 1–5 score for each of Specific, Measurable, Achievable, Relevant, Time-bound and Actionable, a blunt cynical review with the three fixes that matter most, and a stronger rewrite to copy |
+| **News insight** | Summary, context, who benefits and who loses, claims against evidence and spin, a credibility read and what to watch next |
+| Summarize, Reply to this, Explain this, Fact-check, Make it shorter, Make it professional, Action items, Translate | What the name says; rewrites come back in a copyable block |
+
+Rewrites keep the form of your text: plain text stays plain, the same paragraphs and list markers,
+quotes, dashes, spelling and tone, and no emojis unless yours had them. After a reply finishes,
+ChatForge also corrects those surface conventions inside the copyable block itself, for models
+that ignore the instructions. Actions that don't need the internet run without tools. Edit, add
+or hide actions in Settings > General > *Quick actions*; **Restore defaults** brings the built-in
+ones back.
 
 ### The Copilot key
 
@@ -389,7 +405,7 @@ error)*.
 | `exchange_rate` | Convert between currencies | ECB reference rates via [Frankfurter](https://frankfurter.dev) | – |
 | `current_datetime` | Local date, time and time zone | your PC | yes |
 | `calculator` | Evaluate a maths expression (a whitelisted evaluator, no `eval`) | your PC | yes |
-| `create_document` | Save a file the model wrote: Markdown, text, CSV, JSON, HTML, code, or a Word `.docx` built from Markdown ([details](#documents-the-model-saves)) | your PC, into `Documents\ChatForge` | – |
+| `create_document` | Save a file the model wrote: a Word `.docx`, Excel `.xlsx` or PowerPoint `.pptx` built from Markdown, or CSV, Markdown, text, JSON, HTML or code ([details](#documents-the-model-saves)) | your PC, into `Documents\ChatForge` | – |
 
 Tools are switched on or off in Settings > General; all nine are on by default. The small local
 model has a 4096-token prompt window and gets confused by long tool lists, so it is offered the
@@ -428,10 +444,15 @@ your text, one `<file name="…">` block each.
 | Text and code | `.txt`, `.md`, `.log`, `.py`, `.js`, `.ps1`, `.sql`, `.cs`, … | The text (UTF-8, UTF-16 or Windows-1252) |
 | Data | `.csv`, `.tsv`, `.json`, `.xml`, `.yaml`, `.toml`, `.ini`, … | The text |
 | Web pages | `.html`, `.htm` | The visible text |
-| Word | `.docx`, `.docm` | Paragraphs in order, headings and list items marked, table rows as `cell \| cell` |
-| Excel | `.xlsx`, `.xlsm` | Each sheet, named, with its rows as CSV |
-| PowerPoint | `.pptx`, `.pptm` | Each slide's text |
-| PDF | `.pdf` | The text of each page, **only with `pypdf` installed** (scanned pages have no text to read) |
+| Word | `.docx`, `.docm`, `.dotx`, `.doc`, `.odt`, `.rtf` | Paragraphs in order, headings and list items marked, table rows as `cell \| cell` |
+| Excel | `.xlsx`, `.xlsm`, `.xltx`, `.ods`, `.xls` | Each sheet, named, with its rows as CSV |
+| PowerPoint | `.pptx`, `.pptm`, `.ppsx`, `.odp`, `.ppt` | Each slide's text |
+| Email | `.eml`, `.msg` | From, To, Date and Subject, the names of its attachments, then the body |
+| PDF | `.pdf` | The text of each page (scanned pages have no text to read) |
+
+Old `.doc` files are read directly. Old `.xls` and `.ppt` files are converted to the modern format
+by Microsoft Office when it is installed (hidden, on a temporary copy, never touching the original);
+without Office, save them as `.xlsx` or `.pptx` first. Password-protected files are refused.
 
 The limits are in [`src/chatforge/attachments.py`](src/chatforge/attachments.py): 20 MB per file
 and 10 files per message. A file's text is cut at 200,000 characters (`tools.attachment_max_chars`
@@ -440,32 +461,66 @@ ends with a note saying so, and on the local model's 4096-token window the note 
 or StudioForge model for long files. The text is kept with the message, so you can ask follow-up
 questions without attaching the file again.
 
-Not read: pictures ("Images are not supported yet"); the older Office and OpenDocument formats
-(`.doc`, `.xls`, `.ppt`, `.rtf`, `.odt`, `.ods`, `.odp`), which you save as `.docx`, `.xlsx` or
-`.pptx` first; and programs, archives, audio, video and databases. PDFs need `pypdf`, which is
-not installed by default: add it with `py -3.12 -m uv add pypdf` and restart ChatForge from the
-tray menu ([Install](#install), step 5).
+Pictures are covered [below](#pictures). Not read: programs, archives, audio, video and
+databases.
+
+### Pictures
+
+Attach a photo or a screenshot the same way: the paperclip, a drop, or **Ctrl+V** with a
+screenshot on the clipboard (a picture copied with text, as Word and Excel do, pastes the text).
+PNG, JPEG, GIF (its first frame), BMP, WebP, TIFF and AVIF are read; HEIC only with the optional
+`pillow-heif` package, otherwise export the photo as JPEG. ChatForge checks that the file really is
+a picture, turns it upright, shrinks it to 1568 pixels on the long side and keeps a clean copy
+(JPEG, or PNG when it has transparency) **with no metadata**: the camera, GPS position and time
+are dropped. The copy is kept in `%LOCALAPPDATA%\ChatForge\attachments` (the conversation stores
+only its name and a small thumbnail) and deleted once no message needs it: after New chat, or when
+a long conversation is trimmed.
+
+- **Models that see pictures** get them as images: OpenAI's GPT-4o, GPT-4.1, GPT-5 and later and
+  the o-series (not o1-mini or o3-mini), MiniMax-M3 and M3.1, DeepSeek's `deepseek-flash`, and
+  StudioForge models that report vision (*Refresh models*). The pictures of the latest three
+  messages that have some are sent (at most 10); older ones become a one-line note. For another
+  provider, list its vision models in `config.toml`: `vision_models = ["*"]` (or patterns such as
+  `"*-vl-*"`) in its `[providers.<id>]` table.
+- **Models that cannot** (the local NPU models, `deepseek-chat`, MiniMax-M2.x) get a note instead,
+  `[Image "photo.jpg" (1568×1176) attached — this model cannot see images.]`, plus any text
+  Windows' built-in OCR finds in the picture (read once, when the message is sent). The composer
+  says so while such a model is chosen; in the model menu a small picture icon marks the models
+  that see pictures.
 
 ### Documents the model saves
 
 With **Create documents** on (Settings > General), a StudioForge or cloud model can save a file
-for you: ask for "a one-page Word report", "this table as a CSV" or "that script as a file". The
-small local model is not offered this tool.
+for you: ask for "a one-page Word report", "this table as an Excel sheet", "five slides on the
+plan" or "that script as a file". The small local model is not offered this tool. Office files
+are built by ChatForge itself (no Office needed to make them).
 
 - **Where.** `Documents\ChatForge`, in the Documents folder Windows uses (a OneDrive-redirected
   one too), created on first use. Set `tools.documents_dir` in `config.toml` to use another
   folder.
-- **Formats.** Text formats are written as UTF-8: `.md`, `.txt`, `.csv`, `.tsv`, `.json`,
-  `.html`, `.xml`, `.yaml` and code (`.py`, `.js`, `.ts`, `.css`, `.sql`, `.ps1`, `.sh`). A `.csv`
-  starts with a byte-order mark so Excel reads it as UTF-8. A `.docx` is built from Markdown:
-  headings, paragraphs, bullet and numbered lists, tables, quotes, code, bold and italic (links
-  are written as "text (url)").
+- **Word (`.docx`)** from Markdown: headings, paragraphs, bullet and numbered lists, tables,
+  quotes, code, bold and italic (links are written as "text (url)").
+- **Excel (`.xlsx`)** from the Markdown tables (or CSV) in the text: one sheet per table, named
+  after the heading above it. The header row is bold, frozen and filterable; numbers, percentages,
+  amounts like `$1,234.50` and ISO dates like `2024-03-31` are stored as real numbers and dates,
+  while codes such as `007` stay text. Text without a table is refused, and the model is told how
+  to write one.
+- **PowerPoint (`.pptx`, 16:9)** from Markdown: the first `#` heading is the title slide, each
+  `##` heading (or `---`) starts a slide; bullets (three levels), numbered lists, paragraphs, code
+  and tables. Text that would overflow is shrunk, and a slide or table that is still too long
+  continues on the next slide.
+- **Other formats** are written as UTF-8: `.csv` and `.tsv` (a Markdown table is converted; a
+  `.csv` starts with a byte-order mark so Excel reads accents), `.md`, `.txt`, `.json`, `.html`
+  (Markdown becomes a standalone page), `.xml`, `.yaml` and code (`.py`, `.js`, `.ts`, `.css`,
+  `.sql`, `.ps1`, `.sh`).
 - **Nothing is overwritten.** A name that is taken becomes `report (2).docx`, `report (3).docx`
   and so on. Characters Windows forbids are replaced, and a document is at most 5 MB.
 - **In the chat.** The reply gets a card with the file's name, type and size. **Open** opens it
   in its usual app; scripts and unknown types open in Notepad, so opening never runs anything.
-  **Show in folder** selects it in Explorer. Only files in the documents folder can be opened
-  from the chat, and one that was moved or deleted says so.
+  **Download** shows the Save As dialog in your Downloads folder and saves a copy where you choose
+  (it asks before replacing a file). **Show in folder** selects it in Explorer. Only files in the
+  documents folder can be opened or downloaded from the chat, and one that was moved or deleted
+  says so.
 
 ---
 
@@ -560,10 +615,13 @@ One process, several threads:
   model's window, `chat/conversation.py` keeps and saves it, `chat/research.py` holds the
   look-it-up-first and refusal rules, and `chat/prompts.py` builds the system prompt
   (personality, date, tool guidance, home location, your instructions).
-- `attachments.py` reads attached files as text and holds them until the message is sent.
+- `attachments.py` reads attached files as text and holds them until the message is sent;
+  `images.py` checks, cleans and stores attached pictures, and `ocr.py` reads the text in them
+  with Windows OCR for models that cannot see pictures.
 - `models/` holds the scan-based registry, the resumable Hugging Face downloader, search and the
   badge catalog (`catalog.toml`); `tools/` the nine tools and their registry, with
-  `tools/documents.py` saving documents and building `.docx` files.
+  `tools/documents.py` saving documents, and `tools/doc_*.py` building `.docx`, `.xlsx`, `.pptx`
+  and `.html` files from Markdown with the standard library only.
 - `autostart.py` registers the start-at-login task; `desktop/icon.py` draws the app and tray
   icons.
 - `web/` is the UI: `chat.js` (the popup, attachments, document cards and the context divider),
@@ -618,10 +676,8 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
 - A divider says older messages are past the context window: the chat has outgrown the model's
   window, so its oldest turns are no longer sent. Press **Clear chat** to start fresh, or switch
   to a model with a bigger window ([Long conversations](#long-conversations)).
-- A PDF will not attach ("Reading PDFs needs the pypdf package"): run
-  `py -3.12 -m uv add pypdf`, then **Restart** from the tray menu. A picture will not attach:
-  images are not supported yet. An old `.doc`, `.xls` or `.ppt`: save it as `.docx`, `.xlsx` or
-  `.pptx` first.
+- A HEIC photo will not attach: export it as JPEG (or add `pillow-heif`). An old `.xls` or
+  `.ppt` will not attach on a PC without Microsoft Office: save it as `.xlsx` or `.pptx` first.
 - A model you know a provider offers is missing from the menu: **Refresh models** on its card in
   Settings > Providers (a provider that needs a key is skipped until one is saved).
 - The popup comes back by itself when a reply finishes: that is Settings > General > *Show the
@@ -658,8 +714,8 @@ The Python dependencies are permissive too (MIT, BSD, Apache-2.0, PSF) with one 
 naming: `pystray`, which draws the tray icon, is **LGPL-3.0**. It is an unmodified dependency
 installed by pip and imported at runtime, which is the arrangement the LGPL is written for, and
 it does not reach into this project's own terms. If you redistribute a bundled or frozen build
-that embeds it, the LGPL's relinking obligation is yours to satisfy. `pypdf` (BSD-3-Clause),
-needed only for PDF attachments, is not installed unless you add it.
+that embeds it, the LGPL's relinking obligation is yours to satisfy. `pypdf` (BSD-3-Clause)
+reads PDF attachments.
 
 Third-party components are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): the
 vendored marked (MIT), DOMPurify (Apache-2.0 or MPL-2.0) and highlight.js (BSD-3-Clause) in

@@ -61,7 +61,7 @@ test('without pywebview the dev mock supplies every contract method', async () =
   assert.equal(state.ok, true);
   assert.ok(win.pywebview && win.pywebview.__mock, 'dev-mock was not installed');
   const methods = ['get_state', 'send_message', 'regenerate', 'attach_files', 'attach_data', 'remove_attachment', 'open_document',
-    'reveal_document', 'stop_generation', 'new_chat', 'select_model', 'load_model', 'unload_model',
+    'reveal_document', 'save_document', 'stop_generation', 'new_chat', 'select_model', 'load_model', 'unload_model',
     'hide_popup', 'set_pinned', 'open_settings', 'open_external', 'save_api_key', 'remove_api_key', 'test_provider', 'refresh_models',
     'get_settings', 'update_settings', 'list_providers', 'upsert_provider', 'remove_provider', 'list_models',
     'delete_model', 'clear_compile_cache', 'search_models', 'repo_details', 'start_download', 'cancel_download',
@@ -365,14 +365,25 @@ test('attach_data reads a text file and refuses what attachments.py refuses, wit
     assert.equal(res.errors[0].name, name);
     return res.errors[0].message;
   };
-  assert.match(await refused('photo.png', b64('not really a png')), /Images are not supported yet/);
-  assert.equal(await refused('scan.pdf', b64('%PDF-1.7')), 'Reading PDFs needs the pypdf package: py -3.12 -m uv add pypdf');
-  assert.match(await refused('old.doc', b64('x')), /Save it as \.docx in Word/);
+  assert.equal(await refused('photo.png', b64('not really a png')),
+    'The picture could not be read; it may be damaged or not really a PNG file.');
+  assert.match(await refused('layers.psd', b64('8BPS')), /This kind of picture cannot be read/);
+  assert.match(await refused('IMG_0001.HEIC', b64('x')), /HEIC photos cannot be read here/);
   assert.match(await refused('tool.exe', b64('MZ')), /\.exe files are not supported yet/);
   assert.match(await refused('fake.docx', b64('plain text')), /not a real Word document/);
   assert.equal(await refused('empty.txt', ''), 'There is no text in this file.');
   // Checked from the length of the base64 text, before anything is decoded.
   assert.equal(await refused('huge.log', 'A'.repeat(Math.ceil((20 * 1024 * 1024 + 3) / 3) * 4)), 'The file is larger than 20 MB.');
+
+  // PDFs and the older Office, OpenDocument, RTF and email formats are read (made-up text here).
+  for (const [name, kind, bytes] of [['scan.pdf', 'pdf', '%PDF-1.7'], ['old.doc', 'doc', 'OLE2 bytes'],
+    ['budget.xls', 'xls', 'OLE2 bytes'], ['notes.odt', 'odt', 'PK\x03\x04 zip'], ['letter.rtf', 'rtf', '{\\rtf1 hi}'],
+    ['mail.eml', 'eml', 'Subject: hi'], ['deck.ppt', 'ppt', 'OLE2 bytes']]) {
+    const r = await api.call('attach_data', name, b64(bytes));
+    assert.deepEqual(r.errors, [], name);
+    assert.equal(r.attachments[0].kind, kind, name);
+    await api.call('remove_attachment', r.attachments[0].id);
+  }
 
   // Text past tools.attachment_max_chars is cut and marked.
   const big = await api.call('attach_data', 'big.csv', b64('a,b\n'.repeat(60000)));
@@ -386,8 +397,10 @@ test('attach_files stands in for the native dialog: sample pick, a set pick, can
   const sample = await api.call('attach_files');
   assert.equal(sample.ok, true);
   assert.deepEqual(sample.attachments.map((a) => [a.name, a.kind, a.truncated]),
-    [['Quarterly report.docx', 'docx', false], ['server.log', 'text', true]]);
-  assert.deepEqual(sample.errors.map((e) => e.name), ['whiteboard.png']);
+    [['Quarterly report.docx', 'docx', false], ['server.log', 'text', true], ['whiteboard.jpg', 'image', false]]);
+  const photo = sample.attachments[2];
+  assert.deepEqual([photo.width, photo.height, photo.thumb], [1568, 1176, null], 'a dialog pick has no bytes for a thumbnail');
+  assert.deepEqual(sample.errors.map((e) => e.name), ['layers.psd']);
 
   win.__mock.nextPick = null;
   const cancelled = await api.call('attach_files');
@@ -403,6 +416,29 @@ test('attach_files stands in for the native dialog: sample pick, a set pick, can
   const id = many.attachments[0].id;
   assert.deepEqual(await api.call('remove_attachment', id), { ok: true, removed: true });
   assert.deepEqual(await api.call('remove_attachment', id), { ok: true, removed: false });
+});
+
+test('pictures: a dropped PNG becomes a picture chip, and providers say which models see pictures', async () => {
+  // A 2000 x 1000 PNG header (the mock reads the size, the backend would shrink it).
+  const header = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
+  header.writeUInt32BE(13, 8);
+  header.write('IHDR', 12, 'latin1');
+  header.writeUInt32BE(2000, 16);
+  header.writeUInt32BE(1000, 20);
+  const url = `data:image/png;base64,${header.toString('base64')}`;
+  const r = await api.call('attach_data', 'Pasted image 10.11.12.png', url);
+  assert.deepEqual(r.errors, []);
+  const [a] = r.attachments;
+  assert.deepEqual([a.kind, a.chars, a.width, a.height, a.thumb], ['image', 0, 1568, 784, url]);
+
+  const views = Object.fromEntries((await api.call('list_providers')).providers.map((p) => [p.id, p]));
+  assert.equal(views.openai.vision['gpt-4o-mini'], true);
+  assert.equal(views.deepseek.vision['deepseek-chat'], false);
+  assert.equal(views.minimax.vision['MiniMax-M3'], true);
+  assert.equal(views.minimax.vision['MiniMax-M2.7'], false);
+  assert.equal((await api.call('select_model', 'openai', 'gpt-4o')).vision, true);
+  assert.equal((await api.call('select_model', 'deepseek', 'deepseek-chat')).vision, false);
 });
 
 test('send_message with attachment ids: files-only messages, unknown ids, the cap, and ids forgotten after the reply', async () => {
@@ -462,6 +498,29 @@ test('"document": create_document saves a file; open/reveal accept only the docu
   assert.equal((await api.call('reveal_document', `${doc.path}\\..\\..\\secret.txt`)).error.code, 'bad_request');
   assert.equal((await api.call('open_document', 'C:\\Users\\you\\Documents\\ChatForge\\gone.md')).error.code, 'not_found');
   assert.equal((await api.call('open_document', '')).error.code, 'bad_request');
+
+  // Download: the Save As dialog "saves" to Downloads under the file's name, or where
+  // window.__mock.nextSave says (null = cancelled); only documents-folder files.
+  assert.deepEqual(await api.call('save_document', doc.path), { ok: true, path: 'C:\\Users\\you\\Downloads\\Meeting summary.docx' });
+  win.__mock.nextSave = 'D:\\Reports\\Minutes.docx';
+  assert.deepEqual(await api.call('save_document', doc.path), { ok: true, path: 'D:\\Reports\\Minutes.docx' });
+  win.__mock.nextSave = null;
+  assert.deepEqual(await api.call('save_document', doc.path), { ok: true, cancelled: true });
+  assert.ok(!('nextSave' in win.__mock), 'nextSave is used once');
+  assert.equal((await api.call('save_document', 'C:\\Windows\\notepad.exe')).error.code, 'bad_request');
+  assert.equal((await api.call('save_document', 'C:\\Users\\you\\Documents\\ChatForge\\gone.md')).error.code, 'not_found');
+});
+
+test('"xlsx" / "slides": create_document saves an Excel workbook or PowerPoint deck', async () => {
+  for (const [words, name] of [['make an xlsx of the actions', 'Meeting summary.xlsx'], ['turn it into pptx slides', 'Meeting summary.pptx']]) {
+    const run = collect(['chat.tool_result', 'chat.done', 'chat.error'], (e) => e.type === 'chat.done' || e.type === 'chat.error');
+    await api.call('send_message', words);
+    const events = await run;
+    const result = events.find((e) => e.type === 'chat.tool_result');
+    assert.equal(result.document.name, name);
+    assert.equal(result.document.kind, name.endsWith('.xlsx') ? 'xlsx' : 'pptx');
+    assert.match(events.at(-1).content, /Download/);
+  }
 });
 
 test('"overflow": chat.context leaves the older messages out; get_state shows a notice there; the next message clears it', async () => {
@@ -499,4 +558,62 @@ test('"overflow": chat.context leaves the older messages out; get_state shows a 
   ({ conversation } = await api.call('get_state'));
   assert.ok(!conversation.some((m) => m.role === 'notice'));
   assert.equal(conversation.filter((m) => m.cut).length, 1, 'the cut message keeps its note');
+});
+
+test('quick actions: listed in get_state, sent by id with a ```text reply, kept by regenerate', async () => {
+  assert.equal((await api.call('select_model', 'studioforge', null)).ok, true);   // needs no key
+  const s = await api.call('get_state');
+  assert.deepEqual(s.config.quick_actions.slice(0, 4).map((a) => a.id), ['proof', 'improve', 'check', 'insight']);
+  assert.deepEqual(Object.keys(s.config.quick_actions[0]).sort(), ['hint', 'id', 'label', 'tools']);
+  const bad = await api.call('send_message', 'x', [], 'no-such-action');
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error.code, 'bad_request');
+
+  const run = collect(['chat.done', 'chat.error'], () => true);
+  await api.call('send_message', 'Teh report is done.', [], 'proof');
+  const [done] = await run;
+  assert.equal(done.type, 'chat.done');
+  assert.match(done.content, /^```text\nThe report is done\.\n```\n\n- "Teh" → "The"$/);
+  let { conversation } = await api.call('get_state');
+  const user = conversation.at(-2);
+  assert.deepEqual(user, { role: 'user', content: 'Teh report is done.', ts: user.ts, action: { id: 'proof', label: 'Proof this' } });
+
+  const again = collect(['chat.done', 'chat.error'], () => true);
+  await api.call('regenerate');
+  const [redone] = await again;
+  assert.equal(redone.type, 'chat.done');
+  assert.match(redone.content, /^```text\n/);
+  ({ conversation } = await api.call('get_state'));
+  assert.deepEqual(conversation.at(-2).action, { id: 'proof', label: 'Proof this' });
+});
+
+test('quick actions: News insight fetches a bare link; Settings edits the list', async () => {
+  const run = collect(['chat.tool_call', 'chat.done', 'chat.error'], (e) => e.type !== 'chat.tool_call');
+  await api.call('send_message', 'https://news.example.com/budget', [], 'insight');
+  const events = await run;
+  assert.equal(events[0].type, 'chat.tool_call');
+  assert.equal(events[0].name, 'fetch_url');
+  assert.equal(events.at(-1).type, 'chat.done');
+  assert.match(events.at(-1).content, /\*\*Credibility\*\*/);
+
+  const st = await api.call('get_settings');
+  assert.deepEqual(st.quick_actions.items.map((a) => a.id), st.quick_actions.defaults.map((a) => a.id));
+  assert.deepEqual(Object.keys(st.quick_actions.items[0]).sort(),
+    ['builtin', 'hint', 'id', 'instructions', 'label', 'match_style', 'tools']);
+  const changed = collect(['settings.changed'], () => true);
+  const res = await api.call('update_settings', {
+    chat: { quick_actions: [{ id: 'proof', label: 'Proofread', instructions: '' }, { label: 'Haiku', instructions: 'Write a haiku.' }],
+      hidden_quick_actions: ['translate'] },
+  });
+  assert.equal(res.ok, true);
+  const items = Object.fromEntries(res.quick_actions.items.map((a) => [a.id, a]));
+  assert.equal(items.proof.label, 'Proofread');
+  assert.equal(items.proof.instructions, st.quick_actions.defaults[0].instructions, 'empty instructions keep the built-in ones');
+  assert.equal(items['custom-haiku'].builtin, false);
+  const [evt] = await changed;
+  const ids = evt.config.quick_actions.map((a) => a.id);
+  assert.equal(ids.at(-1), 'custom-haiku');
+  assert.ok(!ids.includes('translate'));
+  assert.equal((await api.call('update_settings', { chat: { quick_actions: [{ label: ' ' }] } })).ok, false);
+  await api.call('update_settings', { chat: { quick_actions: [], hidden_quick_actions: [] } });
 });

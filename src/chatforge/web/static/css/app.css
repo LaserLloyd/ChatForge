@@ -100,6 +100,9 @@ button:disabled { cursor: not-allowed; }
 .mm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* "Recently used": the provider after the model name. */
 .mm-sub { margin-left: auto; flex: none; padding-left: 8px; font-size: var(--fs-xs); color: var(--text-tertiary); }
+/* A picture icon after the name of a model that sees pictures. */
+.mm-vision { display: inline-flex; flex: none; margin-left: 6px; color: var(--text-tertiary); }
+.mm-vision .rail-icon { width: 13px; height: 13px; }
 .mm-action { padding-left: 32px; }
 .mm-sep { height: 1px; margin: 4px 6px; background: var(--divider); }
 
@@ -343,6 +346,26 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .msg-files .att-chip { background: var(--surface-1); }
 .msg-files .att-name { max-width: 220px; }
 
+/* A picture: its thumbnail in place of the file icon (in the composer a small square; over a
+ * sent message a preview with the name and size under it). */
+.att-cap { display: contents; }
+.att-thumb {
+  flex: none; width: 22px; height: 22px; margin-inline-start: -4px; object-fit: cover;
+  border-radius: var(--radius-xs); background: var(--surface-3);
+}
+.msg-files .att-chip.att-image {
+  flex-direction: column; align-items: stretch; gap: 4px; height: auto; max-width: 184px; padding: 4px;
+}
+.msg-files .att-image .att-thumb {
+  width: auto; height: auto; max-width: 100%; max-height: 132px; margin: 0; align-self: center; object-fit: contain;
+}
+.msg-files .att-image > .rail-icon { width: 28px; height: 28px; align-self: center; margin: 6px 0 2px; }
+.msg-files .att-image .att-cap { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 2px; }
+.msg-files .att-image .att-name { flex: 1 1 auto; max-width: none; }
+
+/* The chosen model cannot see the attached pictures. */
+.attach-note { margin: -2px 0 8px; font-size: var(--fs-xs); line-height: 1.4; color: var(--warning-text); }
+
 /* Documents the model saved (create_document), under the reply that made them. */
 .docs { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px; }
 .doc-card {
@@ -357,7 +380,7 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .doc-info { flex: 1 1 120px; min-width: 0; }
 .doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); }
 .doc-meta { font-size: var(--fs-micro); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.doc-actions { display: flex; gap: 6px; flex: none; margin-inline-start: auto; }
+.doc-actions { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 1 auto; min-width: 0; margin-inline-start: auto; }
 .doc-actions .rail-icon { width: 14px; height: 14px; }
 
 /* Shown while files are dragged over the popup. It takes no pointer events, so the drag
@@ -531,3 +554,69 @@ details.json-collapse[open] > summary::before { transform: rotate(90deg); }
 details.json-collapse > summary:hover { background: var(--surface-3); color: var(--text-primary); }
 details.json-collapse > summary:focus-visible { outline-offset: -2px; }
 details.json-collapse .code-block-wrapper { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+
+/* ----------------------------------------------------------- quick actions ---- */
+/* chat.js "quick actions": chips in an empty chat, the bolt button and its menu in the
+ * composer, the pill for the picked action, and the tag over a message sent with one. */
+.empty-state:has(.qa-grid) { margin-top: 16px; }
+.qa-intro { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--text-tertiary); }
+.qa-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; margin-top: 2px; }
+.qa-chip {
+  display: flex; align-items: center; gap: 7px; min-width: 0; padding: 7px 10px; text-align: left;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-md);
+  color: var(--text-secondary); font-size: var(--fs-sm);
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.qa-chip:hover { background: var(--surface-2); color: var(--text-primary); border-color: var(--border-strong); }
+.qa-chip > .rail-icon { flex: none; width: 14px; height: 14px; color: var(--accent); }
+.qa-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.composer { position: relative; }
+.quick-btn[aria-expanded="true"] { background: var(--surface-3); color: var(--text-primary); }
+.quick-menu {
+  position: absolute; bottom: calc(100% + 4px); left: 12px; z-index: var(--z-popover);
+  width: min(260px, calc(100% - 24px)); max-height: min(360px, 70vh); overflow-y: auto; padding: 4px;
+  background: var(--surface-overlay); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  animation: ui-menu-in var(--dur-fast) var(--ease-out);
+}
+.qm-head {
+  padding: 6px 10px 4px; font-size: var(--fs-micro); font-weight: var(--fw-medium);
+  text-transform: uppercase; letter-spacing: var(--ls-label); color: var(--text-tertiary);
+}
+.qm-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; text-align: left;
+  background: transparent; border: 0; border-radius: var(--radius-sm);
+  color: var(--text-secondary); font-size: var(--fs-sm);
+}
+.qm-item:hover, .qm-item:focus-visible { background: var(--surface-3); color: var(--text-primary); }
+.qm-item:focus-visible { outline-offset: -2px; }
+.qm-item.is-current { color: var(--text-primary); }
+.qm-check { flex: none; width: 14px; color: var(--text-link); text-align: center; }
+.qm-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qm-tag { margin-left: auto; flex: none; padding-left: 8px; font-size: var(--fs-micro); color: var(--text-tertiary); }
+.qm-edit { padding-left: 32px; }
+.qm-empty { padding: 4px 10px 8px; font-size: var(--fs-xs); color: var(--text-tertiary); }
+.qm-sep { height: 1px; margin: 4px 6px; background: var(--divider); }
+
+.action-bar { display: flex; margin: 0 0 8px; }
+.action-pill {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 28px; padding: 0 2px 0 10px;
+  background: var(--accent-subtle); border: 1px solid var(--accent-muted); border-radius: var(--radius-pill);
+  color: var(--text-primary); font-size: var(--fs-xs); font-weight: var(--fw-medium);
+}
+.action-pill > .rail-icon { flex: none; width: 13px; height: 13px; color: var(--text-link); }
+.action-pill-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-pill-remove {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 22px; height: 22px; padding: 0;
+  background: transparent; border: 0; border-radius: var(--radius-pill); color: var(--text-secondary);
+}
+.action-pill-remove:hover { background: var(--surface-3); color: var(--text-primary); }
+.action-pill-remove .rail-icon { width: 12px; height: 12px; }
+
+.msg-action {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; margin-bottom: 4px; padding: 1px 8px;
+  background: var(--accent-subtle); border: 1px solid var(--accent-muted); border-radius: var(--radius-pill);
+  color: var(--text-link); font-size: var(--fs-micro); font-weight: var(--fw-medium);
+}
+.msg-action .rail-icon { flex: none; width: 11px; height: 11px; }

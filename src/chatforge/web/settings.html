@@ -235,6 +235,17 @@
             </div>
           </fieldset>
 
+          <fieldset class="tools quick-actions" aria-describedby="qa-hint">
+            <legend>Quick actions</legend>
+            <p id="qa-hint" class="ui-text-tertiary small">One-tap prompts shown in a new chat and under the bolt button next to the message box. Pick one, paste your text, press Enter. The instructions go to the model with your text; keep them short and explicit for the small local model.</p>
+            <ol id="qa-list" class="qa-list" aria-label="Quick actions"></ol>
+            <div class="row">
+              <button type="button" id="qa-add" class="btn">Add action</button>
+              <button type="button" id="qa-restore" class="btn">Restore defaults</button>
+            </div>
+            <p class="err" id="err-chat.quick_actions" role="alert"></p>
+          </fieldset>
+
           <div class="switches">
             <label class="check" for="g-autostart"><input id="g-autostart" type="checkbox"> <span>Start at login</span></label>
             <p id="autostart-msg" class="ui-text-tertiary small" role="status" aria-live="polite"></p>

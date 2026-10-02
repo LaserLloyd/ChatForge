@@ -32,7 +32,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from chatforge import attachments, autostart, secrets
+from chatforge import attachments, autostart, images, secrets
+from chatforge.chat import actions as quick_actions
 from chatforge.config import (
     RECENT_MODELS_KEPT,
     AppConfig,
@@ -56,6 +57,7 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "remove_attachment",
     "open_document",
     "reveal_document",
+    "save_document",
     "stop_generation",
     "new_chat",
     "select_model",
@@ -199,6 +201,8 @@ def ui_config(cfg: AppConfig) -> dict[str, Any]:
             "idle_unload_minutes": cfg.local.idle_unload_minutes,
             "autoload_on_open": cfg.local.autoload_on_open,
         },
+        # [{id, label, hint, tools}]: the popup's chips and quick-actions menu.
+        "quick_actions": quick_actions.views(cfg),
     }
 
 
@@ -391,6 +395,9 @@ class Api:
         else:
             models = list(spec.models)
             default = spec.default_model or (models[0] if models else None)
+        # Which of its models can see pictures (the popup warns when the chosen one cannot).
+        named = [*models, default, cfg.chat.model if cfg.chat.provider == spec.id else None]
+        vision = {m: spec.vision_for(m) for m in dict.fromkeys(n for n in named if n)}
         return {
             "id": spec.id,
             "display_name": spec.display_name,
@@ -403,6 +410,7 @@ class Api:
             "builtin": bool(spec.builtin) or spec.id in SEED_IDS,
             "docs_url": spec.docs_url,
             "key": self._key_status(spec),
+            "vision": vision,
         }
 
     def _provider_views(self) -> list[dict[str, Any]]:
@@ -504,17 +512,26 @@ class Api:
 
         return self._guard(impl, "get_state")
 
-    def send_message(self, text: str, attachment_ids: list[str] | None = None) -> dict[str, Any]:
+    def send_message(
+        self,
+        text: str,
+        attachment_ids: list[str] | None = None,
+        action_id: str | None = None,
+    ) -> dict[str, Any]:
         """Send the typed text plus the attached files ``attachment_ids`` (ids from
         ``attach_files`` / ``attach_data``). A message may be files only. The ids stay
         valid until the reply finishes (``chat.done``) or is stopped, so a Retry after an
-        error can send them again."""
+        error can send them again. ``action_id``: a quick action (``get_state.config.
+        quick_actions``) to run on the text."""
 
         def impl() -> dict[str, Any]:
             message = str(text or "")
             ids = self._attachment_ids(attachment_ids)
             if not message.strip() and not ids:
                 return fail("bad_request", "Empty message.")
+            action = self._quick_action(action_id)
+            if action is not None and not isinstance(action, str):
+                return action  # the refusal
             if len(ids) > attachments.MAX_FILES:
                 return fail(
                     "bad_request",
@@ -539,16 +556,31 @@ class Api:
             files = self._s.attachments.peek(ids)  # raises not_found for a stale id
             request_id = f"req_{next(self._request_ids)}"
             self._remember_current_model()  # before the reply's events start
+            # Without an action the engine is called exactly as before quick actions.
+            extra: dict[str, Any] = {"action": action} if action else {}
             if files:
                 emit = self._report_reply_end(request_id, self._emit_then_release(ids))
-                coro = engine.send(message, request_id, emit, attachments=files)
+                coro = engine.send(message, request_id, emit, attachments=files, **extra)
             else:
                 emit = self._report_reply_end(request_id, self._emit)
-                coro = engine.send(message, request_id, emit)
+                coro = engine.send(message, request_id, emit, **extra)
             self._submit(coro, f"chat:{request_id}")
             return ok(request_id=request_id)
 
         return self._guard(impl, "send_message")
+
+    def _quick_action(self, value: Any) -> str | dict[str, Any] | None:
+        """``send_message``'s ``action_id``: ``None`` (no action), the id of an action in
+        use, or a ``fail`` reply for one that is not (removed in Settings meanwhile)."""
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str) or quick_actions.find(self._cfg, value) is None:
+            return fail(
+                "bad_request",
+                "That quick action no longer exists.",
+                "Pick it again from the quick actions.",
+            )
+        return value
 
     def regenerate(self) -> dict[str, Any]:
         """Answer the latest message again (the Regenerate button): its reply is replaced
@@ -724,7 +756,8 @@ class Api:
             loaders = [
                 (
                     attachments.clean_name(p),
-                    functools.partial(attachments.read_path, p, max_chars=max_chars),
+                    # Pictures are cleaned by chatforge.images, the rest read as text.
+                    functools.partial(images.load_path, p, max_chars=max_chars),
                 )
                 for p in paths
             ]
@@ -742,7 +775,7 @@ class Api:
 
             def load() -> tuple[Any, int]:
                 data = attachments.decode_base64(str(base64_data or ""))
-                return attachments.extract_text(file_name, data, max_chars=max_chars), len(data)
+                return images.load_data(file_name, data, max_chars=max_chars), len(data)
 
             return self._attach([(file_name, load)])
 
@@ -785,6 +818,39 @@ class Api:
             return ok(path=str(target))
 
         return self._guard(impl, "reveal_document")
+
+    def save_document(self, path: str) -> dict[str, Any]:
+        """Download: the native Save As dialog of the calling window, in Downloads with the
+        file's name, then a copy there (only files in the documents folder). The dialog asks
+        before replacing a file. ``{ok, path}``, or ``cancelled: true``."""
+
+        def impl() -> dict[str, Any]:
+            import webview
+
+            from chatforge.tools import documents
+
+            source = self._document_path(path)
+            window = self._dialog_window()
+            if window is None:
+                return fail("server", "No window is open to show the save dialog.")
+            popup = self._s.popup
+            suspend = getattr(popup, "suspend_blur", None)
+            on_popup = popup is not None and window is getattr(popup, "window", None)
+            with suspend() if on_popup and callable(suspend) else contextlib.nullcontext():
+                chosen = window.create_file_dialog(
+                    webview.FileDialog.SAVE,
+                    directory=str(documents.downloads_dir()),
+                    save_filename=source.name,
+                    file_types=documents.save_file_types(source.name),
+                )
+            if isinstance(chosen, list | tuple):
+                chosen = chosen[0] if chosen else None
+            if not chosen:
+                return ok(cancelled=True)
+            saved = documents.save_copy(source, str(chosen))
+            return ok(path=str(saved))
+
+        return self._guard(impl, "save_document")
 
     def stop_generation(self, request_id: str) -> dict[str, Any]:
         def impl() -> dict[str, Any]:
@@ -832,7 +898,7 @@ class Api:
             self._emit({"type": "settings.changed", "config": ui_config(new_cfg)})
             if spec.kind == "ovms" and new_cfg.local.autoload_on_open:
                 self._warm_local_model()
-            return ok(selected={"provider": spec.id, "model": model})
+            return ok(selected={"provider": spec.id, "model": model}, vision=spec.vision_for(model))
 
         return self._guard(impl, "select_model")
 
@@ -1017,14 +1083,22 @@ class Api:
             if fetched.ok:
                 models, default = mr.merge_models(spec, fetched.models)
                 contexts = {m: c for m, c in fetched.contexts.items() if m in models}
-                entry.update(models=models, contexts=contexts)
+                # Whether each model sees pictures, where the provider says (StudioForge).
+                vision = {m: v for m, v in fetched.vision.items() if m in models}
+                entry.update(models=models, contexts=contexts, vision=vision)
                 entry.update(mr.change_summary(list(spec.models), models))
                 if (
                     models != list(spec.models)
                     or default != spec.default_model
                     or any(spec.model_context.get(m) != c for m, c in contexts.items())
+                    or any(spec.model_vision.get(m) != v for m, v in vision.items())
                 ):
-                    patch = {"models": models, "default_model": default, "model_context": contexts}
+                    patch = {
+                        "models": models,
+                        "default_model": default,
+                        "model_context": contexts,
+                        "model_vision": vision,
+                    }
                     self._apply_patch({"providers": {spec.id: patch}})
                     changed = True
             results[spec.id] = entry
@@ -1047,6 +1121,8 @@ class Api:
             "config": cfg.model_dump(mode="json"),
             "restart_required": list(restart),
             "errors": dict(errors),
+            # The quick-actions editor: {defaults, items} (``chat.actions.editor_view``).
+            "quick_actions": quick_actions.editor_view(cfg),
         }
 
     def get_settings(self) -> dict[str, Any]:

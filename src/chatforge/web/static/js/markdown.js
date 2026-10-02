@@ -1009,6 +1009,9 @@ const HLJS_SUBSET = ['bash', 'cpp', 'css', 'diff', 'go', 'java', 'javascript',
   'json', 'markdown', 'python', 'rust', 'typescript', 'xml', 'yaml'];
 const HLJS_ALIASES = { 'c++': 'cpp', cxx: 'cpp', js: 'javascript', jsx: 'javascript',
   md: 'markdown', sh: 'bash', shell: 'bash', ts: 'typescript', tsx: 'typescript' };
+// Fence languages that hold prose rather than code: their blocks start wrapped
+// (renderCodeBlock). chat/actions.py PROSE_LANGS is the same list.
+const PROSE_LANGS = new Set(['', 'text', 'txt', 'plain', 'plaintext', 'markdown', 'md']);
 
 function highlightCode(code, lang) {
   const raw = (lang || '').trim().toLowerCase();
@@ -1139,8 +1142,13 @@ function renderCodeBlock(code, lang, { copyText } = {}) {
   // scroll inside a bubble that is itself in a scrolling column is close to
   // unusable. Purely visual, per block, no state to persist: the class is
   // toggled on the wrapper by the same delegated handler that owns Copy.
+  // Prose — a ```text block holding a rewritten paragraph (ChatForge's quick actions), a
+  // ```markdown one, or an untagged one that is not JSON — starts wrapped, so it reads
+  // without sideways scrolling. The toggle still turns it off; Copy copies it exactly.
+  const prose = !art && PROSE_LANGS.has(String(lang || '').toLowerCase())
+    && !(!lang && isParseableJson(code.trim()));
   const wrapBtn = art ? '' :
-    `<button type="button" class="code-block-wrap" aria-pressed="false" ` +
+    `<button type="button" class="code-block-wrap" aria-pressed="${prose ? 'true' : 'false'}" ` +
     `title="${escapeHtml(t('msg.code_wrap'))}" aria-label="${escapeHtml(t('msg.code_wrap'))}">` +
     `<span class="code-block-wrap__glyph" aria-hidden="true">↵</span></button>`;
   const header = `<div class="code-block-header">${langLabel}` +
@@ -1148,7 +1156,7 @@ function renderCodeBlock(code, lang, { copyText } = {}) {
     `<button type="button" class="code-block-copy" data-code="${escapeHtml(dataCode)}"${encAttr} aria-label="Copy code">` +
     `<span class="code-block-copy__idle">${escapeHtml(t('msg.copy'))}</span>` +
     `<span class="code-block-copy__done">${escapeHtml(t('msg.copied'))}</span></button></span></div>`;
-  const body = `<div class="code-block-wrapper">${header}${codeHtml}</div>`;
+  const body = `<div class="code-block-wrapper${prose ? ' wrapped' : ''}">${header}${codeHtml}</div>`;
   // JSON collapses behind a <details> — upstream's rule, and the thing the operator
   // noticed wasn't collapsing: a lang-tagged json fence OR an untagged fence
   // whose content is a bare object/array.

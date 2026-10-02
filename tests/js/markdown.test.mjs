@@ -233,3 +233,24 @@ test('the i18n shim serves every msg.* key markdown.js asks for', async () => {
   assert.match(t('msg.link_retargeted', { url: 'http://x:1/' }), /http:\/\/x:1\//);
   assert.equal(t('nope.missing'), 'nope.missing');
 });
+
+test('prose blocks (text, markdown, untagged) start wrapped; code and JSON do not; Copy copies the exact text', () => {
+  const para = 'A corrected paragraph that is long enough to need wrapping in a 420 pixel popup, with “quotes” and  two spaces.';
+  const fence = (lang, body) => `\`\`\`${lang}\n${body}\n\`\`\``;
+  for (const lang of ['text', 'markdown', 'md', 'TXT', '']) {
+    const block = mount(renderMarkdown(fence(lang, para), OPTS)).querySelector('.code-block-wrapper');
+    assert.ok(block.classList.contains('wrapped'), `${lang || 'untagged'} should start wrapped`);
+    assert.equal(block.querySelector('.code-block-wrap').getAttribute('aria-pressed'), 'true');
+    assert.equal(block.querySelector('.code-block-copy').dataset.code, para);
+  }
+  const code = mount(renderMarkdown(fence('python', 'print("a very long line of code that should scroll, not wrap")'), OPTS))
+    .querySelector('.code-block-wrapper');
+  assert.equal(code.classList.contains('wrapped'), false);
+  assert.equal(code.querySelector('.code-block-wrap').getAttribute('aria-pressed'), 'false');
+  const json = mount(renderMarkdown(fence('', '{"a": [1, 2, 3]}'), OPTS)).querySelector('.code-block-wrapper');
+  assert.equal(json.classList.contains('wrapped'), false, 'untagged JSON is data, not prose');
+  // A multi-line block keeps its lines exactly for Copy.
+  const lines = 'Line one\n\n  - indented item\nLast line';
+  const multi = mount(renderMarkdown(fence('text', lines), OPTS)).querySelector('.code-block-copy');
+  assert.equal(multi.dataset.code, lines);
+});

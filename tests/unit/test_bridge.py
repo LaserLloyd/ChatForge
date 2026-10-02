@@ -118,12 +118,13 @@ def test_methods_keep_real_signatures_for_pywebview() -> None:
         name: [p for p in inspect.signature(getattr(Api, name)).parameters if p != "self"]
         for name in CONTRACT_METHODS
     }
-    assert params["send_message"] == ["text", "attachment_ids"]
+    assert params["send_message"] == ["text", "attachment_ids", "action_id"]
     assert params["attach_files"] == []
     assert params["attach_data"] == ["name", "base64_data"]
     assert params["remove_attachment"] == ["attachment_id"]
     assert params["open_document"] == ["path"]
     assert params["reveal_document"] == ["path"]
+    assert params["save_document"] == ["path"]
     assert params["select_model"] == ["provider_id", "model_id"]
     assert params["save_api_key"] == ["provider_id", "key"]
     assert params["test_provider"] == ["provider_id", "key_or_null", "model_or_null"]
@@ -238,7 +239,14 @@ def test_get_state_shape(api: Api, services: Services) -> None:
         "limits",
         "theme",
     }
-    assert set(st["config"]) == {"chat", "ui", "local"}
+    assert set(st["config"]) == {"chat", "ui", "local", "quick_actions"}
+    assert [a["id"] for a in st["config"]["quick_actions"]][:4] == [
+        "proof",
+        "improve",
+        "check",
+        "insight",
+    ]
+    assert set(st["config"]["quick_actions"][0]) == {"id", "label", "hint", "tools"}
     assert set(st["config"]["chat"]) == {
         "provider",
         "model",
@@ -268,6 +276,7 @@ def test_get_state_shape(api: Api, services: Services) -> None:
             "builtin",
             "docs_url",
             "key",
+            "vision",
         }
         assert set(p["key"]) >= {"source", "env_name", "env_overrides_saved"}
     rt = st["runtime"]
@@ -730,3 +739,68 @@ def test_download_and_install_views() -> None:
     assert download_view({"group_id": "g", "status": "failed"})["status"] == "error"
     inst = runtime_install_view({"status": "extracting"})
     assert set(inst) == {"status", "downloaded_bytes", "total_bytes", "speed_bps", "eta_s", "error"}
+
+
+# --- quick actions ---------------------------------------------------------------------------
+
+
+def test_send_message_passes_a_quick_action_to_the_engine(
+    api: Api, services: Services, loop
+) -> None:
+    import asyncio
+
+    services.loop = loop
+    calls: list[tuple] = []
+    done = asyncio.Event()
+
+    class Engine:
+        async def send(self, text, request_id, emit, **kw):
+            calls.append((text, kw))
+            emit({"type": "chat.done", "request_id": request_id})
+            if len(calls) == 2:
+                done.set()
+
+    services.engine = Engine()
+    assert api.send_message("Teh cat", None, "proof")["ok"] is True
+    assert api.send_message("plain")["ok"] is True
+    loop.run(asyncio.wait_for(done.wait(), 2))
+    # Without an action the engine is called exactly as before.
+    assert calls == [("Teh cat", {"action": "proof"}), ("plain", {})]
+    bad = api.send_message("x", [], "no-such-action")
+    assert bad["ok"] is False and bad["error"]["code"] == "bad_request"
+    api.update_settings({"chat": {"hidden_quick_actions": ["proof"]}})
+    assert api.send_message("x", [], "proof")["error"]["code"] == "bad_request"
+    assert len(calls) == 2
+
+
+def test_quick_actions_in_settings_and_events(api: Api, services: Services, events) -> None:
+    reply = api.get_settings()
+    qa = reply["quick_actions"]
+    assert [d["id"] for d in qa["defaults"]][:4] == ["proof", "improve", "check", "insight"]
+    assert qa["items"] == qa["defaults"]
+    patch = {
+        "chat": {
+            "quick_actions": [
+                {"id": "proof", "label": "Proofread", "instructions": ""},
+                {"label": "Haiku", "instructions": "Write a haiku.", "tools": False},
+            ],
+            "hidden_quick_actions": ["translate"],
+        }
+    }
+    reply = api.update_settings(patch)
+    assert reply["ok"] is True
+    items = {i["id"]: i for i in reply["quick_actions"]["items"]}
+    assert items["proof"]["label"] == "Proofread" and "translate" not in items
+    assert items["custom-haiku"]["builtin"] is False
+    changed = events[0].drain()[-1]
+    assert changed["type"] == "settings.changed"
+    views = changed["config"]["quick_actions"]
+    assert views[0] == {
+        "id": "proof",
+        "label": "Proofread",
+        "hint": "Paste the text to proofread…",
+        "tools": False,
+    }
+    assert views[-1]["id"] == "custom-haiku"
+    bad = api.update_settings({"chat": {"quick_actions": [{"label": " "}]}})
+    assert bad["ok"] is False and any(k.startswith("chat.quick_actions") for k in bad["errors"])

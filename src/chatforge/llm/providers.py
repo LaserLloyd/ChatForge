@@ -203,6 +203,7 @@ class RemoteProvider:
             "max_prompt_tokens": prompt_tokens_for(self.spec, model),
             "tool_result_chars": int(chars),
             "local": False,
+            "vision": self.spec.vision_for(model),
         }
 
     def budget(self, model: str) -> Any:
@@ -296,6 +297,7 @@ class LocalOvmsProvider:
         return {
             "max_prompt_tokens": max(256, max_len - LOCAL_BUDGET_RESERVE_TOKENS),
             "tool_result_chars": int(chars),
+            "vision": self.spec.vision_for(model),
         }
 
     def budget(self, model: str) -> Any:

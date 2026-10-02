@@ -44,16 +44,37 @@ class Quirks(Protocol):
 # --------------------------------------------------------------------------- #
 
 
+def clean_parts(content: list) -> list:
+    """A content part list (a message with pictures) without private ``_`` keys."""
+    return [
+        {k: v for k, v in p.items() if not str(k).startswith("_")} if isinstance(p, dict) else p
+        for p in content
+    ]
+
+
+def flatten_text_parts(content: object) -> object:
+    """A part list holding only text parts as one string (the parts joined by a blank
+    line); anything else unchanged. For servers whose chat templates want plain strings."""
+    if not isinstance(content, list) or not content:
+        return content
+    if not all(isinstance(p, dict) and p.get("type") == "text" for p in content):
+        return content
+    return "\n\n".join(str(p.get("text") or "") for p in content)
+
+
 def clean_messages(
     messages: list[dict], *, origin: str | None, minimal: bool = False
 ) -> list[dict]:
-    """Strip private keys; keep provider extras only on assistant messages whose
-    ``_origin`` equals ``origin``. ``minimal`` keeps just the OpenAI core fields
-    (role/content/tool_calls/tool_call_id/name), as local OVMS templates want."""
+    """Strip private keys (inside content parts too); keep provider extras only on
+    assistant messages whose ``_origin`` equals ``origin``. ``minimal`` keeps just the
+    OpenAI core fields (role/content/tool_calls/tool_call_id/name), as local OVMS
+    templates want, and makes a content list of text parts only a plain string."""
     out: list[dict] = []
     for m in messages:
         mine = origin is not None and m.get("_origin") == origin
         c = {k: v for k, v in m.items() if not k.startswith("_")}
+        if isinstance(c.get("content"), list):
+            c["content"] = clean_parts(c["content"])
         if c.get("role") == "assistant" and not mine:
             for k in REASONING_KEYS:
                 c.pop(k, None)
@@ -62,6 +83,8 @@ def clean_messages(
         if minimal:
             keep = {"role", "content", "tool_calls", "tool_call_id", "name"}
             c = {k: v for k, v in c.items() if k in keep}
+            if "content" in c:
+                c["content"] = flatten_text_parts(c["content"])
             if c.get("role") == "assistant" and c.get("content") is None:
                 c["content"] = ""
         out.append(c)

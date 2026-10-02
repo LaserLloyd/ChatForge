@@ -1057,3 +1057,151 @@ async def test_regenerate_without_a_message_is_refused(tmp_path) -> None:
     assert [e["type"] for e in events] == ["chat.error"]
     assert events[0]["code"] == "bad_request" and "restored" not in events[0]
     assert h.engine.conversation_items() == []
+
+
+# --------------------------------------------------------------------------- #
+# Quick actions
+# --------------------------------------------------------------------------- #
+
+PROOF_REPLY = '```text\nThe cat sat on the mat.\n```\n\n- Fixed "Teh"'
+
+
+async def send_action(h: Harness, text: str, action: str, rid: str = "r1") -> list[dict]:
+    start = len(h.events)
+    await h.engine.send(text, rid, h.events.append, action=action)
+    return h.events[start:]
+
+
+async def test_quick_action_expands_the_prompt_but_shows_the_typed_text(tmp_path) -> None:
+    with fake_openai_server(sse(text_chunks(PROOF_REPLY, 3))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await send_action(h, "Teh cat sat on the mat.", "proof")
+        body = srv.chat_requests[0].json
+    assert events[-1]["type"] == "chat.done" and events[-1]["content"] == PROOF_REPLY
+    sent = body["messages"][-1]
+    assert sent["role"] == "user" and set(sent) == {"role", "content"}
+    assert sent["content"].startswith("Task: Proof this\nProofread the text.")
+    assert "<text>\nTeh cat sat on the mat.\n</text>" in sent["content"]
+    # Proof needs no tools: none are offered.
+    assert not body_has_tools(srv.chat_requests[0])
+    items = h.engine.conversation_items()
+    assert items[0] == {
+        "role": "user",
+        "content": "Teh cat sat on the mat.",
+        "ts": 1_700_000_000.0,
+        "action": {"id": "proof", "label": "Proof this"},
+    }
+    saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))["messages"][0]
+    assert saved["_text"] == "Teh cat sat on the mat." and saved["_action"]["id"] == "proof"
+    assert saved["_action"]["style"] == "strict" and saved["content"] == sent["content"]
+
+
+async def test_regenerate_keeps_the_quick_action(tmp_path) -> None:
+    replies = [sse(text_chunks(PROOF_REPLY, 3)), sse(text_chunks(PROOF_REPLY, 2))]
+    with fake_openai_server(*replies) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        await send_action(h, "Teh cat sat on the mat.", "proof")
+        # Even after the action is renamed in Settings, the message is asked again as it was.
+        h.cfg = validate_config(
+            {
+                **h.cfg.model_dump(),
+                "chat": {**h.cfg.chat.model_dump(), "hidden_quick_actions": ["proof"]},
+            }
+        )
+        events = await regenerate(h)
+        first, again = (r.json["messages"][-1] for r in srv.chat_requests)
+        tools_again = body_has_tools(srv.chat_requests[1])
+    assert events[-1]["type"] == "chat.done"
+    assert again == first and not tools_again
+    items = h.engine.conversation_items()
+    assert len(items) == 2 and items[0]["content"] == "Teh cat sat on the mat."
+    assert items[0]["action"] == {"id": "proof", "label": "Proof this"}
+
+
+async def test_an_unknown_quick_action_is_refused_and_records_nothing(tmp_path) -> None:
+    with fake_openai_server() as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await send_action(h, "Some text", "no-such-action")
+        assert srv.chat_requests == []
+    assert [e["type"] for e in events] == ["chat.error"]
+    assert events[0]["code"] == "bad_request" and "quick action" in events[0]["message"]
+    assert h.engine.conversation_items() == []
+
+
+async def test_a_tool_less_action_skips_tools_and_the_local_lookups(tmp_path, monkeypatch) -> None:
+    from chatforge.tools import weather
+
+    called: list[str] = []
+
+    async def fake_weather(location, **kw):
+        called.append(location)
+        return ToolResult(True, "Sunny", "Weather")
+
+    monkeypatch.setattr(weather, "run", fake_weather)
+    refusal = "I don't have access to real-time weather data."
+    with fake_openai_server(sse(text_chunks(refusal, 2)), prefix="/v3") as srv:
+        h = Harness(
+            tmp_path, srv.base_url, provider="local-npu", chat={"model": QWEN}, manager=True
+        )
+        events = await send_action(h, "what's the weather in porto tomorrow?", "improve")
+        body = srv.chat_requests[0].json
+        n = len(srv.chat_requests)
+    # Pasted text that mentions the weather is content: no eager weather call, no tools
+    # offered, and no refusal recovery.
+    assert called == [] and h.search_calls == [] and n == 1
+    assert not h.of("chat.tool_call", events) and not h.of("chat.reset", events)
+    assert "tools" not in body and events[-1]["type"] == "chat.done"
+
+
+async def test_a_research_action_fetches_a_bare_link_first(tmp_path, monkeypatch) -> None:
+    from chatforge.tools import fetch_url
+
+    fetched: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        fetched.append(url)
+        return ToolResult(True, "Article: the council approved the budget.", "Fetched")
+
+    monkeypatch.setattr(fetch_url, "fetch", fake_fetch)
+    with fake_openai_server(
+        sse(text_chunks("**Summary**\n- Budget approved.", 2)), prefix="/v3"
+    ) as srv:
+        h = Harness(
+            tmp_path, srv.base_url, provider="local-npu", chat={"model": QWEN}, manager=True
+        )
+        events = await send_action(h, "https://news.example.com/budget", "insight")
+        body = srv.chat_requests[0].json
+    assert fetched == ["https://news.example.com/budget"]
+    assert [e["name"] for e in h.of("chat.tool_call", events)] == ["fetch_url"]
+    assert body.get("tools") and body["messages"][-1]["role"] == "tool"
+    assert events[-1]["type"] == "chat.done"
+
+
+async def test_the_style_guard_fixes_a_rewrite_that_ignores_the_original(tmp_path) -> None:
+    original = 'tell the team "great job" - we shipped it'
+    reply = (
+        "Sure! 🎉\n\n```text\nTell the team “great job” — we shipped it! 🚀\n```\n\n"
+        "- Capitalised the first word 🎉"
+    )
+    fixed = (
+        'Sure! 🎉\n\n```text\nTell the team "great job" - we shipped it!\n```\n\n'
+        "- Capitalised the first word 🎉"
+    )
+    with fake_openai_server(sse(text_chunks(reply, 4))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        events = await send_action(h, original, "improve")
+    streamed = "".join(e.get("content", "") for e in h.of("chat.delta", events))
+    assert streamed == reply  # the stream is the model's; chat.done carries the fix
+    assert events[-1]["type"] == "chat.done" and events[-1]["content"] == fixed
+    assert h.engine.conversation_items()[1]["content"] == fixed
+    saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))["messages"]
+    assert saved[-1]["content"] == fixed
+
+
+async def test_the_style_guard_leaves_plain_messages_and_non_rewrites_alone(tmp_path) -> None:
+    reply = "```text\nGreat — done 🎉\n```"
+    with fake_openai_server(sse(text_chunks(reply, 2)), sse(text_chunks(reply, 2))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        plain = await h.send("great - done")
+        summary = await send_action(h, "great - done", "summarize", "r2")
+    assert plain[-1]["content"] == reply and summary[-1]["content"] == reply

@@ -33,13 +33,25 @@
 // needs none). save_api_key then test_provider succeed unless the typed key starts with "bad"
 // (then region_or_key).
 //
+// Quick actions mirror src/chatforge/chat/actions.py (QUICK_ACTIONS: ids, labels, hints and
+// tools; the instructions are short stand-ins). send_message's third argument is an action
+// id: the message is answered with that action's mock reply (rewrites in a ```text block,
+// "News insight" on a bare link and "Fact-check" make a tool call first), and the
+// conversation item carries action: {id, label}. Settings edits them through
+// chat.quick_actions / chat.hidden_quick_actions, as the app does.
+//
 // Attachments mirror src/chatforge/attachments.py: attach_data reads text files for real and
-// estimates the text of Office files; images, old Office formats, programs and (without
-// pypdf) PDFs are refused with the same messages; 20 MB per file, 10 per message, text cut
+// estimates the text of Office files; pictures (src/chatforge/images.py) become chips with
+// their size in pixels (read from the file's header) and, for a dropped or pasted PNG, JPEG,
+// GIF or WebP under 512 KB, the picture itself as the thumbnail (the backend makes a real
+// one); Office (old and new), OpenDocument, RTF, email and PDF files get made-up text; other
+// picture formats and programs are refused with the same messages; 20 MB per file, 10 per message, text cut
 // at tools.attachment_max_chars. attach_files stands in for the native dialog: it "picks"
 // window.__mock.nextPick when set ([{name, size, chars?, error?}], or null to cancel), else
-// SAMPLE_PICK. Documents are "saved" under MOCK_DOCS_DIR; open_document/reveal_document
-// accept only those.
+// SAMPLE_PICK. Documents are "saved" under MOCK_DOCS_DIR; open_document/reveal_document/
+// save_document accept only those. save_document stands in for the Save As dialog: it
+// "saves" to window.__mock.nextSave when set (a full path, or null to cancel), else to
+// MOCK_DOWNLOADS_DIR under the file's own name.
 //
 // No secret is ever stored: the mock remembers only THAT a key was saved.
 
@@ -62,6 +74,7 @@ function providerSpec(id, fields) {
     models: [], default_model: null, quirks: [], supports_tools: true, max_output_tokens: 2048,
     temperature: null, extra_body: {}, timeouts: { connect_s: 10, stall_s: 90, wall_s: 600 },
     builtin: false, key_required: null, docs_url: null, context_tokens: null, model_context: {},
+    vision_models: [], model_vision: {},
     ...fields,
   };
 }
@@ -75,7 +88,7 @@ const SEED_PROVIDERS = {
     models: ['MiniMax-M3', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.7', 'MiniMax-M3.1-Flash-Preview'],
     default_model: 'MiniMax-M3', quirks: ['minimax'], max_output_tokens: 4096, temperature: 1.0,
     extra_body: { reasoning_split: true }, timeouts: { connect_s: 10, stall_s: 90, wall_s: 600 },
-    context_tokens: 1000000,
+    context_tokens: 1000000, vision_models: ['MiniMax-M3*'],
   }),
   studioforge: providerSpec('studioforge', {
     display_name: 'StudioForge', base_url: 'http://localhost:1234/v1', api_key_env: 'STUDIOFORGE_API_KEY',
@@ -86,11 +99,14 @@ const SEED_PROVIDERS = {
     display_name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY',
     models: ['gpt-4o-mini', 'gpt-4o'], default_model: 'gpt-4o-mini', quirks: ['openai'], max_output_tokens: 4096,
     docs_url: 'https://platform.openai.com/api-keys',
+    vision_models: ['gpt-4o*', 'chatgpt-4o*', 'gpt-4-turbo', 'gpt-4-turbo-2*', 'gpt-4.1*', 'gpt-4.5*', 'gpt-5*', 'gpt-6*',
+      'o1', 'o1-2*', 'o1-pro*', 'o3', 'o3-2*', 'o3-pro*', 'o4-mini*'],
   }),
   deepseek: providerSpec('deepseek', {
     display_name: 'DeepSeek', base_url: 'https://api.deepseek.com/v1', api_key_env: 'DEEPSEEK_API_KEY',
     models: ['deepseek-chat', 'deepseek-reasoner'], default_model: 'deepseek-chat', quirks: ['deepseek'],
     max_output_tokens: 4096, docs_url: 'https://platform.deepseek.com/api_keys',
+    vision_models: ['deepseek-flash*', 'deepseek-v4-flash*'],
   }),
 };
 const SEED_IDS = new Set(Object.keys(SEED_PROVIDERS));
@@ -112,6 +128,8 @@ const DEFAULT_CONFIG = {
     fallback_model: '',
     auto_refresh_models: true,
     recent_models: [],
+    quick_actions: [],
+    hidden_quick_actions: [],
     temperature: 0.7,
     max_output_tokens: 1024,
     show_reasoning: 'collapsed',
@@ -256,11 +274,26 @@ function keyStatus(pid) {
   };
 }
 
+/** ProviderSpec.vision_for(): what the provider reported for the model, else whether it
+ *  matches one of vision_models (shell-style patterns, any case). */
+function visionFor(spec, model) {
+  const name = String(model || '').trim();
+  if (!spec || !name) return false;
+  const reported = (spec.model_vision || {})[name];
+  if (typeof reported === 'boolean') return reported;
+  const glob = (pattern) => {
+    const body = String(pattern).trim().toLowerCase()
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+    return new RegExp(`^${body}$`);
+  };
+  return (spec.vision_models || []).some((pattern) => glob(pattern).test(name.toLowerCase()));
+}
+
 function providerView(pid) {
   const spec = S.config.providers[pid];
   const local = spec.kind === 'ovms';
   const installed = S.models.filter((m) => m.complete).map((m) => m.id);
-  return {
+  const view = {
     id: pid,
     display_name: spec.display_name || pid,
     kind: spec.kind,
@@ -274,6 +307,80 @@ function providerView(pid) {
     docs_url: spec.docs_url || null,
     key: keyStatus(pid),
   };
+  // Which models see pictures: the listed ones, the default, and the chosen one.
+  const named = [...view.models, view.default_model, S.config.chat.provider === pid ? S.config.chat.model : null];
+  view.vision = Object.fromEntries([...new Set(named.filter(Boolean))].map((m) => [m, visionFor(spec, m)]));
+  return view;
+}
+
+// -------------------------------------------------------- quick actions ----
+// src/chatforge/chat/actions.py DEFAULT_ACTIONS (tests/unit/test_actions.py checks the ids,
+// labels, hints and tools match). The instructions here are short stand-ins.
+
+const QUICK_ACTIONS = [
+  { id: 'proof', label: 'Proof this', hint: 'Paste the text to proofread…', tools: false, match_style: true,
+    instructions: 'Proofread the text: fix spelling, grammar and punctuation only. Reply with the corrected text in one ```text block, then a list of the changes.' },
+  { id: 'improve', label: 'Improve this', hint: 'Paste the text to improve…', tools: false, match_style: true,
+    instructions: 'Rewrite the text so it is clearer and tighter, in the same style. Improved text in one ```text block, then 2 to 4 bullets.' },
+  { id: 'check', label: 'Check me on this', hint: 'Paste a goal, plan or idea to check…', tools: false, match_style: true,
+    instructions: 'Score the text 1-5 for Specific, Measurable, Achievable, Relevant, Time-bound and Actionable, give a cynical review, then a stronger rewrite in one ```text block.' },
+  { id: 'insight', label: 'News insight', hint: 'Paste a news article or a link…', tools: true, match_style: false,
+    instructions: 'Summary, context, who benefits, claims vs evidence, credibility, what to watch next.' },
+  { id: 'summarize', label: 'Summarize', hint: 'Paste the text to summarize…', tools: false, match_style: false,
+    instructions: 'A one-sentence TL;DR, key points and action items.' },
+  { id: 'reply', label: 'Reply to this', hint: 'Paste the message to answer, plus what you want to say…', tools: false, match_style: true,
+    instructions: 'Draft a reply in the same tone, in one ```text block, then anything to confirm.' },
+  { id: 'explain', label: 'Explain this', hint: 'Paste jargon, code, legal text or anything confusing…', tools: false, match_style: false,
+    instructions: 'Explain the text in plain language.' },
+  { id: 'factcheck', label: 'Fact-check', hint: 'Paste the claims or text to fact-check…', tools: true, match_style: false,
+    instructions: 'Check each claim with sources: True, False, Misleading or Unverified.' },
+  { id: 'shorter', label: 'Make it shorter', hint: 'Paste the text to shorten…', tools: false, match_style: true,
+    instructions: 'Make the text about half as long, in one ```text block.' },
+  { id: 'professional', label: 'Make it professional', hint: 'Paste the text to make more professional…', tools: false, match_style: true,
+    instructions: 'Rewrite the text in a polite, professional tone, in one ```text block.' },
+  { id: 'todo', label: 'Action items', hint: 'Paste meeting notes, an email or a thread…', tools: false, match_style: false,
+    instructions: 'List every action item with its owner and due date.' },
+  { id: 'translate', label: 'Translate', hint: 'Paste the text to translate (name a language, or it goes to English)…', tools: false, match_style: true,
+    instructions: 'Translate the text into English (or the language named), in one ```text block.' },
+];
+const CUSTOM_HINT = 'Paste or type the text…';
+
+/** actions.effective(): the built-in actions (an entry with a built-in's id replaces it,
+ *  chat.hidden_quick_actions removes it), then the custom ones. Each {id, label, hint,
+ *  instructions, tools, match_style, builtin}. */
+function effectiveActions() {
+  const entries = S.config.chat.quick_actions || [];
+  const hidden = new Set(S.config.chat.hidden_quick_actions || []);
+  const builtin = new Set(QUICK_ACTIONS.map((a) => a.id));
+  const out = [];
+  for (const base of QUICK_ACTIONS) {
+    if (hidden.has(base.id)) continue;
+    const e = entries.find((x) => x && x.id === base.id);
+    out.push({
+      ...base, builtin: true,
+      ...(e ? {
+        label: e.label || base.label, instructions: e.instructions || base.instructions, hint: e.hint || base.hint,
+        tools: e.tools == null ? base.tools : !!e.tools, match_style: e.match_style == null ? base.match_style : !!e.match_style,
+      } : {}),
+    });
+  }
+  const taken = new Set(builtin);
+  for (const e of entries) {
+    if (!e || builtin.has(e.id) || !String(e.label || '').trim() || !String(e.instructions || '').trim()) continue;
+    const slug = `custom-${String(e.label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'action'}`;
+    let id = e.id || slug;
+    for (let n = 2; taken.has(id); n++) id = `${e.id || slug}-${n}`;
+    taken.add(id);
+    out.push({ id, label: String(e.label).trim(), hint: e.hint || CUSTOM_HINT, instructions: String(e.instructions).trim(),
+      tools: !!e.tools, match_style: !!e.match_style, builtin: false });
+  }
+  return out;
+}
+
+function findAction(id) { return effectiveActions().find((a) => a.id === id) || null; }
+function actionViews() { return effectiveActions().map(({ id, label, hint, tools }) => ({ id, label, hint, tools })); }
+function quickActionsEditor() {
+  return { defaults: QUICK_ACTIONS.map((a) => ({ ...clone(a), builtin: true })), items: clone(effectiveActions()) };
 }
 
 function uiConfig() {
@@ -284,6 +391,7 @@ function uiConfig() {
     ui: clone(c.ui),
     local: { device: c.local.device, idle_unload_minutes: c.local.idle_unload_minutes,
       autoload_on_open: c.local.autoload_on_open },
+    quick_actions: actionViews(),
   };
 }
 
@@ -384,31 +492,104 @@ let loadPromise = Promise.resolve(true);
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_PENDING = 50;
-const PDF_NEEDS_PYPDF = 'Reading PDFs needs the pypdf package: py -3.12 -m uv add pypdf';
-const IMAGES_UNSUPPORTED = 'Images are not supported yet. Attach text, code, Word, Excel, PowerPoint or PDF files.';
+const IMAGES_UNSUPPORTED = 'This kind of picture cannot be read. Attach PNG, JPEG, GIF, BMP, WebP or TIFF pictures.';
+// attachments.PICTURE_EXTS (HEIC needs the optional pillow-heif package: refused, as by default).
+const PICTURE_EXTS = new Set('.png .jpg .jpeg .jpe .jfif .gif .bmp .dib .webp .tif .tiff .avif'.split(' '));
+const HEIC_UNSUPPORTED = 'HEIC photos cannot be read here. Export it as JPEG and attach that.';
+const THUMB_MAX_BYTES = 512 * 1024;
 const extSet = (s) => new Set(s.split(' '));
 const KIND_EXTS = {
   html: extSet('.html .htm .xhtml'),
   data: extSet('.json .jsonl .csv .tsv .xml .yaml .yml .toml .ini .cfg .conf .env .reg'),
   code: extSet('.py .pyw .js .mjs .cjs .jsx .ts .tsx .css .scss .sql .ps1 .sh .bash .bat .cmd .c .h .cpp .cs .java .go .rs .rb .php .swift .kt .lua .vue .svg'),
-  text: extSet('.txt .text .md .markdown .rst .log .nfo .srt .vtt'),
+  text: extSet('.txt .text .md .markdown .rst .log .nfo .srt .vtt .ics .vcf .vcard .tex .bib .diff .patch'),
 };
-const OFFICE_KINDS = { '.docx': 'docx', '.docm': 'docx', '.xlsx': 'xlsx', '.xlsm': 'xlsx', '.pptx': 'pptx', '.pptm': 'pptx' };
+// attachments.kind_for: the documents read by unpacking (zip/XML, OLE2, RTF, MIME, PDF).
+const OFFICE_KINDS = {
+  '.docx': 'docx', '.docm': 'docx', '.dotx': 'docx', '.dotm': 'docx', '.doc': 'doc', '.dot': 'doc',
+  '.odt': 'odt', '.ott': 'odt', '.rtf': 'rtf',
+  '.xlsx': 'xlsx', '.xlsm': 'xlsx', '.xltx': 'xlsx', '.xltm': 'xlsx', '.xls': 'xls', '.xlt': 'xls',
+  '.ods': 'ods', '.ots': 'ods',
+  '.pptx': 'pptx', '.pptm': 'pptx', '.potx': 'pptx', '.potm': 'pptx', '.ppsx': 'pptx', '.ppsm': 'pptx',
+  '.ppt': 'ppt', '.pps': 'ppt', '.pot': 'ppt', '.odp': 'odp', '.otp': 'odp',
+  '.eml': 'eml', '.msg': 'msg', '.pdf': 'pdf',
+};
 const IMAGE_EXTS = extSet('.png .jpg .jpeg .gif .bmp .webp .tif .tiff .ico .heic .heif .avif .psd');
-const LEGACY_FORMATS = {
-  '.doc': ['Word', '.docx'], '.xls': ['Excel', '.xlsx'], '.ppt': ['PowerPoint', '.pptx'], '.rtf': ['Word', '.docx'],
-  '.odt': ['Word or LibreOffice', '.docx'], '.ods': ['Excel or LibreOffice', '.xlsx'], '.odp': ['PowerPoint or LibreOffice', '.pptx'],
-};
 const BINARY_EXTS = extSet('.exe .dll .msi .zip .7z .rar .gz .tar .iso .mp3 .wav .mp4 .mkv .mov .avi .db .sqlite .ttf .woff .pyc .bin');
-const OFFICE_NAMES = { docx: 'Word document', xlsx: 'Excel workbook', pptx: 'PowerPoint file' };
+const OFFICE_NAMES = {
+  docx: 'Word document', doc: 'Word document', odt: 'text document', rtf: 'RTF document',
+  xlsx: 'Excel workbook', xls: 'Excel workbook', ods: 'spreadsheet',
+  pptx: 'PowerPoint file', ppt: 'PowerPoint file', odp: 'presentation',
+  eml: 'email', msg: 'Outlook message', pdf: 'PDF',
+};
+// The zip-based kinds: a dropped file of these kinds must start with "PK".
+const ZIP_KINDS = new Set(['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp']);
 
 // What attach_files "picks" unless window.__mock.nextPick says otherwise: a Word file, a log
-// too long to use whole and a picture, so one click shows chips, the "partial" badge and an error.
+// too long to use whole, a photo and a Photoshop file, so one click shows chips, the "partial"
+// badge, a picture chip and an error.
 const SAMPLE_PICK = [
   { name: 'Quarterly report.docx', size: 48213 },
   { name: 'server.log', size: 3407872, chars: 3400000 },
-  { name: 'whiteboard.png', size: 1843200 },
+  { name: 'whiteboard.jpg', size: 1843200, width: 1568, height: 1176 },
+  { name: 'layers.psd', size: 5242880 },
 ];
+
+/** The size in pixels from a PNG, GIF, BMP, WebP or JPEG header ({} when unknown). */
+function pictureSize(b) {
+  const u32be = (i) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+  const u16le = (i) => b[i] | (b[i + 1] << 8);
+  const u32le = (i) => (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0;
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50) return { width: u32be(16), height: u32be(20) };
+  if (b.length > 10 && b[0] === 0x47 && b[1] === 0x49) return { width: u16le(6), height: u16le(8) };
+  if (b.length > 26 && b[0] === 0x42 && b[1] === 0x4d) return { width: u32le(18), height: Math.abs(u32le(22) | 0) };
+  if (b.length > 30 && b[8] === 0x57 && b[12] === 0x56 && b[13] === 0x50 && b[14] === 0x38) {   // WebP
+    const chunk = String.fromCharCode(b[15]);
+    if (chunk === 'X') return { width: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), height: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) };
+    if (chunk === ' ') return { width: u16le(26) & 0x3fff, height: u16le(28) & 0x3fff };
+    if (chunk === 'L') {
+      const bits = u32le(21);
+      return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+    }
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {   // JPEG: the first start-of-frame marker
+    for (let i = 2; i + 9 < b.length;) {
+      if (b[i] !== 0xff) { i += 1; continue; }
+      const marker = b[i + 1];
+      const len = (b[i + 2] << 8) | b[i + 3];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+        return { width: (b[i + 7] << 8) | b[i + 8], height: (b[i + 5] << 8) | b[i + 6] };
+      }
+      i += 2 + len;
+    }
+  }
+  return {};
+}
+
+/** images.extract(): a picture chip's {kind, chars, truncated, warning, width, height, thumb}.
+ *  Throws Refused for a picture that cannot be read. `data` is the dropped file's data: URL. */
+function extractPicture(name, size, bytes = null, data = '', dims = {}) {
+  if (size > MAX_FILE_BYTES) throw new Refused('The file is larger than 20 MB.');
+  const ext = fileExt(name);
+  if (ext === '.heic' || ext === '.heif') throw new Refused(HEIC_UNSUPPORTED);
+  const found = bytes ? pictureSize(bytes) : dims;
+  // TIFF and AVIF: the mock does not read their size, the backend does.
+  const tiffOrAvif = !!bytes && ((bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a)
+    || (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[3] === 0x2a)
+    || String.fromCharCode(...bytes.subarray(4, 12)) === 'ftypavif');
+  if (bytes && !found.width && !tiffOrAvif) {
+    throw new Refused(`The picture could not be read; it may be damaged or not really a ${ext.slice(1).toUpperCase()} file.`);
+  }
+  // The backend shrinks the long side to 1568 px.
+  const scale = found.width ? Math.min(1, 1568 / Math.max(found.width, found.height)) : 1;
+  const small = /^data:image\/(?:png|jpeg|gif|webp);base64,/.test(data) && size <= THUMB_MAX_BYTES;
+  return {
+    kind: 'image', chars: 0, truncated: false, warning: null, text: '',
+    width: found.width ? Math.round(found.width * scale) : null,
+    height: found.height ? Math.round(found.height * scale) : null,
+    thumb: small ? data : null,
+  };
+}
 
 /** A file that cannot be attached; the message is attachments.py's. */
 class Refused extends Error {}
@@ -467,16 +648,11 @@ function extract(name, size, bytes = null, chars = null) {
   let kind = kindFor(name);
   if (!kind) {
     if (IMAGE_EXTS.has(ext)) throw new Refused(IMAGES_UNSUPPORTED);
-    if (LEGACY_FORMATS[ext]) {
-      const [program, newer] = LEGACY_FORMATS[ext];
-      throw new Refused(`${ext} files are not supported. Save it as ${newer} in ${program} and attach that.`);
-    }
     if (BINARY_EXTS.has(ext) || binary) {
       throw new Refused(`${ext ? `${ext} files are` : 'This type of file is'} not supported yet. Attach text, code, Word, Excel, PowerPoint or PDF files.`);
     }
     kind = 'text';
   }
-  if (kind === 'pdf') throw new Refused(PDF_NEEDS_PYPDF);
   const office = !!OFFICE_NAMES[kind];
   let text;
   if (bytes && !office) {
@@ -484,7 +660,7 @@ function extract(name, size, bytes = null, chars = null) {
     text = decodeText(bytes).replace(/\r\n?/g, '\n').replace(/^\n+|\n+$/g, '');
     chars = text.length;
   } else {
-    if (office && bytes && !(bytes[0] === 0x50 && bytes[1] === 0x4b)) {   // not a zip ("PK")
+    if (ZIP_KINDS.has(kind) && bytes && !(bytes[0] === 0x50 && bytes[1] === 0x4b)) {   // not a zip ("PK")
       throw new Refused(`The file could not be read: it is damaged, password-protected or not a real ${OFFICE_NAMES[kind]}.`);
     }
     chars = chars != null ? Number(chars) : Math.round(size * (office ? 0.3 : 1));
@@ -517,6 +693,7 @@ function attachReply(loaders) {
     try {
       const { ex, size } = load();
       const view = { id: newAttachmentId(), name, kind: ex.kind, chars: ex.chars, size, truncated: ex.truncated, warning: ex.warning };
+      if (ex.kind === 'image') Object.assign(view, { width: ex.width, height: ex.height, thumb: ex.thumb });
       S.attachments.set(view.id, { view, text: ex.text });
       while (S.attachments.size > MAX_PENDING) S.attachments.delete(S.attachments.keys().next().value);
       attachments.push(clone(view));
@@ -547,6 +724,7 @@ function releaseAttachments(req) {
 // open_document / reveal_document accept only files in that folder.
 
 const MOCK_DOCS_DIR = 'C:\\Users\\you\\Documents\\ChatForge';
+const MOCK_DOWNLOADS_DIR = 'C:\\Users\\you\\Downloads';
 
 function saveDocument(filename, content) {
   const dot = filename.lastIndexOf('.');
@@ -558,7 +736,8 @@ function saveDocument(filename, content) {
   const path = `${MOCK_DOCS_DIR}\\${name}`;
   S.documents.push(path);
   const bytes = new TextEncoder().encode(content).length;
-  const size = ext.toLowerCase() === '.docx' ? 2600 + bytes : bytes;   // a docx is a zip of XML parts
+  // Office files are zips of XML parts: roughly this much on top of the text.
+  const size = ({ '.docx': 2600, '.xlsx': 3200, '.pptx': 9000 }[ext.toLowerCase()] || 0) + bytes;
   log('INFO', `document_saved ${name} (${size} bytes)`);
   return { name, path, size, kind: kindFor(name) };
 }
@@ -656,11 +835,89 @@ function pickScript(text, hasFiles = false) {
   if (/\bsearch\b/.test(s)) return 'search';
   if (/\b(date|time|today)\b/.test(s)) return 'clock';
   if (/\b(calc|sqrt|math)\b/.test(s)) return 'calc';
-  if (/\b(document|docx)\b/.test(s)) return 'document';
+  if (/\b(document|docx|xlsx|pptx|spreadsheet|slides)\b/.test(s)) return 'document';
   if (/\boverflow\b/.test(s)) return 'overflow';
   if (/\blong\b/.test(s)) return 'long';
   if (hasFiles) return 'files';
   return 'showcase';
+}
+
+const MOCK_TYPOS = { teh: 'the', recieve: 'receive', definately: 'definitely', alot: 'a lot', seperate: 'separate',
+  wierd: 'weird', occured: 'occurred', untill: 'until' };
+
+/** A quick action's mock reply, in the shape chat/actions.py asks the model for: rewrites put
+ *  the text in one ```text block. "News insight" on a bare link fetches it and "Fact-check"
+ *  searches first. Null when the request was stopped during a tool call. */
+async function actionReply(req, record, text) {
+  const a = req.action;
+  const body = text.trim() || '(the text of the attached files)';
+  const block = (t) => `\`\`\`text\n${t}\n\`\`\``;
+  const bullets = (items) => items.map((i) => `- ${i}`).join('\n');
+  const tool = async (name, args, summary) => {
+    const r = await toolRound(req, name, args, true, summary);
+    if (r) record.tools.push(r);
+    return r;
+  };
+  switch (a.id) {
+    case 'proof': {
+      const changes = [];
+      const fixed = body.replace(new RegExp(`\\b(${Object.keys(MOCK_TYPOS).join('|')})\\b`, 'gi'), (w) => {
+        const good = MOCK_TYPOS[w.toLowerCase()];
+        const out = w[0] === w[0].toUpperCase() ? good[0].toUpperCase() + good.slice(1) : good;
+        changes.push(`"${w}" → "${out}"`);
+        return out;
+      });
+      return `${block(fixed)}\n\n${changes.length ? bullets(changes) : 'No changes needed.'}`;
+    }
+    case 'improve':
+      return `${block(body.replace(/[ \t]{2,}/g, ' ').replace(/^\w/, (c) => c.toUpperCase()))}\n\n`
+        + bullets(['Tightened the wording (mock reply)', 'Kept your tone, layout and punctuation']);
+    case 'check':
+      return '| Criterion | Score (1-5) | Why |\n|---|:---:|---|\n'
+        + '| Specific | 2 | It does not say exactly what will be done. |\n'
+        + '| Measurable | 1 | No number says when it is done. |\n'
+        + '| Achievable | 3 | Plausible, but nothing shows the time or money exists. |\n'
+        + '| Relevant | 4 | It plainly matters to you. |\n'
+        + '| Time-bound | 1 | There is no deadline. |\n'
+        + '| Actionable | 2 | There is no first step you could take today. |\n\n'
+        + '**Cynical review**: this is a wish, not a plan. Without a number and a date it will quietly slide, '
+        + 'and "later" becomes "never". The 3 fixes that matter most: a measurable target, a deadline, and a first '
+        + `step this week.\n\n${block(`${body.replace(/[.!]+$/, '')} by 30 June, measured weekly, starting with one step this week`)}`;
+    case 'insight': {
+      if (/^https?:\/\/\S+$/i.test(body) && !(await tool('fetch_url', { url: body }, 'Fetched 4,210 characters'))) return null;
+      return '**Summary**\n- The council approved the budget (mock reply).\n- Spending rises 4%.\n- The vote was close.\n\n'
+        + '**Context**: budgets have been cut for three years.\n\n**Who benefits, who loses**: schools gain; road works wait.\n\n'
+        + '**Claims vs evidence**: the "record investment" claim has no figures behind it; "slashed" is loaded language.\n\n'
+        + '**Credibility**: medium: one source, no documents linked.\n\n**What to watch next**: the final vote next month.';
+    }
+    case 'factcheck':
+      if (!(await tool('web_search', { query: body.slice(0, 80) }, '5 results'))) return null;
+      return '| Claim | Verdict | Evidence |\n|---|---|---|\n'
+        + `| ${body.slice(0, 60)} | Unverified | No reliable source found (mock reply). [source](https://example.com) |\n\n`
+        + '**Overall**: not enough evidence either way.';
+    case 'summarize':
+      return '**TL;DR**: the text proposes a plan and asks for a decision (mock reply).\n\n**Key points**\n'
+        + `${bullets(['The goal is clear', 'The budget is not settled', 'A decision is needed this week'])}\n\n`
+        + '**Action items**\n- Decide on the budget (owner?, no date)';
+    case 'reply':
+      return `${block('Hi,\n\nThanks for your message. That works for me, and I will send it over by Friday.\n\nBest,')}\n\n`
+        + bullets(['Confirm the Friday deadline', 'Add your name to the sign-off']);
+    case 'explain':
+      return `In plain words: ${body.slice(0, 120)} means the thing it describes is allowed only under the conditions it lists `
+        + '(mock reply).\n\n- **Key term**: what it means in everyday language.\n- **Easy to miss**: the exception at the end.';
+    case 'shorter': {
+      const words = body.split(/\s+/);
+      return block(words.slice(0, Math.max(1, Math.ceil(words.length / 2))).join(' '));
+    }
+    case 'professional':
+      return block(`${body.replace(/^\w/, (c) => c.toUpperCase()).replace(/!+/g, '.')}`);
+    case 'todo':
+      return `${bullets(['[ ] Send the report (Sam, Friday)', '[ ] Book the room (owner?, no date)'])}\n\n**Open questions**\n- Who signs off the budget?`;
+    case 'translate':
+      return `${block(body)}\n\nSource language: English (mock reply).`;
+    default:
+      return `Mock reply for **${a.label}**:\n\n${block(body)}`;
+  }
 }
 
 /** One tool call and its result. `save` (create_document) writes the file when the tool
@@ -681,16 +938,21 @@ async function toolRound(req, name, args, resultOk, summary, save = null) {
 const KIND_WORDS = { text: 'text', code: 'code', data: 'data', html: 'a web page', docx: 'a Word document',
   xlsx: 'an Excel workbook', pptx: 'a PowerPoint deck', pdf: 'a PDF' };
 
-function filesAnswer(files) {
+function filesAnswer(files, seesPictures = false) {
   const one = files.length === 1;
-  const lines = files.map((f) => `- **${f.name}**: ${KIND_WORDS[f.kind] || 'text'}, ${f.chars.toLocaleString('en-US')} characters`
-    + `${f.truncated ? ' (only the first part was attached)' : ''}`);
+  const lines = files.map((f) => (f.kind === 'image'
+    ? `- **${f.name}**: a picture${f.width ? ` (${f.width} × ${f.height})` : ''}, `
+      + (seesPictures ? 'which I can see' : 'which this model cannot see (only a note and any text in it reach me)')
+    : `- **${f.name}**: ${KIND_WORDS[f.kind] || 'text'}, ${f.chars.toLocaleString('en-US')} characters`
+    + `${f.truncated ? ' (only the first part was attached)' : ''}`));
   return `I read ${one ? 'the attached file' : `the ${files.length} attached files`}:\n\n${lines.join('\n')}\n\n`
     + `Ask me anything about ${one ? 'it' : 'them'}. (Mock answer: the text itself is not read.)`;
 }
 
 const DOC_MARKDOWN = '# Meeting summary\n\n## Decisions\n\n- Ship the popup on Friday\n- Keep the local model as the default\n\n'
   + '## Next steps\n\n1. **Alex**: write the release notes\n2. **Sam**: test on the NPU laptop\n';
+const DOC_TABLE = '## Actions\n\n| Owner | Task | Due |\n|---|---|---|\n| Alex | Release notes | 2026-10-09 |\n'
+  + '| Sam | Test on the NPU laptop | 2026-10-08 |\n';
 
 // conversation.CONTEXT_CUT_NOTICE
 const CONTEXT_CUT_NOTICE = 'Older messages are past the context window (too long for context).';
@@ -749,7 +1011,7 @@ async function runChat(text, req) {
   req.local = local;
   emit({ type: 'chat.start', request_id: req.id, provider: pid, model, user_ts: req.userTs });
   log('INFO', `chat.start ${pid}/${model} (${text.length} chars, ${(req.files || []).length} files)`);
-  const script = pickScript(text, !!(req.files && req.files.length));
+  const script = req.action ? 'action' : pickScript(text, !!(req.files && req.files.length));
 
   // "fallback": the local model fails to load and the message runs again elsewhere.
   if (local && script === 'fallback') {
@@ -830,16 +1092,30 @@ async function runChat(text, req) {
     record.tools.push(r);
     answer = 'sqrt(2) * 10 = **14.1421...**';
   } else if (script === 'document') {
-    const filename = /\b(docx|word)\b/i.test(text) ? 'Meeting summary.docx' : 'Meeting summary.md';
-    const r = await toolRound(req, 'create_document', { filename, content: DOC_MARKDOWN }, true, '',
-      () => saveDocument(filename, DOC_MARKDOWN));
+    const ext = /\b(xlsx|spreadsheet|excel)\b/i.test(text) ? 'xlsx'
+      : /\b(pptx|slides|powerpoint)\b/i.test(text) ? 'pptx'
+        : /\b(docx|word)\b/i.test(text) ? 'docx' : 'md';
+    const filename = `Meeting summary.${ext}`;
+    const content = ext === 'xlsx' ? DOC_TABLE : DOC_MARKDOWN;
+    const r = await toolRound(req, 'create_document', { filename, content }, true, '',
+      () => saveDocument(filename, content));
     if (!r) return finishCancelled(req, record);
     const { document, ...call } = r;
     record.tools.push(call);
     record.documents = [document];
-    answer = `I saved **${document.name}** in your ChatForge documents folder. Use **Open** on the card below, or **Show in folder** to find it.`;
+    answer = `I saved **${document.name}** in your ChatForge documents folder. Use **Open** on the card below, **Download** to save a copy where you like, or **Show in folder** to find it.`;
+  } else if (script === 'action') {
+    answer = await actionReply(req, record, text);
+    if (answer == null) return finishCancelled(req, record);
   } else if (script === 'files') {
-    answer = filesAnswer(req.files);
+    const seesPictures = visionFor(spec, model);
+    if (!seesPictures && req.files.some((f) => f.kind === 'image')) {
+      // The engine reads the text in a picture (Windows OCR) for a model that cannot see it.
+      emit({ type: 'chat.phase', request_id: req.id, phase: 'reading_image' });
+      await sleep(600);
+      if (req.cancelled) return finishCancelled(req, record);
+    }
+    answer = filesAnswer(req.files, seesPictures);
   } else if (script === 'overflow') {
     answer = OVERFLOW_ANSWER;
   } else if (script === 'long') {
@@ -943,11 +1219,13 @@ function makeApi() {
       });
     },
 
-    async send_message(text, attachment_ids) {
+    async send_message(text, attachment_ids, action_id) {
       text = String(text || '');
       let ids;
       try { ids = attachmentIds(attachment_ids); } catch (e) { return fail('bad_request', e.message); }
       if (!text.trim() && !ids.length) return fail('bad_request', 'Empty message.');
+      const action = action_id ? findAction(action_id) : null;
+      if (action_id && !action) return fail('bad_request', 'That quick action no longer exists.', 'Pick it again from the quick actions.');
       if (ids.length > MAX_FILES) {
         return fail('bad_request', `Attach at most ${MAX_FILES} files to one message.`, 'Remove some files and send again.');
       }
@@ -962,8 +1240,15 @@ function makeApi() {
       const user = { role: 'user', content: text, ts: now() };
       const req = { id: `req_${++rid}`, cancelled: false, files, attachmentIds: ids, userTs: user.ts };
       requests.set(req.id, req);
-      // conversation.items(): {name, kind, chars, truncated} per file, only when there are some.
-      if (files.length) user.attachments = files.map(({ name, kind, chars, truncated }) => ({ name, kind, chars, truncated }));
+      // conversation.items(): {name, kind, chars, truncated} per file (pictures also {width,
+      // height, thumb}), only when there are some.
+      if (files.length) {
+        user.attachments = files.map(({ name, kind, chars, truncated, width, height, thumb }) => (kind === 'image'
+          ? { name, kind, chars, truncated, width, height, thumb } : { name, kind, chars, truncated }));
+      }
+      // conversation.items(): the typed text plus action: {id, label} (the model sees the
+      // expanded prompt; the popup never does).
+      if (action) { user.action = { id: action.id, label: action.label }; req.action = action; }
       S.conversation.push(user);
       if (rememberModel(S.config.chat.provider, S.config.chat.model)) emit({ type: 'settings.changed', config: uiConfig() });
       persist();
@@ -990,6 +1275,8 @@ function makeApi() {
       req.restore = S.conversation.splice(at + 1);
       req.userTs = user.ts;
       req.files = (user.attachments || []).map(clone);
+      // Like the engine: the message is asked again with its quick action, even one removed since.
+      if (user.action) req.action = findAction(user.action.id) || { ...user.action, tools: false };
       if (rememberModel(S.config.chat.provider, S.config.chat.model)) emit({ type: 'settings.changed', config: uiConfig() });
       persist();
       startChat(user.content || '', req);
@@ -1009,6 +1296,9 @@ function makeApi() {
         const size = Number(p.size) || 0;
         return [name, () => {
           if (p.error) throw new Refused(p.error);
+          if (PICTURE_EXTS.has(fileExt(name)) || /\.hei[cf]$/i.test(name)) {
+            return { ex: extractPicture(name, size, null, '', { width: p.width, height: p.height }), size };
+          }
           return { ex: extract(name, size, null, p.chars == null ? null : p.chars), size };
         }];
       }));
@@ -1018,6 +1308,9 @@ function makeApi() {
       const fileName = cleanName(name);
       return attachReply([[fileName, () => {
         const bytes = decodeBase64(base64_data);
+        if (PICTURE_EXTS.has(fileExt(fileName)) || /\.hei[cf]$/i.test(fileName)) {
+          return { ex: extractPicture(fileName, bytes.length, bytes, String(base64_data || '')), size: bytes.length };
+        }
         return { ex: extract(fileName, bytes.length, bytes), size: bytes.length };
       }]]);
     },
@@ -1038,6 +1331,20 @@ function makeApi() {
       return r;
     },
 
+    // The native Save As dialog: window.__mock.nextSave once when set (null = cancelled),
+    // else Downloads under the file's own name. Always "succeeds" otherwise.
+    async save_document(path) {
+      const r = checkDocument(path);
+      if (!r.ok) return r;
+      await sleep(300);
+      const custom = !!window.__mock && Object.prototype.hasOwnProperty.call(window.__mock, 'nextSave');
+      const target = custom ? window.__mock.nextSave : `${MOCK_DOWNLOADS_DIR}\\${r.path.split('\\').pop()}`;
+      if (custom) delete window.__mock.nextSave;
+      if (!target) return ok({ cancelled: true });
+      log('INFO', `save_document ${r.path.split('\\').pop()}`);
+      return ok({ path: String(target) });
+    },
+
     async stop_generation(request_id) {
       const r = requests.get(request_id);
       if (r) r.cancelled = true;
@@ -1056,7 +1363,8 @@ function makeApi() {
       if (isLocal(provider_id) && S.config.local.autoload_on_open && S.runtime.state === 'unloaded') {
         startLoad(S.config.chat.model);
       }
-      return ok({ selected: { provider: provider_id, model: S.config.chat.model } });
+      return ok({ selected: { provider: provider_id, model: S.config.chat.model },
+        vision: visionFor(S.config.providers[provider_id], S.config.chat.model) });
     },
 
     async load_model() {
@@ -1152,7 +1460,7 @@ function makeApi() {
     },
 
     async get_settings() {
-      return ok({ config: clone(S.config), restart_required: [], errors: {} });
+      return ok({ config: clone(S.config), restart_required: [], errors: {}, quick_actions: quickActionsEditor() });
     },
     async update_settings(patch) {
       const errors = {};
@@ -1172,7 +1480,13 @@ function makeApi() {
       const mpl = next.local.max_prompt_len;
       if (!Number.isInteger(mpl) || mpl < MPL_MIN || mpl > MPL_MAX) errors['local.max_prompt_len'] = `Must be a whole number from ${MPL_MIN} to ${MPL_MAX}.`;
       if (!(next.local.idle_unload_minutes >= 0)) errors['local.idle_unload_minutes'] = 'Must be 0 or more.';
+      // config.QuickActionCfg: every entry needs a name of at most 40 characters.
+      (next.chat.quick_actions || []).forEach((q, i) => {
+        const label = String((q && q.label) || '').trim();
+        if (!label || label.length > 40) errors[`chat.quick_actions.${i}.label`] = 'A quick action needs a name of at most 40 characters.';
+      });
       if (Object.keys(errors).length) return { ok: false, config: clone(S.config), restart_required: [], errors,
+        quick_actions: quickActionsEditor(),
         error: { code: 'bad_request', message: 'Some settings are invalid.', hint: '', action: null } };
       for (const key of ['local.device', 'local.max_prompt_len', 'local.extra_args', 'local.ovms_variant']) {
         const [a, b] = key.split('.');
@@ -1182,7 +1496,7 @@ function makeApi() {
       if (S.runtime.state === 'ready') touchIdle();
       persist();
       emit({ type: 'settings.changed', config: uiConfig() });
-      return ok({ config: clone(S.config), restart_required: restart, errors: {} });
+      return ok({ config: clone(S.config), restart_required: restart, errors: {}, quick_actions: quickActionsEditor() });
     },
 
     async list_providers() { return ok({ providers: Object.keys(S.config.providers).map(providerView) }); },

@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
+import fnmatch
 import logging
 import os
 import re
@@ -202,6 +203,25 @@ class ProviderSpec(BaseModel):
     #: loaded context of each model), filled by "Refresh models". Wins over
     #: ``context_tokens`` for the models it names.
     model_context: dict[str, int] = Field(default_factory=dict)
+    #: The models that can see pictures (OpenAI-style ``image_url`` content parts):
+    #: shell-style patterns matched against the model id, ignoring case (``"*"``: every
+    #: model). Empty: none, so an attached picture reaches the model as a short note.
+    vision_models: list[str] = Field(default_factory=list)
+    #: Whether a model can see pictures, as the provider's ``GET /models`` reported it
+    #: (StudioForge does), filled by "Refresh models". Wins over ``vision_models``.
+    model_vision: dict[str, bool] = Field(default_factory=dict)
+
+    def vision_for(self, model: str | None) -> bool:
+        """True when ``model`` accepts pictures: what the provider reported for it, else
+        whether it matches one of :attr:`vision_models`."""
+        name = str(model or "").strip()
+        if not name:
+            return False
+        reported = self.model_vision.get(name)
+        if reported is not None:
+            return bool(reported)
+        lowered = name.lower()
+        return any(fnmatch.fnmatchcase(lowered, p.strip().lower()) for p in self.vision_models)
 
     @field_validator("id")
     @classmethod
@@ -245,6 +265,25 @@ class ProviderSpec(BaseModel):
         return v
 
 
+#: OpenAI's chat models that take pictures (``image_url`` parts) in Chat Completions.
+OPENAI_VISION_MODELS: tuple[str, ...] = (
+    "gpt-4o*",
+    "chatgpt-4o*",
+    "gpt-4-turbo",
+    "gpt-4-turbo-2*",
+    "gpt-4.1*",
+    "gpt-4.5*",
+    "gpt-5*",
+    "gpt-6*",
+    "o1",
+    "o1-2*",
+    "o1-pro*",
+    "o3",
+    "o3-2*",
+    "o3-pro*",
+    "o4-mini*",
+)
+
 #: StudioForge (an OpenAI-compatible GPU LLM server) on this PC by default; point it at the GPU box in Settings → Providers.
 STUDIOFORGE_DEFAULT_URL = "http://localhost:1234/v1"
 
@@ -284,6 +323,8 @@ def seed_providers() -> dict[str, ProviderSpec]:
             timeouts=Timeouts(connect_s=10, stall_s=90, wall_s=600),
             # MiniMax's models take up to 1M tokens of context.
             context_tokens=1_000_000,
+            # MiniMax-M3 and M3.1 see pictures; the M2 models are text-only.
+            vision_models=["MiniMax-M3*"],
         ),
         "studioforge": ProviderSpec(
             id="studioforge",
@@ -311,6 +352,8 @@ def seed_providers() -> dict[str, ProviderSpec]:
             supports_tools=True,
             max_output_tokens=4096,
             docs_url="https://platform.openai.com/api-keys",
+            # Every current chat model sees pictures; o1-mini, o3-mini and GPT-3.5 do not.
+            vision_models=list(OPENAI_VISION_MODELS),
         ),
         "deepseek": ProviderSpec(
             id="deepseek",
@@ -324,6 +367,8 @@ def seed_providers() -> dict[str, ProviderSpec]:
             supports_tools=True,
             max_output_tokens=4096,
             docs_url="https://platform.deepseek.com/api_keys",
+            # deepseek-flash (and its V4-Flash names) sees pictures; the others are text-only.
+            vision_models=["deepseek-flash*", "deepseek-v4-flash*"],
         ),
     }
 
@@ -374,6 +419,42 @@ class RecentModel(BaseModel):
     model: str
 
 
+_QUICK_ACTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+
+
+class QuickActionCfg(BaseModel):
+    """One entry of ``chat.quick_actions`` (Settings → General; ``chat.actions``). An
+    ``id`` naming a built-in action replaces it (empty ``instructions``/``hint`` and unset
+    ``tools``/``match_style`` keep the built-in's); any other entry is a custom action
+    (no ``id``: one is made from the label)."""
+
+    id: str = Field(default="", max_length=40)
+    label: str = Field(min_length=1, max_length=40)
+    instructions: str = Field(default="", max_length=4000)
+    #: The composer placeholder once the action is picked.
+    hint: str = Field(default="", max_length=120)
+    #: The model may use its tools (web search, fetch a page) for this action.
+    tools: bool | None = None
+    #: The reply's text block is made to match the pasted text's formatting.
+    match_style: bool | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _check_id(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v and not _QUICK_ACTION_ID_RE.match(v):
+            raise ValueError("use lowercase letters, digits, '-' and '_'")
+        return v
+
+    @field_validator("label")
+    @classmethod
+    def _check_label(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("a quick action needs a name")
+        return v
+
+
 class ChatCfg(BaseModel):
     provider: str = "local-npu"
     model: str = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
@@ -395,6 +476,10 @@ class ChatCfg(BaseModel):
     #: The models last chosen or chatted with, newest first (the model menu's "Recently
     #: used" section). Kept up to date by the app.
     recent_models: list[RecentModel] = Field(default_factory=list)
+    #: Quick actions: custom ones, and edits of the built-in ones (``QuickActionCfg``).
+    quick_actions: list[QuickActionCfg] = Field(default_factory=list, max_length=50)
+    #: The ids of the built-in quick actions the user removed.
+    hidden_quick_actions: list[str] = Field(default_factory=list, max_length=50)
 
     @field_validator("recent_models")
     @classmethod

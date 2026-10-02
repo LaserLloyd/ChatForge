@@ -49,6 +49,8 @@ class Paths:
     cache_dir: Path
     logs_dir: Path
     webview_dir: Path
+    #: Pictures attached to messages, cleaned and re-encoded (``<sha256>.jpg`` / ``.png``).
+    attachments_dir: Path
 
     @classmethod
     def from_home(cls, home: Path | str) -> Paths:
@@ -64,6 +66,7 @@ class Paths:
             cache_dir=home / "cache",
             logs_dir=home / "logs",
             webview_dir=home / "webview",
+            attachments_dir=home / "attachments",
         )
 
     @classmethod
@@ -87,5 +90,6 @@ class Paths:
             self.cache_dir,
             self.logs_dir,
             self.webview_dir,
+            self.attachments_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)

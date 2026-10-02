@@ -438,9 +438,7 @@ def test_pdf_scanned_or_locked(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("name", "data", "expected"),
     [
-        ("photo.PNG", b"\x89PNG\r\n\x1a\n", "Images are not supported yet"),
-        ("old.doc", b"\xd0\xcf\x11\xe0", "Save it as .docx in Word"),
-        ("budget.xls", b"\xd0\xcf\x11\xe0", "Save it as .xlsx in Excel"),
+        ("layers.PSD", b"8BPS\x00\x01", "This kind of picture cannot be read"),
         ("setup.exe", b"MZ\x90\x00", ".exe files are not supported yet"),
         ("blob", bytes(range(256)) * 4, "This type of file is not supported yet"),
         ("words", b"\x00\x01\x02\x03\x00\xff" * 10, "This type of file is not supported yet"),
