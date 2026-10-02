@@ -42,6 +42,17 @@ The following are downloaded and used at runtime (not redistributed):
   - Downloaded from: https://huggingface.co/OpenVINO/
   - Used for local inference on NPU
 
+## Installed Dependencies
+
+Python dependencies are installed by pip/uv and imported at runtime (not redistributed
+here). Most are permissively licensed (MIT, BSD, Apache-2.0, PSF); the exception worth
+naming:
+
+- **pystray** - LGPL-3.0 License
+  - The tray-icon library, used unmodified as an installed import
+  - If you redistribute a bundled or frozen build that embeds it, the LGPL's
+    relinking obligation is yours to satisfy (see README › License)
+
 ## Data Services
 
 The tools call these public APIs at run time (no key; nothing is stored beyond a short cache):
