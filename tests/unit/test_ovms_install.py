@@ -383,7 +383,8 @@ def test_running_from_matches_only_ovms_under_the_folder(tmp_path, monkeypatch):
         Proc(6, "ovms.exe", None),
     ]
     monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
-    assert oi.running_from(folder) == [1, 2]
+    # Process 2 differs only in case and separators: the same folder on Windows only.
+    assert oi.running_from(folder) == ([1, 2] if os.name == "nt" else [1])
 
 
 def test_status_not_installed(tmp_path):

@@ -110,9 +110,11 @@ def test_wait_for_exit_really_waits_for_an_older_process():
         time.sleep(0.3)
         assert waiter.poll() is None  # still waiting: the old process is alive
         old.stdin.close()  # the old process exits
+        # Reap it now: on POSIX an exited child stays a zombie (still "running" to psutil)
+        # until its parent waits for it. The real old copy is never the new one's child.
+        assert old.wait(5) is not None
         out, _ = waiter.communicate(timeout=30)
         assert out.split() == ["True"]
-        assert old.wait(5) is not None
     finally:
         for proc in (old, waiter):
             if proc is not None and proc.poll() is None:
