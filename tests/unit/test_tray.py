@@ -6,6 +6,7 @@ is invoked the way pystray does it, then waited for on its own thread.
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ import pytest
 
 from chatforge.desktop.tray import Tray
 
+if os.name != "nt":
+    # Without a display (CI) pystray's X backend fails on import; the menu classes these
+    # tests use are the same in its display-less backend.
+    os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
 pystray = pytest.importorskip("pystray")
 
 
