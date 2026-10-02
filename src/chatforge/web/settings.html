@@ -6,7 +6,10 @@
   <meta name="color-scheme" content="dark">
   <title>ChatForge Settings</title>
   <link rel="icon" href="/static/img/icon.svg" type="image/svg+xml">
-  <!-- Theme runtime first (blocking) so the palette is set before first paint. -->
+  <!-- Theme runtime first (blocking) so the palette is set before first paint. ui-theme/ is
+       the UnifyingTheme bundle, verbatim; ChatForge's settings are desktop/theme.py, and the
+       app's server writes them over the data-* below (every core theme, as the bundle has
+       them). These only count when the page is opened some other way. -->
   <script src="/static/ui-theme/ui-theme.js" data-themes="laserlloyd,laserlloyd-light,midnight-gold,glacier,forest,paper,daylight,purple" data-default="laserlloyd" data-storage-key="chatforge.theme" data-families="true"></script>
   <link rel="stylesheet" href="/static/ui-theme/ui-theme-base.css">
   <link rel="stylesheet" href="/static/css/settings.css">
@@ -249,7 +252,7 @@
           <div class="switches">
             <label class="check" for="g-autostart"><input id="g-autostart" type="checkbox"> <span>Start at login</span></label>
             <p id="autostart-msg" class="ui-text-tertiary small" role="status" aria-live="polite"></p>
-            <label class="check" for="g-blur"><input id="g-blur" type="checkbox" data-field="ui.hide_on_blur"> <span>Hide the popup when it loses focus</span></label>
+            <label class="check" for="g-sticky"><input id="g-sticky" type="checkbox" data-field="ui.sticky"> <span>Sticky popup: stays open until you close it or press the hotkey again</span></label>
             <label class="check" for="g-reply"><input id="g-reply" type="checkbox" data-field="ui.show_on_reply"> <span>Show the popup when a reply finishes</span></label>
           </div>
 

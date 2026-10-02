@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from chatforge.desktop import win32util
+from chatforge.desktop import theme, win32util
 
 _log = logging.getLogger(__name__)
 
@@ -28,12 +28,15 @@ class SettingsWindow:
         api: Any,
         events: Any = None,
         on_opening: Callable[[], None] | None = None,
+        theme_slug: Callable[[], str | None] | None = None,
         title: str = TITLE,
     ) -> None:
         self._url = url
         self._api = api
         self._events = events
         self._on_opening = on_opening
+        #: The configured theme, so the window opens in its colour.
+        self._theme_slug = theme_slug
         self._title = title
         self._lock = threading.Lock()
         self.window: Any = None
@@ -58,6 +61,10 @@ class SettingsWindow:
             if window is not None:
                 self._raise(window)
                 return window
+            slug = None
+            if self._theme_slug is not None:
+                with contextlib.suppress(Exception):
+                    slug = self._theme_slug()
             window = webview.create_window(
                 self._title,
                 url=self._url,
@@ -67,7 +74,7 @@ class SettingsWindow:
                 min_size=MIN_SIZE,
                 resizable=True,
                 text_select=True,
-                background_color="#1b1e26",
+                **theme.window_options(slug),
             )
             self.window = window
             window.events.closed += self._on_closed

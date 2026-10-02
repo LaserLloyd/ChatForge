@@ -1123,7 +1123,7 @@ function fillGeneral() {
   $('g-mpc').value = c.chat ? c.chat.max_prompt_chars : '';
   $('g-hotkey').value = (c.ui && c.ui.hotkey) || '';
   $('g-reasoning').value = (c.chat && c.chat.show_reasoning) || 'collapsed';
-  $('g-blur').checked = !!(c.ui && c.ui.hide_on_blur);
+  $('g-sticky').checked = !(c.ui && c.ui.sticky === false);   // on unless turned off
   $('g-reply').checked = !(c.ui && c.ui.show_on_reply === false);   // on unless turned off
   const enabled = new Set((c.tools && c.tools.enabled) || []);
   for (const cb of document.querySelectorAll('[data-tool]')) cb.checked = enabled.has(cb.value);
@@ -1227,7 +1227,7 @@ function initGeneral() {
         fallback_model: fallback ? fbModel : '',
         ...quick,
       },
-      ui: { hide_on_blur: $('g-blur').checked, show_on_reply: $('g-reply').checked },
+      ui: { sticky: $('g-sticky').checked, show_on_reply: $('g-reply').checked },
       tools: {
         enabled: enabledTools(),
         location,
@@ -1494,6 +1494,13 @@ function initEvents() {
       renderModels();
     }
     if (!S.generalDirty) { await loadSettings(); fillGeneral(); }
+    else if (c.ui && typeof c.ui.sticky === 'boolean' && S.cfg) {
+      // The popup's pin changed it while other General edits wait: follow it, unless this
+      // box was changed here too, so Save does not switch it back.
+      const shown = !(S.cfg.ui && S.cfg.ui.sticky === false);
+      if ($('g-sticky').checked === shown) $('g-sticky').checked = c.ui.sticky;
+      S.cfg.ui = { ...(S.cfg.ui || {}), sticky: c.ui.sticky };
+    }
   });
 }
 

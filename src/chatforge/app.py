@@ -325,6 +325,7 @@ class App:
             api=self.api,
             events=s.events,
             on_opening=s.popup.note_settings_opening,
+            theme_slug=lambda: self.cfg.ui.theme,
         )
         s.on_config_changed = self._on_config_changed
         s.on_reply_end = self._on_reply_end

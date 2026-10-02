@@ -58,7 +58,7 @@ def test_provider_spec_defaults_and_env_name_rule():
 
 def test_defaults_match_plan(paths):
     cfg = load_config(paths)
-    assert cfg.schema_version == 3
+    assert cfg.schema_version == 4
     assert cfg.chat.provider == "local-npu"
     assert cfg.chat.model == "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
     assert cfg.chat.max_prompt_chars == 4000
@@ -159,7 +159,7 @@ def test_load_creates_file_with_defaults(paths):
     cfg = load_config(paths)
     assert paths.config_file.is_file()
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == 4
     assert raw["providers"]["minimax"]["base_url"] == "https://api.minimax.io/v1"
     assert "id" not in raw["providers"]["minimax"]
     assert "themes" not in raw["ui"]
@@ -274,12 +274,12 @@ def test_env_override(paths, monkeypatch):
     )
     monkeypatch.setenv("CHATFORGE_LOCAL__DEVICE", "gpu")
     monkeypatch.setenv("CHATFORGE_CHAT__MAX_TOOL_ROUNDS", "2")
-    monkeypatch.setenv("CHATFORGE_UI__HIDE_ON_BLUR", "false")
+    monkeypatch.setenv("CHATFORGE_UI__STICKY", "false")
     cfg = load_config(paths)
     assert cfg.local.device == "GPU"
     assert cfg.local.idle_unload_minutes == 3  # file value still applies
     assert cfg.chat.max_tool_rounds == 2
-    assert cfg.ui.hide_on_blur is False
+    assert cfg.ui.sticky is False
 
 
 def test_env_override_beats_file_but_is_not_written_on_first_run(paths, monkeypatch):
@@ -554,7 +554,7 @@ def test_migrate_v1_turns_on_new_tools_and_moves_the_default_prompt(paths):
         },
     )
     cfg = load_config(paths)
-    assert cfg.schema_version == 3
+    assert cfg.schema_version == 4
     assert cfg.tools.enabled == [
         "web_search",
         "calculator",
@@ -567,7 +567,7 @@ def test_migrate_v1_turns_on_new_tools_and_moves_the_default_prompt(paths):
     assert cfg.chat.system_prompt == config_mod.DEFAULT_SYSTEM_PROMPT
     assert cfg.chat.max_tool_rounds == 6
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == 4
     assert "weather" in raw["tools"]["enabled"]
     assert load_config(paths) == cfg  # a second load changes nothing
 
@@ -592,10 +592,10 @@ def test_migrate_v2_turns_on_create_document_once(paths):
     enabled = ["web_search", "news_search", "fetch_url", "weather", "calculator"]
     _write_raw(paths, {"schema_version": 2, "tools": {"enabled": enabled}})
     cfg = load_config(paths)
-    assert cfg.schema_version == 3
+    assert cfg.schema_version == 4
     assert cfg.tools.enabled == [*enabled, "create_document"]
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == 4
     assert raw["tools"]["enabled"] == [*enabled, "create_document"]
     # Switched off again after the migration, it stays off.
     update_config(cfg, {"tools": {"enabled": enabled}}, paths)
@@ -605,15 +605,29 @@ def test_migrate_v2_turns_on_create_document_once(paths):
 def test_migrate_v2_keeps_no_tools_and_an_existing_create_document():
     out, changed = config_mod.migrate_raw({"schema_version": 2, "tools": {"enabled": []}})
     assert changed is True
-    assert out == {"schema_version": 3, "tools": {"enabled": []}}
+    assert out == {"schema_version": 4, "tools": {"enabled": []}}
     raw = {"schema_version": 2, "tools": {"enabled": ["create_document", "calculator"]}}
     out, _ = config_mod.migrate_raw(raw)
     assert out["tools"]["enabled"] == ["create_document", "calculator"]
     assert raw["schema_version"] == 2, "the input was changed in place"
 
 
+@pytest.mark.parametrize("hide_on_blur", [True, False])
+def test_migrate_v3_makes_the_popup_sticky(paths, hide_on_blur):
+    # Every v3 file holds ui.hide_on_blur (the whole config is saved), so it says nothing
+    # about a choice: sticky starts on, and a later choice is kept.
+    _write_raw(paths, {"schema_version": 3, "ui": {"hide_on_blur": hide_on_blur, "width": 500}})
+    cfg = load_config(paths)
+    assert cfg.schema_version == 4
+    assert cfg.ui.sticky is True and cfg.ui.width == 500
+    raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
+    assert "hide_on_blur" not in raw["ui"] and raw["ui"]["sticky"] is True
+    update_config(cfg, {"ui": {"sticky": False}}, paths)
+    assert load_config(paths).ui.sticky is False
+
+
 def test_migrate_raw_is_a_no_op_at_the_current_version():
-    raw = {"schema_version": 3, "tools": {"enabled": ["calculator"]}}
+    raw = {"schema_version": 4, "tools": {"enabled": ["calculator"]}}
     out, changed = config_mod.migrate_raw(raw)
     assert changed is False
     assert out is raw

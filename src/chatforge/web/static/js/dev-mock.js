@@ -148,7 +148,7 @@ const DEFAULT_CONFIG = {
     location: '', units: 'metric', web_search_max_results: 5, tool_result_max_chars_local: 1500, tool_result_max_chars_cloud: 6000,
     block_private_addresses: true, attachment_max_chars: 200000, documents_dir: '',
   },
-  ui: { theme: 'laserlloyd', hotkey: 'Ctrl+Alt+C', hide_on_blur: true, show_on_reply: true, width: 420, height: 620, margin: 12 },
+  ui: { theme: 'laserlloyd', hotkey: 'Ctrl+Alt+C', sticky: true, show_on_reply: true, width: 420, height: 620, margin: 12 },
   startup: { autostart: true },
   logging: { level: 'INFO' },
   hf: { endpoint: 'https://huggingface.co', default_author: 'OpenVINO' },
@@ -199,7 +199,6 @@ function createState() {
       idle_timeout_s: 600, unload_at: null, error: null,
     },
     runtimeInstalled: true,
-    pinned: false,
     autostart: true,
     downloads: {},
     logs: [],
@@ -1380,8 +1379,13 @@ function makeApi() {
     },
     async unload_model() { unload('user'); return ok(); },
 
-    async hide_popup() { log('DEBUG', 'hide_popup'); return ok(); },
-    async set_pinned(flag) { S.pinned = !!flag; return ok({ pinned: S.pinned }); },
+    async hide_popup(reason) { log('DEBUG', `hide_popup${reason ? ` (${reason})` : ''}`); return ok(); },
+    async set_sticky(flag) {
+      S.config.ui = { ...S.config.ui, sticky: !!flag };
+      persist();
+      emit({ type: 'settings.changed', config: uiConfig() });
+      return ok({ sticky: !!flag });
+    },
     // A browser tab cannot resize itself: these keep the contract (desktop/popup.py
     // begin_resize) and remember the size the app would save.
     async start_resize(edge, grabX, grabY, follow) { log('DEBUG', `start_resize ${edge} ${grabX},${grabY} follow=${!!follow}`); return ok({ resizing: false }); },

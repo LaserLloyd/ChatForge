@@ -1,7 +1,7 @@
 // Markdown -> sanitized HTML, plus code highlighting and image handling.
 // Relies on globals provided by vendored scripts: marked and DOMPurify load
 // with the document; hljs is fetched on demand (see ensureHighlighter).
-import { loadScript, loadStyle, escapeHtml } from './util.js?v=13';
+import { loadScript, escapeHtml } from './util.js?v=13';
 // markdown.js builds HTML as STRINGS rather than DOM nodes, so the two
 // user-facing attributes below can't be reached by the data-i18n pass — they are
 // translated inline instead. i18n.js imports nothing, so there is no cycle.
@@ -1042,10 +1042,10 @@ let _hljsPromise = null;
 export function ensureHighlighter() {
   if (window.hljs) return Promise.resolve(window.hljs);
   if (!_hljsPromise) {
-    _hljsPromise = Promise.all([
-      loadStyle('/static/vendor/github-dark.min.css'),
-      loadScript('/static/vendor/highlight.min.js'),
-    ]).then(() => window.hljs || null).catch(() => null);
+    // No highlight.js stylesheet: ui-theme-base.css maps the hljs-* classes onto each
+    // theme's --syn-* tokens, so code follows the theme.
+    _hljsPromise = loadScript('/static/vendor/highlight.min.js')
+      .then(() => window.hljs || null).catch(() => null);
   }
   return _hljsPromise;
 }

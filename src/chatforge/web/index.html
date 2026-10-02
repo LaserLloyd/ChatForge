@@ -6,7 +6,10 @@
   <meta name="color-scheme" content="dark">
   <title>ChatForge</title>
   <link rel="icon" href="/static/img/icon.svg" type="image/svg+xml">
-  <!-- Theme runtime first (blocking) so the palette is set before first paint. -->
+  <!-- Theme runtime first (blocking) so the palette is set before first paint. ui-theme/ is
+       the UnifyingTheme bundle, verbatim; ChatForge's settings are desktop/theme.py, and the
+       app's server writes them over the data-* below (every core theme, as the bundle has
+       them). These only count when the page is opened some other way. -->
   <script src="/static/ui-theme/ui-theme.js" data-themes="laserlloyd,laserlloyd-light,midnight-gold,glacier,forest,paper,daylight,purple" data-default="laserlloyd" data-storage-key="chatforge.theme" data-families="true"></script>
   <link rel="stylesheet" href="/static/ui-theme/ui-theme-base.css">
   <link rel="stylesheet" href="/static/css/app.css">
@@ -25,10 +28,10 @@
       </div>
       <div class="hdr-drag pywebview-drag-region" aria-hidden="true"></div>
       <div class="hdr-actions">
-        <button type="button" id="btn-pin" class="icon-btn" aria-pressed="false" aria-label="Keep window open" title="Keep window open">
+        <button type="button" id="btn-pin" class="icon-btn" aria-pressed="true" aria-label="Sticky: keep the popup open" title="Sticky: stays open until you close it or press the hotkey again (click to let it hide when you click away)">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H7v-2l3-3-1-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
         </button>
-        <button type="button" id="btn-new" class="icon-btn" aria-label="Clear chat (start over)" title="Clear chat (start over at the default size)">
+        <button type="button" id="btn-new" class="icon-btn btn-clear" aria-label="Clear chat (start over)" title="Clear chat (start over at the default size)">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M6.7 2.5v4.2h4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <button type="button" id="btn-settings" class="icon-btn" aria-label="Settings" title="Settings">

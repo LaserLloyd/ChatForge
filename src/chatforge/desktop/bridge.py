@@ -66,7 +66,7 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "load_model",
     "unload_model",
     "hide_popup",
-    "set_pinned",
+    "set_sticky",
     "start_resize",
     "drag_resize",
     "end_resize",
@@ -954,22 +954,29 @@ class Api:
 
     # --- window ops (popup) ---------------------------------------------------------------
 
-    def hide_popup(self) -> dict[str, Any]:
+    def hide_popup(self, reason: str | None = None) -> dict[str, Any]:
+        """The page hides the popup: Escape or the close button, or ``reason`` ``"blur"``
+        when it lost the focus (the host then checks sticky and its own dialogs as well)."""
+
         def impl() -> dict[str, Any]:
             if self._s.popup is not None:
-                self._s.popup.hide_from_js()
+                self._s.popup.hide_from_js(blur=reason == "blur")
             return ok()
 
         return self._guard(impl, "hide_popup")
 
-    def set_pinned(self, flag: bool) -> dict[str, Any]:
-        def impl() -> dict[str, Any]:
-            pinned = bool(flag)
-            if self._s.popup is not None:
-                pinned = self._s.popup.set_pinned(pinned)
-            return ok(pinned=pinned)
+    def set_sticky(self, flag: bool) -> dict[str, Any]:
+        """The header pin: ``ui.sticky`` on (the popup stays until closed or toggled away)
+        or off (it also hides when it loses the focus). Saved, like the Settings box."""
 
-        return self._guard(impl, "set_pinned")
+        def impl() -> dict[str, Any]:
+            sticky = bool(flag)
+            if sticky != self._cfg.ui.sticky:
+                new_cfg, _restart = self._apply_patch({"ui": {"sticky": sticky}})
+                self._emit({"type": "settings.changed", "config": ui_config(new_cfg)})
+            return ok(sticky=sticky)
+
+        return self._guard(impl, "set_sticky")
 
     # The popup resizes from its top-left grip and its top and left edges (desktop/popup.py
     # begin_resize). The page serialises these calls: pywebview runs each on its own thread.

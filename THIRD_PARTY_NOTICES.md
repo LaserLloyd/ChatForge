@@ -7,7 +7,6 @@ The following libraries are vendored in `src/chatforge/web/static/vendor/`:
 - **marked** 18.0.5 - MIT License
 - **DOMPurify** 3.4.9 - Apache-2.0 OR MPL-2.0 License
 - **highlight.js** 11.11.1 - BSD-3-Clause License
-- **github-dark.css** (highlight.js themes) - BSD-3-Clause License
 
 See `src/chatforge/web/static/vendor/README.md` for full details.
 
@@ -25,7 +24,10 @@ Each adapted function carries an "Adapted from" comment indicating the source.
 ## UI Theme
 
 - **UnifyingTheme** (private repository) - UI design system copied verbatim
-  - `src/chatforge/web/static/ui-theme/` contains the complete theme bundle
+  - `src/chatforge/web/static/ui-theme/` contains the complete theme bundle, unedited (a
+    theme update replaces the folder); ChatForge's own settings are in
+    `src/chatforge/desktop/theme.py`
+  - It also colours highlighted code (no highlight.js theme is shipped)
   - Licensed under the owner's private licence; review required before public release
 
 ## Runtime Dependencies

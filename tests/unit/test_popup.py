@@ -129,7 +129,7 @@ def made(monkeypatch) -> tuple[Popup, FakeWindow]:
 
     window = FakeWindow()
     monkeypatch.setattr(webview, "create_window", lambda *a, **k: window)
-    cfg = SimpleNamespace(ui=SimpleNamespace(width=420, height=640, margin=12, hide_on_blur=True))
+    cfg = SimpleNamespace(ui=SimpleNamespace(width=420, height=640, margin=12, sticky=False))
     clock = SimpleNamespace(now=100.0)
     popup = Popup(
         url="http://127.0.0.1/index.html",
@@ -402,7 +402,7 @@ def quiet(monkeypatch):
     window.show = show
     window.hide = hide
     monkeypatch.setattr(webview, "create_window", lambda *a, **k: window)
-    cfg = SimpleNamespace(ui=SimpleNamespace(width=420, height=640, margin=12, hide_on_blur=True))
+    cfg = SimpleNamespace(ui=SimpleNamespace(width=420, height=640, margin=12, sticky=False))
     sink = FakeSink()
     shown_hook: list[bool] = []
     popup = Popup(
@@ -732,3 +732,52 @@ def test_alt_f4_during_a_mouse_resize_stops_it(made, screen):
     session.thread.join(2)
     assert not session.thread.is_alive()
     assert popup.end_resize() is None
+
+
+# --- sticky -------------------------------------------------------------------------------
+
+
+def test_a_sticky_popup_ignores_losing_the_focus_but_not_being_closed(made):
+    popup, window = made
+    window.events.shown.set()
+    ui = popup._config().ui
+    ui.sticky = True
+    popup.hide_from_js(blur=True)  # the page's blur hide (bridge hide_popup("blur"))
+    assert window.calls == []
+    popup.hide_from_js()  # Escape or the close button: dismissed
+    assert window.calls == ["hide"]
+    ui.sticky = False
+    popup.hide_from_js(blur=True)
+    assert window.calls == ["hide", "hide"]
+    # Not while a native dialog is up or Settings is opening.
+    with popup.suspend_blur():
+        popup.hide_from_js(blur=True)
+    popup.note_settings_opening()
+    popup.hide_from_js(blur=True)
+    assert window.calls == ["hide", "hide"]
+
+
+def test_a_tray_click_right_after_a_blur_hide_keeps_it_hidden(made):
+    popup, window = made
+    window.events.shown.set()
+    popup._config().ui.sticky = False
+    popup.hide_from_js(blur=True)
+    assert popup.toggle(source="tray") is False  # the click that caused the blur
+    assert window.calls == ["hide"]
+
+
+def test_a_stray_blur_does_not_hide_a_popup_shown_for_a_reply(quiet):
+    q = quiet
+    q.popup.show_inactive()
+    q.popup.hide_from_js(blur=True)
+    assert q.window.calls == [] and q.popup.visible
+
+
+def test_the_hotkey_toggles_a_sticky_popup_away(made):
+    popup, window = made
+    window.events.shown.set()
+    popup._config().ui.sticky = True
+    assert popup.toggle(source="hotkey") is True
+    popup._visible = True
+    assert popup.toggle(source="hotkey") is False
+    assert window.calls == ["show", "hide"]

@@ -57,7 +57,6 @@ const S = {
   runtime: { state: 'unloaded' },
   config: { chat: {}, ui: {}, local: {} },
   limits: { max_prompt_chars: 4000 },
-  pinned: false,
   busy: false,
   reqId: null,
   sendSeq: 0,             // bumped by every send(): tells a late send_message reply it was abandoned
@@ -1363,6 +1362,18 @@ on('popup.shown', () => {
 
 // ================================================================== rendering ====
 
+/** ui.sticky, on unless turned off: the popup stays until closed or the hotkey hides it. */
+function isSticky() { return S.config.ui.sticky !== false; }
+
+function renderPin() {
+  const sticky = isSticky();
+  const pin = $('btn-pin');
+  pin.setAttribute('aria-pressed', String(sticky));
+  pin.title = sticky
+    ? 'Sticky: stays open until you close it or press the hotkey again (click to let it hide when you click away)'
+    : 'Hides when you click away (click to keep it open)';
+}
+
 function applyConfig(cfg) {
   if (cfg.chat) {
     S.config.chat = { ...S.config.chat, ...cfg.chat };
@@ -1372,6 +1383,7 @@ function applyConfig(cfg) {
   if (cfg.ui) {
     S.config.ui = { ...S.config.ui, ...cfg.ui };
     if (cfg.ui.theme && window.UITheme && window.UITheme.current() !== cfg.ui.theme) window.UITheme.set(cfg.ui.theme);
+    renderPin();
   }
   if (cfg.local) S.config.local = { ...S.config.local, ...cfg.local };
   if (Array.isArray(cfg.quick_actions)) syncActions(cfg.quick_actions);
@@ -1794,13 +1806,13 @@ function wire() {
   $('btn-new').addEventListener('click', newChat);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-close').addEventListener('click', () => api.call('hide_popup'));
+  // The pin is ui.sticky (Settings > General has the same box), saved either way.
   $('btn-pin').addEventListener('click', async () => {
-    const next = !S.pinned;
-    const r = await api.call('set_pinned', next);
-    if (r && r.ok === false) return;
-    S.pinned = next;
-    $('btn-pin').setAttribute('aria-pressed', String(next));
-    $('btn-pin').title = next ? 'Pinned: stays open when you click away' : 'Keep window open';
+    const next = !isSticky();
+    const r = await api.call('set_sticky', next);
+    if (r && r.ok === false) { toast((r.error && r.error.message) || 'Could not change that.'); return; }
+    S.config.ui = { ...S.config.ui, sticky: next };
+    renderPin();
   });
   $('scroll-bottom').addEventListener('click', () => { scrollToBottom(); $('input').focus(); });
   messagesBox().addEventListener('scroll', () => {
@@ -1830,16 +1842,16 @@ function wire() {
     api.call('hide_popup');
   });
 
-  // Hide on blur, debounced. The host ignores it while pinned or while settings is opening.
-  // Not while the file dialog is open either: it takes the focus, and hide_popup is not
-  // held back by the host's suspend_blur.
+  // Not sticky: hide on blur, debounced. Never while settings is opening, nor while the
+  // file dialog is open: it takes the focus, and hide_popup is not held back by the host's
+  // suspend_blur.
   let blurTimer = 0;
   window.addEventListener('blur', () => {
     clearTimeout(blurTimer);
     blurTimer = setTimeout(() => {
       if (document.hasFocus()) return;
-      if (S.config.ui.hide_on_blur === false || S.pinned || S.picking || Date.now() < S.settingsOpeningUntil) return;
-      api.call('hide_popup');
+      if (isSticky() || S.picking || Date.now() < S.settingsOpeningUntil) return;
+      api.call('hide_popup', 'blur');   // the host checks sticky and its dialogs again
     }, 150);
   });
   window.addEventListener('focus', () => clearTimeout(blurTimer));

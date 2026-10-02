@@ -94,7 +94,7 @@ const ok = (extra = {}) => ({ ok: true, ...extra });
 win.pywebview = {
   api: {
     get_state: async () => ok({
-      config: { chat: { ...LOCAL, show_reasoning: 'collapsed', max_prompt_chars: 4000 }, ui: { theme: 'laserlloyd', hide_on_blur: true }, local: {},
+      config: { chat: { ...LOCAL, show_reasoning: 'collapsed', max_prompt_chars: 4000 }, ui: { theme: 'laserlloyd', sticky: false }, local: {},
         quick_actions: clone(QUICK) },
       providers: clone(PROVIDERS), selected: { ...LOCAL }, runtime: { state: 'ready', model_id: LOCAL.model },
       conversation: clone(SNAPSHOT), limits: { max_prompt_chars: 4000 }, theme: 'laserlloyd',
@@ -116,14 +116,14 @@ win.pywebview = {
     new_chat: async () => { calls.push(['new_chat']); return ok(); },
     list_providers: async () => ok({ providers: clone(PROVIDERS) }),
     select_model: async (provider, model) => ok({ selected: { provider, model } }),
-    hide_popup: async () => { calls.push(['hide_popup']); return ok(); },
+    hide_popup: async (...args) => { calls.push(['hide_popup', ...args]); return ok(); },
     start_resize: async (...args) => { calls.push(['start_resize', ...args]); return ok({ resizing: true }); },
     drag_resize: async (...args) => { calls.push(['drag_resize', ...args]); return ok({ resizing: true }); },
     end_resize: async () => { calls.push(['end_resize']); return ok({ width: 500, height: 700 }); },
     reset_popup_size: async () => { calls.push(['reset_popup_size']); return ok({ width: 420, height: 620 }); },
     open_settings: async () => ok(),
     open_external: async () => ok(),
-    set_pinned: async (flag) => ok({ pinned: !!flag }),
+    set_sticky: async (flag) => { calls.push(['set_sticky', flag]); return ok({ sticky: !!flag }); },
     load_model: async () => ok(),
     unload_model: async () => ok(),
   },
@@ -1335,3 +1335,48 @@ test('the popup coming back during a drag whose release was missed leaves the re
   await settle();
   assert.equal(resizeCalls().length, 2);
 });
+
+// ------------------------------------------------------------------ sticky ----
+
+test('sticky: a blur never hides the popup, Escape does, and the pin turns it off and on', async () => {
+  await fresh();
+  const pin = $('btn-pin');
+  const hides = () => calls.filter((c) => c[0] === 'hide_popup').length;
+  const blur = async () => { win.dispatchEvent(new win.Event('blur')); mock.timers.tick(200); await settle(); };
+  assert.equal(pin.getAttribute('aria-pressed'), 'false');   // the boot config turned it off
+  emit({ type: 'settings.changed', config: { ui: { sticky: true } } });
+  assert.equal(pin.getAttribute('aria-pressed'), 'true');
+  assert.match(pin.title, /^Sticky/);
+  win.document.hasFocus = () => false;
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await blur();
+    assert.equal(hides(), 0, 'a sticky popup hid when it lost the focus');
+    win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle();
+    assert.equal(hides(), 1, 'Escape still puts it away');
+
+    pin.click();
+    await settle();
+    assert.deepEqual(calls.filter((c) => c[0] === 'set_sticky'), [['set_sticky', false]]);
+    assert.equal(pin.getAttribute('aria-pressed'), 'false');
+    await blur();
+    assert.equal(hides(), 2, 'not sticky: a blur hides it');
+    // ...saying so, so the app checks sticky and its own dialogs as well.
+    assert.deepEqual(calls.filter((c) => c[0] === 'hide_popup').at(-1), ['hide_popup', 'blur']);
+
+    pin.click();
+    await settle();
+    assert.deepEqual(calls.filter((c) => c[0] === 'set_sticky').at(-1), ['set_sticky', true]);
+    assert.equal(pin.getAttribute('aria-pressed'), 'true');
+  } finally {
+    mock.timers.reset();
+    delete win.document.hasFocus;
+    emit({ type: 'settings.changed', config: { ui: { sticky: false } } });
+  }
+});
+
+test('Clear chat wears the theme contrast colour', () => {
+  assert.ok($('btn-new').classList.contains('btn-clear'));
+});
+

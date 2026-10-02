@@ -53,6 +53,9 @@ button:disabled { cursor: not-allowed; }
 }
 .icon-btn:hover { background: var(--surface-3); color: var(--text-primary); }
 .icon-btn[aria-pressed="true"] { background: var(--accent-subtle); color: var(--text-link); border-color: var(--accent-muted); }
+/* Clear chat stands out in the theme's caution colour: orange beside LaserLloyd's blue, apart
+ * from the accent (the pressed pin) in every theme, and readable on each header surface. */
+.icon-btn.btn-clear, .icon-btn.btn-clear:hover { color: var(--warning-text); }
 
 .model-wrap { position: relative; min-width: 0; flex: 0 1 auto; max-width: calc(100% - 150px); }
 .model-chip {
@@ -520,9 +523,13 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
   margin: 0 0 .8em; overflow: hidden; background: var(--syn-bg);
   border: 1px solid var(--glass-stroke); border-radius: var(--radius-md);
 }
+/* The code slab is dark in every theme (--syn-bg), so its chrome is tinted from --syn-fg, not
+ * from the glass tokens, which suit each theme's own ground (a light bar on the light themes). */
 .code-block-header {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px;
-  padding-block: 3px; padding-inline: 12px 6px; background: var(--glass-highlight); border-bottom: 1px solid var(--glass-stroke);
+  padding-block: 3px; padding-inline: 12px 6px;
+  background: color-mix(in srgb, var(--syn-fg) 6%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--syn-fg) 12%, transparent);
 }
 .code-block-header:not(:has(.code-block-lang)) { justify-content: flex-end; }
 .code-block-lang { font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: .04em; text-transform: uppercase; color: var(--syn-comment); }
@@ -533,7 +540,10 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
   color: var(--syn-comment); font-size: var(--fs-micro); line-height: 1.2;
   transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
-.code-block-copy:hover, .code-block-wrap:hover { background: var(--glass-highlight); color: var(--syn-fg); border-color: var(--glass-stroke-strong); }
+.code-block-copy:hover, .code-block-wrap:hover {
+  background: color-mix(in srgb, var(--syn-fg) 10%, transparent); color: var(--syn-fg);
+  border-color: color-mix(in srgb, var(--syn-fg) 22%, transparent);
+}
 .code-block-wrap[aria-pressed="true"] { background: var(--accent-subtle); color: var(--syn-fg); border-color: var(--accent-muted); }
 .code-block-copy__done { display: none; }
 .code-block-copy.copied .code-block-copy__idle { display: none; }
@@ -541,10 +551,11 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .code-block-wrapper pre { margin: 0; border: 0; border-radius: 0; background: transparent; }
 .code-block-wrapper.wrapped pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-block-wrapper.wrapped pre { overflow-x: hidden; }
-/* highlight.js's github-dark sheet loads after this file and paints its own fill on code.hljs. */
+/* The theme's highlight.js mapping (ui-theme-base.css) fills code.hljs; the pre already has it. */
 .ui-markdown pre code.hljs { background: transparent; padding: 0; }
 .ui-markdown .copy-btn {
-  float: right; margin-left: 8px; padding: 2px 8px; background: var(--glass-highlight); border: 1px solid var(--glass-stroke-strong);
+  float: right; margin-left: 8px; padding: 2px 8px;
+  background: color-mix(in srgb, var(--syn-fg) 6%, transparent); border: 1px solid color-mix(in srgb, var(--syn-fg) 22%, transparent);
   border-radius: var(--radius-sm); color: var(--syn-fg); font-size: var(--fs-micro);
 }
 .ui-markdown .copy-btn.copied { color: var(--syn-string); }

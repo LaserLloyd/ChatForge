@@ -1,12 +1,16 @@
 """The chat popup: a hidden, frameless, on-top pywebview window placed at the lower right.
 
-Show/hide/toggle/pin per PLAN WS7 step 4. Placement is recomputed on every ``show`` from
+Show/hide/toggle per PLAN WS7 step 4. Placement is recomputed on every ``show`` from
 the cursor's monitor work area and the window's live DPI, then applied with
-``SetWindowPos`` on the native HWND (never pywebview's logical x/y). Hide-on-blur comes
-from the page (a 150 ms debounced ``blur`` listener that calls ``hide_popup``, already
-ignoring pinned, ``hide_on_blur=false`` and "settings is opening"); the host adds the
-tray-click-after-blur guard: a tray click within 400 ms of a blur-hide keeps the popup
-hidden, so a click on the icon toggles instead of flickering.
+``SetWindowPos`` on the native HWND (never pywebview's logical x/y).
+
+Sticky (``ui.sticky``, on by default; the header pin turns it on and off): the popup stays
+up until it is closed (Escape, the close button) or the hotkey or tray icon toggles it
+away. Off, it also hides when it loses the focus: that comes from the page (a 150 ms
+debounced ``blur`` listener that calls ``hide_popup``, already ignoring sticky and
+"settings is opening"); the host adds the tray-click-after-blur guard: a tray click within
+400 ms of a blur-hide keeps the popup hidden, so a click on the icon toggles instead of
+flickering.
 
 Resizing: the popup lives in the lower-right corner, so the page's grip in its top-left
 corner and its top and left edges resize it while the bottom-right corner stays put
@@ -45,7 +49,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from chatforge.desktop import win32util
+from chatforge.desktop import theme, win32util
 
 _log = logging.getLogger(__name__)
 
@@ -130,7 +134,6 @@ class Popup:
         self._clock = clock
         self._lock = threading.RLock()
         self.window: Any = None
-        self.pinned = False
         self._visible = False
         self._last_hide_at: float = float("-inf")
         self._last_hide_reason: str | None = None
@@ -164,7 +167,7 @@ class Popup:
             on_top=True,
             hidden=True,
             text_select=True,
-            background_color="#1b1e26",
+            **theme.window_options(getattr(ui, "theme", None)),
         )
         self.window.events.closing += self._on_closing
         self.window.events.closed += self._on_closed
@@ -275,10 +278,6 @@ class Popup:
                 pass
         return self._visible
 
-    def set_pinned(self, flag: bool) -> bool:
-        self.pinned = bool(flag)
-        return self.pinned
-
     def note_settings_opening(self) -> None:
         """Blur-hides are ignored while the settings window is coming up."""
         self._settings_opening_until = self._clock() + SETTINGS_OPENING_S
@@ -296,9 +295,9 @@ class Popup:
 
     def _blur_ignored(self) -> bool:
         cfg = self._config()
-        if self.pinned or self._blur_suspended > 0:
+        if self._blur_suspended > 0:
             return True
-        if not getattr(getattr(cfg, "ui", None), "hide_on_blur", True):
+        if getattr(getattr(cfg, "ui", None), "sticky", True):
             return True
         return self._clock() < self._settings_opening_until
 
@@ -553,11 +552,14 @@ class Popup:
         self._cancel_resize()
 
     def hide(self, reason: str = "app") -> None:
-        """Hide. ``reason`` is ``blur``/``escape``/``close`` from the page, ``tray``, ``app``.
+        """Hide. ``reason`` is ``js`` (the page: Escape or the close button), ``blur`` (the
+        page: it lost the focus), ``close`` (Alt+F4), ``tray``, ``hotkey`` or ``app``.
 
-        A page hide (``js``) is ignored while the popup is up from :meth:`show_inactive`
-        and the user has not activated it: Escape and the close button need the user to
-        click into it first, so only a stray blur can arrive then.
+        A blur is ignored while the popup is sticky, a native dialog is up or Settings is
+        opening (:meth:`_blur_ignored`; the page checks the same first). Either page hide
+        is ignored while the popup is up from :meth:`show_inactive` and the user has not
+        activated it: Escape and the close button need the user to click into it first, so
+        only a stray blur can arrive then.
         """
         window = self.window
         if window is None or not self._is_created():
@@ -565,7 +567,7 @@ class Popup:
         with self._lock:
             if reason == "blur" and self._blur_ignored():
                 return
-            if reason == "js" and self._shown_inactive:
+            if reason in ("js", "blur") and self._shown_inactive:
                 _log.debug("popup hide ignored: shown for a reply and not focused yet")
                 return
         try:
@@ -576,9 +578,10 @@ class Popup:
         with self._lock:
             self._note_hidden(reason)
 
-    def hide_from_js(self) -> None:
-        """The page asked to hide (blur debounce, Escape or the close button)."""
-        self.hide(reason="js")
+    def hide_from_js(self, *, blur: bool = False) -> None:
+        """The page asked to hide: Escape or the close button, or (``blur``) it lost the
+        focus and is not sticky."""
+        self.hide(reason="blur" if blur else "js")
 
     def toggle(self, source: str = "tray") -> bool:
         """Show if hidden, hide if visible. Returns the new visibility.
@@ -601,7 +604,7 @@ class Popup:
             return False
         with self._lock:
             recently_hidden = self._clock() - self._last_hide_at < TRAY_CLICK_GUARD_S
-            hidden_by_page = self._last_hide_reason == "js"
+            hidden_by_page = self._last_hide_reason in ("js", "blur")
         if source == "tray" and recently_hidden and hidden_by_page:
             return False
         self.show(source=source)

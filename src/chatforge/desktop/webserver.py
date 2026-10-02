@@ -9,7 +9,11 @@ ui-theme bundle wants ``no-cache``. So: a stdlib ``ThreadingHTTPServer`` bound t
 * ``Cache-Control: no-cache`` on everything,
 * the §1.9 CSP plus ``object-src 'none'`` (§7 item 6) and ``X-Content-Type-Options: nosniff``,
 * path confinement: every request resolves to a regular file strictly inside the root, or
-  it is a 404. Query strings are ignored.
+  it is a 404. Query strings are ignored,
+* each page's ``ui-theme.js`` tag carrying ChatForge's theme settings (desktop/theme.py).
+
+``python -m chatforge.desktop.webserver [--port 8765]`` serves the pages the same way for
+working on the UI in a normal browser (against ``dev-mock.js``).
 """
 
 from __future__ import annotations
@@ -19,10 +23,13 @@ import logging
 import os
 import posixpath
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+
+from chatforge.desktop import theme
 
 _log = logging.getLogger(__name__)
 
@@ -139,6 +146,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not head:
                 self.wfile.write(body)
             return
+        if target.suffix.lower() in (".html", ".htm"):
+            data = theme.apply_to_page(data)
         self._headers(HTTPStatus.OK, content_type_for(target), len(data))
         if not head:
             self.wfile.write(data)
@@ -220,3 +229,26 @@ class StaticServer:
 
     def __exit__(self, *_exc: object) -> None:
         self.stop()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Serve the pages for UI work in a normal browser (they fall back to dev-mock.js)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m chatforge.desktop.webserver")
+    parser.add_argument("--port", type=int, default=8765)
+    args = parser.parse_args(argv)
+    server = StaticServer(port=args.port).start()
+    print(f"Serving {server.root} on {server.url('index.html')} (Ctrl+C stops)")
+    try:
+        while True:  # a sleep, not Event.wait(): only that lets Ctrl+C through on Windows
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -241,9 +241,13 @@ login on or off. Starting a second copy just brings the running popup up.
   loading, a countdown ("Compiling for NPU 0:12 / ~0:45" the first time, "Loading… ~3 s" after).
   Enter sends, Shift+Enter adds a line, Stop cancels, and a counter appears near the
   4000-character limit on the typed text (`chat.max_prompt_chars`; attached files have their own
-  limit). The circular-arrow button (**Clear chat**) starts over with an empty conversation
-  and puts the popup back at its default size. With the local model selected, opening the
-  popup starts loading it in the background.
+  limit). The circular-arrow button (**Clear chat**, in the theme's contrast colour) starts
+  over with an empty conversation and puts the popup back at its default size. With the local
+  model selected, opening the popup starts loading it in the background.
+- **Sticky.** The popup stays up while you work in other windows, until you close it (Escape or
+  ×) or press the hotkey (or the Copilot key) again. The pin in the header shows it and turns
+  it off: then the popup also hides when you click away. Settings > General has the same
+  switch (`ui.sticky`, on by default).
 - **Resizing.** Drag the dotted grip in the popup's top-left corner, or its top or left edge;
   the bottom-right corner stays in place. The popup keeps that size (`ui.width` and
   `ui.height` in the config) every time it opens, also after a restart. Double-click the grip,
@@ -540,7 +544,7 @@ Secrets are never written there.
 | --- | --- |
 | **Models** | Installed models (set active, load, unload, delete, clear compile cache), disk usage, the OVMS runtime card (install, re-check), Hugging Face search with badges (*Recommended*, *Supported*, *Untested*, *Avoid*), downloads with progress, cancel and resume |
 | **Providers** | Local: device (NPU, GPU, CPU) and `max_prompt_len` (reload required). Model lists: refresh all, refresh once a day. One card per provider: base URL (MiniMax: region), model, context window (with what the provider reported for the selected model), longest reply, API key with Save key, Test, Refresh models and Remove key. Add a custom OpenAI-compatible provider; custom ones can be removed |
-| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`; conflicts are reported), theme (eight, LaserLloyd by default; LaserLloyd Light is its light partner), show reasoning, **Personality** and **Instructions**, start at login, hide the popup when it loses focus, show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback |
+| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`; conflicts are reported), theme (LaserLloyd by default, LaserLloyd Light its light partner, and every core UnifyingTheme theme; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login, sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback |
 | **Logs** | The last 500 redacted lines with a level filter, auto-refresh, Copy and Open folder |
 
 **Personality and instructions.** The *Personality* box is the system prompt: who the assistant
@@ -555,6 +559,20 @@ file contributes, 200,000 characters by default) and `tools.documents_dir` (wher
 saved; empty means `Documents\ChatForge`).
 
 ---
+
+### Themes
+
+The look comes from **UnifyingTheme**, the shared theme system of the LaserLloyd apps.
+`src/chatforge/web/static/ui-theme/` is its drop-in bundle, copied verbatim and never edited
+(a test checks it against the bundle's own `VERSION` digest). To update the themes, copy the
+new `ui-theme/` folder over it, or run `python tools/sync_theme.py install chatforge` in
+UnifyingTheme's package folder (add `--dest <this repo>` when the two are not side by side);
+`check chatforge` reports drift. Nothing else changes: ChatForge's own settings are
+`THEME_SETTINGS` in `src/chatforge/desktop/theme.py` (the default theme, the opt-in themes it
+offers, the storage key), and the app's server writes them onto each page, listing every core
+theme in the bundle's `themes.json`. So a new core theme is in the picker on the next page
+load; an opt-in one (Night Red, Electric Yellow) appears once it is added to `opt_in` there.
+Code blocks are coloured by the theme as well, and the windows open in the theme's colour.
 
 ## Local models
 
@@ -590,7 +608,8 @@ py -3.12 -m uv run pytest -m ui -s                                        # laun
 
 Use `py -3.12 -m uv run ...` throughout: on a stock Windows install bare `python` is the Microsoft
 Store stub. The UI can be developed in a normal browser against `dev-mock.js` with
-`py -3.12 -m http.server -d src\chatforge\web 8765`; the magic words that drive it ("search",
+`py -3.12 -m uv run python -m chatforge.desktop.webserver --port 8765`, which serves the pages
+the way the app does; the magic words that drive it ("search",
 "document", "overflow", "fallback", attached files and more) are listed at the top of
 `dev-mock.js`. CI (GitHub Actions) runs ruff, the unit tests on Ubuntu and Windows, and the JS
 tests on Node 24.

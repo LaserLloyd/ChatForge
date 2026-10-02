@@ -179,10 +179,52 @@ test('General tab is populated and exposes the theme picker', () => {
   assert.equal(doc.querySelectorAll('[data-tool]').length, 9);
   assert.equal(doc.querySelectorAll('[data-tool]:checked').length, 9);
   assert.equal($('tool-create_document').checked, true);
-  // ui.show_on_reply: on by default, next to the hide-on-blur box.
+  // ui.sticky and ui.show_on_reply: both on by default, side by side.
+  assert.equal($('g-sticky').checked, true);
+  assert.match($('g-sticky').closest('label').textContent, /Sticky popup/);
   assert.equal($('g-reply').checked, true);
   assert.match($('g-reply').closest('label').textContent, /Show the popup when a reply finishes/);
-  assert.equal($('g-blur').closest('.switches'), $('g-reply').closest('.switches'));
+  assert.equal($('g-sticky').closest('.switches'), $('g-reply').closest('.switches'));
+});
+
+test('the sticky checkbox saves ui.sticky', async () => {
+  const api = window.pywebview.api;
+  const submit = async () => {
+    $('g-msg').textContent = '';
+    $('general-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 30 && $('g-msg').textContent !== 'Saved.'; i++) await sleep(20);
+    assert.equal($('g-msg').textContent, 'Saved.');
+  };
+  $('g-sticky').checked = false;
+  await submit();
+  assert.equal((await api.get_settings()).config.ui.sticky, false);
+  $('g-sticky').checked = true;
+  await submit();
+  assert.equal((await api.get_settings()).config.ui.sticky, true);
+});
+
+test('the popup pin changing sticky while General has unsaved edits is not undone by Save', async () => {
+  const api = window.pywebview.api;
+  const submit = async () => {
+    $('g-msg').textContent = '';
+    $('general-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 30 && $('g-msg').textContent !== 'Saved.'; i++) await sleep(20);
+    assert.equal($('g-msg').textContent, 'Saved.');
+  };
+  assert.equal($('g-sticky').checked, true);
+  $('g-reply').checked = false;   // an unsaved edit elsewhere on the tab
+  $('general-form').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await api.set_sticky(false);   // the pin in the popup
+  for (let i = 0; i < 30 && $('g-sticky').checked; i++) await sleep(10);
+  assert.equal($('g-sticky').checked, false, 'the box did not follow the pin');
+  assert.equal($('g-reply').checked, false, 'the unsaved edit was thrown away');
+  await submit();
+  const ui = (await api.get_settings()).config.ui;
+  assert.equal(ui.sticky, false);
+  assert.equal(ui.show_on_reply, false);
+  $('g-sticky').checked = true;
+  $('g-reply').checked = true;
+  await submit();
 });
 
 test('the reply checkbox saves ui.show_on_reply', async () => {

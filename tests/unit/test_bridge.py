@@ -79,7 +79,6 @@ def api(services: Services) -> Api:
 class FakePopup:
     def __init__(self) -> None:
         self.hidden = 0
-        self.pinned = False
         self.settings_noted = 0
         self.resizes: list[tuple] = []
         #: What end_resize answers: the new logical size, or None (nothing changed).
@@ -102,12 +101,9 @@ class FakePopup:
         self.reset_to.append((width, height))
         return True
 
-    def hide_from_js(self) -> None:
+    def hide_from_js(self, *, blur: bool = False) -> None:
         self.hidden += 1
-
-    def set_pinned(self, flag: bool) -> bool:
-        self.pinned = bool(flag)
-        return self.pinned
+        self.blurred = blur
 
     def note_settings_opening(self) -> None:
         self.settings_noted += 1
@@ -648,11 +644,25 @@ def test_a_failing_reply_end_hook_does_not_break_the_turn(api, services, loop) -
 def test_window_ops(api: Api, services: Services) -> None:
     popup = FakePopup()
     services.popup = popup
-    assert api.hide_popup()["ok"] and popup.hidden == 1
-    assert api.set_pinned(True) == {"ok": True, "pinned": True}
-    assert popup.pinned is True
+    assert api.hide_popup()["ok"] and popup.hidden == 1 and popup.blurred is False
+    assert api.hide_popup("blur")["ok"] and popup.hidden == 2 and popup.blurred is True
     assert api.open_settings()["ok"] is False  # no settings window wired
     assert popup.settings_noted == 1
+
+
+def test_the_pin_saves_sticky(api: Api, services: Services) -> None:
+    assert services.config.ui.sticky is True  # on by default
+    services.events.drain()
+    assert api.set_sticky(False) == {"ok": True, "sticky": False}
+    assert services.config.ui.sticky is False
+    assert load_config(services.paths).ui.sticky is False
+    changed = services.events.drain()
+    assert [e["type"] for e in changed] == ["settings.changed"]
+    assert changed[0]["config"]["ui"]["sticky"] is False
+    assert api.set_sticky(False)["sticky"] is False  # no change: nothing written or sent
+    assert services.events.drain() == []
+    assert api.set_sticky(True)["sticky"] is True
+    assert load_config(services.paths).ui.sticky is True
 
 
 def test_resize_calls_reach_the_popup(api: Api, services: Services) -> None:

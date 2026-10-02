@@ -39,7 +39,7 @@ from chatforge.paths import Paths
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Changes to these keys need the local model reloaded ("reload required").
 RESTART_KEYS: tuple[str, ...] = (
@@ -586,7 +586,9 @@ class ToolsCfg(BaseModel):
 class UiCfg(BaseModel):
     theme: str = "laserlloyd"
     hotkey: str = "Ctrl+Alt+C"
-    hide_on_blur: bool = True
+    #: The popup stays up until it is closed (Escape, the close button) or the hotkey is
+    #: pressed again; off, it also hides when it loses the focus.
+    sticky: bool = True
     #: Bring the hidden popup back (without taking the focus) when a reply finishes.
     show_on_reply: bool = True
     width: int = Field(default=420, ge=200, le=4000)  # logical px
@@ -896,6 +898,9 @@ def migrate_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     becomes the v2 default. A prompt the user edited is left alone.
 
     v2 → v3: ``create_document`` is switched on the same way.
+
+    v3 → v4: ``ui.hide_on_blur`` gives way to ``ui.sticky``, which starts on for everyone
+    (every file holds ``hide_on_blur``, so a saved default cannot be told from a choice).
     """
     try:
         version = int(raw.get("schema_version", 1))
@@ -913,6 +918,10 @@ def migrate_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
             chat["max_tool_rounds"] = 6
     if version < 3:
         _enable_new_tools(raw, TOOLS_ADDED_V3)
+    if version < 4:
+        ui = raw.get("ui")
+        if isinstance(ui, dict):
+            ui.pop("hide_on_blur", None)
     raw["schema_version"] = SCHEMA_VERSION
     return raw, True
 

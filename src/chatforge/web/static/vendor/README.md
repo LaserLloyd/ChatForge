@@ -13,7 +13,6 @@ and update the version in the table below.
 | File | Library | Version | License | Upstream |
 |---|---|---|---|---|
 | `highlight.min.js` | highlight.js | 11.11.1 | BSD-3-Clause | https://github.com/highlightjs/highlight.js |
-| `github-dark.min.css` | highlight.js theme "GitHub Dark" | ships with highlight.js 11.11.1 | BSD-3-Clause | https://github.com/highlightjs/highlight.js/blob/main/src/styles/github-dark.css |
 | `marked.min.js` | marked | 18.0.5 | MIT | https://github.com/markedjs/marked |
 | `purify.min.js` | DOMPurify | 3.4.9 | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
 
@@ -21,9 +20,8 @@ and update the version in the table below.
 
 * highlight.js, marked and DOMPurify state their version in the banner comment kept by
   their minifiers, so those numbers are read straight out of the files.
-* `github-dark.min.css` is a theme shipped inside the highlight.js distribution; its own
-  header carries only a theme "Updated: 2021-05-15" date, not a library version, so it is
-  recorded as the version of the highlight.js build it came with.
+* No highlight.js stylesheet is shipped: the UnifyingTheme bundle's `ui-theme-base.css`
+  colours the `hljs-*` classes from each theme's tokens.
 
 ---
 
@@ -58,7 +56,7 @@ SOFTWARE.
 
 ## BSD 3-Clause License
 
-Applies to `highlight.min.js` and `github-dark.min.css`:
+Applies to `highlight.min.js`:
 
 ```
 Copyright (c) 2006, Ivan Sagalaev.
