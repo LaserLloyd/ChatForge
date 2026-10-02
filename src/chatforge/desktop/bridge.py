@@ -38,9 +38,11 @@ from chatforge.config import (
     RECENT_MODELS_KEPT,
     AppConfig,
     ProviderSpec,
+    UiCfg,
     seed_providers,
     update_config,
 )
+from chatforge.desktop.popup import MIN_SIZE, RESIZE_EDGES
 from chatforge.errors import AppError, ConfigError
 from chatforge.logging_setup import RING_BUFFER
 from chatforge.paths import Paths
@@ -65,6 +67,10 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "unload_model",
     "hide_popup",
     "set_pinned",
+    "start_resize",
+    "drag_resize",
+    "end_resize",
+    "reset_popup_size",
     "open_settings",
     "open_external",
     "save_api_key",
@@ -103,6 +109,11 @@ PROBE_TIMEOUT_S = 90.0
 NETWORK_TIMEOUT_S = 60.0
 #: How many stopped request ids ``Api`` remembers (to skip ``on_reply_end`` for them).
 STOPPED_IDS_KEPT = 64
+#: The popup's default size (logical px): where Clear chat and a double-click on the
+#: resize grip take it back to.
+DEFAULT_POPUP_SIZE = (UiCfg.model_fields["width"].default, UiCfg.model_fields["height"].default)
+#: The largest saved popup side (``ui.width``/``ui.height`` allow no more).
+POPUP_MAX_SIDE = 4000
 
 _DOWNLOAD_STATUS = {
     "queued": "queued",
@@ -868,6 +879,11 @@ class Api:
             engine = self._s.engine
             if engine is not None:
                 self._s.loop.call(engine.new_chat)
+            # Clear chat starts over in every way: the popup goes back to its default size.
+            try:
+                self._reset_popup_size()
+            except Exception as exc:  # noqa: BLE001 - the chat is cleared all the same
+                _log.warning("popup size reset failed: %s", type(exc).__name__)
             return ok()
 
         return self._guard(impl, "new_chat")
@@ -954,6 +970,66 @@ class Api:
             return ok(pinned=pinned)
 
         return self._guard(impl, "set_pinned")
+
+    # The popup resizes from its top-left grip and its top and left edges (desktop/popup.py
+    # begin_resize). The page serialises these calls: pywebview runs each on its own thread.
+
+    def start_resize(self, edge: str, grab_x: float, grab_y: float, follow: bool) -> dict[str, Any]:
+        def impl() -> dict[str, Any]:
+            if not isinstance(edge, str) or edge not in RESIZE_EDGES:
+                return fail("bad_request", f"Unknown resize handle {edge!r}.")
+            popup = self._s.popup
+            started = False
+            if popup is not None:
+                started = popup.begin_resize(
+                    str(edge), round(float(grab_x)), round(float(grab_y)), follow=bool(follow)
+                )
+            return ok(resizing=bool(started))
+
+        return self._guard(impl, "start_resize")
+
+    def drag_resize(self, dx: float, dy: float) -> dict[str, Any]:
+        def impl() -> dict[str, Any]:
+            popup = self._s.popup
+            moved = popup is not None and popup.drag_resize(round(float(dx)), round(float(dy)))
+            return ok(resizing=bool(moved))
+
+        return self._guard(impl, "drag_resize")
+
+    def end_resize(self) -> dict[str, Any]:
+        def impl() -> dict[str, Any]:
+            popup = self._s.popup
+            size = popup.end_resize() if popup is not None else None
+            if size is not None:
+                size = self._save_popup_size(size)
+            return ok(**self._popup_size(size))
+
+        return self._guard(impl, "end_resize")
+
+    def reset_popup_size(self) -> dict[str, Any]:
+        return self._guard(lambda: ok(**self._reset_popup_size()), "reset_popup_size")
+
+    def _popup_size(self, size: tuple[int, int] | None = None) -> dict[str, int]:
+        width, height = size if size is not None else (self._cfg.ui.width, self._cfg.ui.height)
+        return {"width": int(width), "height": int(height)}
+
+    def _save_popup_size(self, size: tuple[int, int]) -> tuple[int, int]:
+        """Keep ``size`` (logical px) as the size the popup opens at. Writes the config
+        only when it changed."""
+        width = max(MIN_SIZE[0], min(POPUP_MAX_SIDE, int(size[0])))
+        height = max(MIN_SIZE[1], min(POPUP_MAX_SIDE, int(size[1])))
+        ui = self._cfg.ui
+        if (width, height) != (ui.width, ui.height):
+            new_cfg, _restart = self._apply_patch({"ui": {"width": width, "height": height}})
+            self._emit({"type": "settings.changed", "config": ui_config(new_cfg)})
+        return width, height
+
+    def _reset_popup_size(self) -> dict[str, int]:
+        """The default size, saved, and the popup back in its corner at it if it is up."""
+        size = self._save_popup_size(DEFAULT_POPUP_SIZE)
+        if self._s.popup is not None:
+            self._s.popup.reset_size(*size)
+        return self._popup_size(size)
 
     def open_settings(self) -> dict[str, Any]:
         def impl() -> dict[str, Any]:

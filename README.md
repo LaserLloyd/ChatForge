@@ -200,8 +200,8 @@ about 3 s from the cache after that.
 
 ## What it looks like
 
-The popup is 420 × 620 at the lower right of the screen, above the taskbar. Every answer says
-which model wrote it and how fast:
+The popup opens at the lower right of the screen, above the taskbar: 420 × 620 until you
+resize it (see [Usage](#usage)). Every answer says which model wrote it and how fast:
 
 | A weather question, answered on the NPU | A spreadsheet in, a Word report out |
 | --- | --- |
@@ -241,8 +241,14 @@ login on or off. Starting a second copy just brings the running popup up.
   loading, a countdown ("Compiling for NPU 0:12 / ~0:45" the first time, "Loading… ~3 s" after).
   Enter sends, Shift+Enter adds a line, Stop cancels, and a counter appears near the
   4000-character limit on the typed text (`chat.max_prompt_chars`; attached files have their own
-  limit). The circular-arrow button (**Clear chat**) starts over with an empty conversation.
-  With the local model selected, opening the popup starts loading it in the background.
+  limit). The circular-arrow button (**Clear chat**) starts over with an empty conversation
+  and puts the popup back at its default size. With the local model selected, opening the
+  popup starts loading it in the background.
+- **Resizing.** Drag the dotted grip in the popup's top-left corner, or its top or left edge;
+  the bottom-right corner stays in place. The popup keeps that size (`ui.width` and
+  `ui.height` in the config) every time it opens, also after a restart. Double-click the grip,
+  or press **Clear chat**, for the default 420 × 620. Dragging the header still moves the
+  popup until it is put away; it always opens in its corner.
 - **Attaching files.** The paperclip opens the Windows file dialog; you can also drop files
   anywhere on the popup or paste them. Each file becomes a chip above the message. See
   [Files and documents](#files-and-documents).

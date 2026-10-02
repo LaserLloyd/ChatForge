@@ -518,3 +518,217 @@ def test_show_inactive_calls_win32_outside_the_lock(quiet, monkeypatch):
     monkeypatch.setattr(win32util, "show_window", probe)
     assert q.popup.show_inactive() is True
     assert free == [True]
+
+
+# --- resizing ---------------------------------------------------------------------------
+
+CORNER = win32util.Rect(1488, 408, 1908, 1028)  # 420 x 620 at 100 %, lower right
+
+
+class FakeScreen:
+    """The window rect, cursor and primary button a resize reads, on a 1920x1080 screen."""
+
+    def __init__(self, dpi: int = 96) -> None:
+        self.dpi = dpi
+        self.rect = CORNER
+        self.visible = True
+        self.moves: list[tuple[win32util.Rect, dict]] = []
+        #: Scripted mouse polls: (point, primary button down); the last one repeats.
+        self.mouse: list[tuple[tuple[int, int], bool]] = [((0, 0), False)]
+        self.polled = threading.Event()
+
+    def set_window_pos(self, _hwnd: int, rect: win32util.Rect, **kw: Any) -> bool:
+        self.moves.append((rect, kw))
+        self.rect = rect
+        return True
+
+    def poll(self) -> tuple[tuple[int, int], bool]:
+        self.polled.set()
+        return self.mouse.pop(0) if len(self.mouse) > 1 else self.mouse[0]
+
+
+@pytest.fixture
+def screen(made, monkeypatch) -> tuple[Popup, FakeScreen]:
+    popup, window = made
+    create_native(window)
+    window.events.shown.set()
+    s = FakeScreen()
+    current: dict[str, Any] = {}
+
+    def cursor() -> tuple[int, int]:
+        current["poll"] = s.poll()
+        return current["poll"][0]
+
+    monkeypatch.setattr(win32util, "IS_WINDOWS", True)
+    monkeypatch.setattr(win32util, "window_rect", lambda _h: s.rect)
+    monkeypatch.setattr(win32util, "dpi_for_window", lambda _h: s.dpi)
+    work = win32util.Rect(0, 0, 1920, 1040)
+    monkeypatch.setattr(
+        win32util, "monitor_info_at", lambda _p: (win32util.Rect(0, 0, 1920, 1080), work)
+    )
+    monkeypatch.setattr(win32util, "work_area_at_cursor", lambda: work)
+    monkeypatch.setattr(win32util, "is_window_visible", lambda _h: s.visible)
+    monkeypatch.setattr(win32util, "set_window_pos", s.set_window_pos)
+    monkeypatch.setattr(win32util, "set_rounded_corners", lambda _h: True)
+    monkeypatch.setattr(win32util, "force_foreground", lambda _h: True)
+    # The button is read just before the cursor in each poll: answer from the same step.
+    monkeypatch.setattr(win32util, "primary_button_down", lambda: s.mouse[0][1])
+    monkeypatch.setattr(win32util, "cursor_pos", cursor)
+    monkeypatch.setattr(popup_mod, "RESIZE_POLL_S", 0.001)
+    return popup, s
+
+
+def test_a_touch_resize_moves_the_top_left_and_reports_the_size(screen):
+    popup, s = screen
+    assert popup.begin_resize("top-left", 4, 4, follow=False) is True
+    assert popup.drag_resize(-200, -100) is True
+    assert s.moves == [
+        (win32util.Rect(1288, 308, 1908, 1028), {"activate": False, "keep_zorder": True})
+    ]
+    assert popup.end_resize() == (620, 720)
+    assert popup.drag_resize(-300, 0) is False  # over: no more moves
+    assert len(s.moves) == 1
+
+
+def test_edges_resize_one_way_and_never_below_the_minimum(screen):
+    popup, s = screen
+    popup.begin_resize("left", 2, 300, follow=False)
+    popup.drag_resize(-80, -500)
+    assert s.rect == win32util.Rect(1408, 408, 1908, 1028)
+    assert popup.end_resize() == (500, 620)
+    popup.begin_resize("top", 300, 2, follow=False)
+    popup.drag_resize(900, 900)
+    assert (s.rect.width, s.rect.height) == (500, 400)
+    assert popup.end_resize() == (500, 400)
+
+
+def test_sizes_are_logical_at_200_percent(screen):
+    popup, s = screen
+    s.dpi = 192
+    s.rect = win32util.Rect(1056, 0, 1896, 1240)  # 420 x 620 logical
+    popup.begin_resize("top-left", 8, 8, follow=False)
+    popup.drag_resize(5000, 5000)  # as small as it goes: 320 x 400 logical
+    assert (s.rect.width, s.rect.height) == (640, 800)
+    assert popup.end_resize() == (320, 400)
+
+
+def test_a_click_on_a_handle_changes_and_saves_nothing(screen):
+    popup, s = screen
+    popup.begin_resize("top-left", 4, 4, follow=False)
+    assert popup.drag_resize(0, 0) is True
+    assert popup.end_resize() is None
+    assert s.moves == []
+    assert popup.end_resize() is None  # nothing running
+
+
+def test_a_mouse_resize_follows_the_cursor_until_the_button_is_up(screen):
+    popup, s = screen
+    s.mouse = [((1492, 412), True), ((1392, 312), True), ((1292, 212), False)]
+    assert popup.begin_resize("top-left", 4, 4, follow=True) is True
+    popup._resize.thread.join(2)
+    assert not popup._resize.thread.is_alive()  # it stopped by itself on the release
+    assert [r for r, _ in s.moves] == [
+        win32util.Rect(1388, 308, 1908, 1028),
+        win32util.Rect(1288, 208, 1908, 1028),  # the release point counts
+    ]
+    assert popup.drag_resize(10, 10) is False  # the page does not drive a mouse resize
+    assert popup.end_resize() == (620, 820)
+
+
+def test_ending_a_mouse_resize_stops_it_while_the_button_is_held(screen):
+    popup, s = screen
+    s.mouse = [((1392, 412), True)]
+    popup.begin_resize("left", 4, 4, follow=True)
+    thread = popup._resize.thread
+    assert s.polled.wait(2)
+    assert popup.end_resize() == (520, 620)
+    assert not thread.is_alive()
+
+
+def test_a_new_resize_stops_the_old_one(screen):
+    popup, s = screen
+    s.mouse = [((1492, 412), True)]
+    popup.begin_resize("top-left", 4, 4, follow=True)
+    first = popup._resize
+    assert popup.begin_resize("top", 300, 4, follow=False) is True
+    assert first.stop.is_set()
+    first.thread.join(2)
+    assert not first.thread.is_alive()
+
+
+def test_hiding_cancels_a_resize(screen):
+    popup, _s = screen
+    popup.begin_resize("top-left", 4, 4, follow=False)
+    popup.hide(reason="app")
+    assert popup.drag_resize(-50, -50) is False
+    assert popup.end_resize() is None
+
+
+def test_resize_needs_a_window_and_a_known_handle(made, screen):
+    popup, s = screen
+    assert popup.begin_resize("bottom-right", 4, 4, follow=False) is False
+    popup.window.events.shown.clear()  # not created yet
+    assert popup.begin_resize("top-left", 4, 4, follow=False) is False
+    assert s.moves == []
+
+
+def test_reset_size_puts_the_popup_back_in_its_corner(screen):
+    popup, s = screen
+    popup.begin_resize("top-left", 4, 4, follow=False)
+    popup.drag_resize(-300, -300)
+    assert popup.reset_size(420, 620) is True
+    assert s.rect == CORNER  # 420 x 620, 12 px from the corner of the work area
+    assert popup.drag_resize(-10, -10) is False  # the drag in progress is over
+    s.visible = False
+    assert popup.reset_size(500, 700) is False  # hidden: the next show uses the config
+    assert s.rect == CORNER
+
+
+def test_a_click_that_jitters_a_little_resizes_and_saves_nothing(screen):
+    popup, s = screen
+    s.mouse = [((1494, 413), True), ((1491, 410), True), ((1495, 414), False)]  # within 4 px
+    popup.begin_resize("top-left", 4, 4, follow=True)
+    popup._resize.thread.join(2)
+    assert s.moves == []
+    assert popup.end_resize() is None
+    # Pen or touch: the same threshold, then the edge goes exactly where the pointer is.
+    popup.begin_resize("left", 4, 4, follow=False)
+    popup.drag_resize(-3, -30)  # the top edge does not move: only x counts
+    assert s.moves == []
+    popup.drag_resize(-10, 0)
+    assert s.rect == win32util.Rect(1478, 408, 1908, 1028)
+    popup.drag_resize(-2, 0)  # past the threshold once, small moves count too
+    assert s.rect == win32util.Rect(1486, 408, 1908, 1028)
+    assert popup.end_resize() == (422, 620)
+
+
+def test_the_popup_opens_again_at_the_size_it_was_resized_to(screen):
+    popup, s = screen
+    popup.show(source="tray")
+    assert (s.rect.width, s.rect.height) == (420, 640)  # the configured size
+    popup.begin_resize("top-left", 4, 4, follow=False)
+    popup.drag_resize(-180, -120)
+    width, height = popup.end_resize()
+    ui = popup._config().ui
+    ui.width, ui.height = width, height  # what the bridge saves (Api._save_popup_size)
+    popup.hide(reason="app")
+    s.visible = False
+    s.rect = win32util.Rect(0, 0, 10, 10)  # wherever it was left
+    popup.show(source="hotkey")
+    work = win32util.Rect(0, 0, 1920, 1040)
+    assert s.rect == win32util.place(work, 96, width, height, 12)
+    assert (s.rect.width, s.rect.height) == (600, 760)
+    assert (s.rect.right, s.rect.bottom) == (CORNER.right, CORNER.bottom)
+
+
+def test_alt_f4_during_a_mouse_resize_stops_it(made, screen):
+    popup, s = screen
+    _popup, window = made
+    s.mouse = [((1392, 412), True)]  # the button stays down
+    popup.begin_resize("top-left", 4, 4, follow=True)
+    session = popup._resize
+    assert s.polled.wait(2)
+    assert close(window, "UserClosing") is True  # hidden on the GUI thread, without the lock
+    session.thread.join(2)
+    assert not session.thread.is_alive()
+    assert popup.end_resize() is None

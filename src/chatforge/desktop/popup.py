@@ -8,6 +8,14 @@ ignoring pinned, ``hide_on_blur=false`` and "settings is opening"); the host add
 tray-click-after-blur guard: a tray click within 400 ms of a blur-hide keeps the popup
 hidden, so a click on the icon toggles instead of flickering.
 
+Resizing: the popup lives in the lower-right corner, so the page's grip in its top-left
+corner and its top and left edges resize it while the bottom-right corner stays put
+(:meth:`Popup.begin_resize`). With a mouse the host follows the cursor itself until the
+button comes up, so no bridge round trip sits between a move and the window; a pen or a
+finger has the page report its moves (:meth:`Popup.drag_resize`). The bridge saves the
+size the drag ends at as ``ui.width``/``ui.height``, which :meth:`Popup.place` opens the
+popup at from then on; :meth:`Popup.reset_size` puts it back.
+
 Reply-finished show (``ui.show_on_reply``): :meth:`Popup.show_inactive` brings the hidden
 popup back in its corner with ``ShowWindow(SW_SHOWNA)``, which neither activates it nor
 takes the keyboard focus (pywebview's ``show()`` always activates). Until the user
@@ -34,6 +42,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from chatforge.desktop import win32util
@@ -41,6 +50,24 @@ from chatforge.desktop import win32util
 _log = logging.getLogger(__name__)
 
 TITLE = "ChatForge"
+#: The smallest popup, in logical px (also pywebview's ``min_size``).
+MIN_SIZE = (320, 400)
+#: What the page's resize handles move: ``(left edge, top edge)``.
+RESIZE_EDGES: dict[str, tuple[bool, bool]] = {
+    "top-left": (True, True),
+    "left": (True, False),
+    "top": (False, True),
+}
+#: How often a mouse resize reads the cursor. A plain sleep, not ``Event.wait``: on
+#: Windows that rounds up to the 15.6 ms timer tick, while ``time.sleep`` is precise.
+RESIZE_POLL_S = 1 / 120
+#: A mouse resize stops after this long whatever the button says (a missed release).
+RESIZE_MAX_S = 120.0
+#: How long :meth:`Popup.end_resize` waits for the cursor-following thread to finish.
+RESIZE_JOIN_S = 1.0
+#: How far (logical px) the pointer must go before a resize starts, like Windows' own drag
+#: threshold (``SM_CXDRAG``): a click on a handle that jitters a little changes nothing.
+RESIZE_THRESHOLD = 4
 #: A tray click this soon after a hide keeps the popup hidden (a toggle, not a flicker).
 TRAY_CLICK_GUARD_S = 0.4
 #: Blur-hides are ignored for this long after Settings starts opening.
@@ -53,6 +80,27 @@ SHOWN_WAIT_S = 15.0
 USER_CLOSING = "UserClosing"
 #: Sign-out or shutdown (``WM_QUERYENDSESSION``). The session may still be cancelled.
 WINDOWS_SHUTDOWN = "WindowsShutDown"
+
+
+@dataclass(eq=False)
+class _Resize:
+    """One drag of a resize handle, in physical pixels."""
+
+    moves: tuple[bool, bool]
+    start: win32util.Rect
+    #: Where the pointer went down, on the screen.
+    press: tuple[int, int]
+    min_size: tuple[int, int]
+    #: The work area of the monitor the popup is on: it does not grow past it.
+    bounds: win32util.Rect
+    follow: bool
+    #: :data:`RESIZE_THRESHOLD` in physical px; ``dragging`` once the pointer went that far.
+    threshold: int = 0
+    dragging: bool = False
+    stop: threading.Event = field(default_factory=threading.Event)
+    thread: threading.Thread | None = None
+    #: The last rect applied (``None`` until the pointer moved).
+    last: win32util.Rect | None = None
 
 
 class Popup:
@@ -92,6 +140,8 @@ class Popup:
         self._destroying = False
         #: Shown by :meth:`show_inactive` and not activated by the user since.
         self._shown_inactive = False
+        #: The resize in progress (:meth:`begin_resize`), if any.
+        self._resize: _Resize | None = None
 
     # --- creation ---------------------------------------------------------------------
 
@@ -107,8 +157,8 @@ class Popup:
             js_api=self._api,
             width=int(ui.width),
             height=int(ui.height),
-            min_size=(320, 400),
-            resizable=False,
+            min_size=MIN_SIZE,
+            resizable=False,  # no frame to grab: the page's handles resize it (begin_resize)
             frameless=True,
             easy_drag=False,  # §7 item 5: text selection must not drag the window
             on_top=True,
@@ -254,19 +304,21 @@ class Popup:
 
     # --- placement ---------------------------------------------------------------------
 
-    def target_rect(self) -> win32util.Rect | None:
-        """Where the popup goes right now (pure placement over live monitor data)."""
+    def target_rect(self, size: tuple[int, int] | None = None) -> win32util.Rect | None:
+        """Where the popup goes right now (pure placement over live monitor data), at
+        ``size`` (logical px) or the configured size."""
         hwnd = self.hwnd
         if hwnd is None or not win32util.IS_WINDOWS:
             return None
         ui = self._config().ui
+        width, height = size if size is not None else (int(ui.width), int(ui.height))
         dpi = win32util.dpi_for_window(hwnd)
         work = win32util.work_area_at_cursor()
-        return win32util.place(work, dpi, int(ui.width), int(ui.height), int(ui.margin))
+        return win32util.place(work, dpi, int(width), int(height), int(ui.margin))
 
-    def place(self) -> win32util.Rect | None:
+    def place(self, size: tuple[int, int] | None = None) -> win32util.Rect | None:
         hwnd = self.hwnd
-        rect = self.target_rect()
+        rect = self.target_rect(size)
         if hwnd is None or rect is None:
             return None
         win32util.set_window_pos(hwnd, rect, topmost=True, activate=False)
@@ -277,6 +329,131 @@ class Popup:
                 _log.debug("rounded corners unavailable: %s", type(exc).__name__)
                 self._corners_done = True
         return rect
+
+    # --- resizing ----------------------------------------------------------------------
+
+    def begin_resize(self, edge: str, grab_x: int, grab_y: int, *, follow: bool) -> bool:
+        """Start resizing from ``edge`` (a :data:`RESIZE_EDGES` key). Returns whether it
+        started (not before the window exists, nor off Windows).
+
+        ``grab_x``/``grab_y`` are where the pointer went down, in physical px from the
+        window's top-left (the page's ``clientX``/``clientY`` times ``devicePixelRatio``;
+        the popup has no frame, so its page starts at the window's corner). With
+        ``follow`` (a mouse) a thread follows the cursor until the primary button is up;
+        otherwise the page reports the moves to :meth:`drag_resize`.
+        """
+        moves = RESIZE_EDGES.get(edge)
+        hwnd = self.hwnd
+        if moves is None or hwnd is None or not win32util.IS_WINDOWS:
+            return False
+        start = win32util.window_rect(hwnd)
+        scale = win32util.dpi_for_window(hwnd) / 96.0
+        bounds = win32util.monitor_info_at((start.right - 1, start.bottom - 1))[1]
+        session = _Resize(
+            moves=moves,
+            start=start,
+            press=(start.left + int(grab_x), start.top + int(grab_y)),
+            min_size=(round(MIN_SIZE[0] * scale), round(MIN_SIZE[1] * scale)),
+            bounds=bounds,
+            follow=bool(follow),
+            threshold=max(1, round(RESIZE_THRESHOLD * scale)),
+        )
+        with self._lock:
+            previous, self._resize = self._resize, session
+        if previous is not None:
+            previous.stop.set()
+        if session.follow:
+            session.thread = threading.Thread(
+                target=self._follow_cursor, args=(session,), name="chatforge-resize", daemon=True
+            )
+            session.thread.start()
+        return True
+
+    def drag_resize(self, dx: int, dy: int) -> bool:
+        """A pen or touch resize moved ``dx``/``dy`` physical px from where it started."""
+        with self._lock:
+            session = self._resize
+        if session is None or session.follow or session.stop.is_set():
+            return False
+        self._resize_to(session, (session.press[0] + int(dx), session.press[1] + int(dy)))
+        return True
+
+    def end_resize(self) -> tuple[int, int] | None:
+        """Finish the resize in progress. Returns the popup's new size in logical px, or
+        ``None`` when nothing changed size (a click on a handle, or no resize running)."""
+        with self._lock:
+            session, self._resize = self._resize, None
+        if session is None:
+            return None
+        session.stop.set()
+        thread = session.thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(RESIZE_JOIN_S)
+        hwnd = self.hwnd
+        if session.last is None or hwnd is None:
+            return None
+        rect = win32util.window_rect(hwnd)
+        scale = win32util.dpi_for_window(hwnd) / 96.0
+        return round(rect.width / scale), round(rect.height / scale)
+
+    def reset_size(self, width: int, height: int) -> bool:
+        """Back to ``width`` x ``height`` (logical px) in the corner, now if the popup is
+        up; a hidden one opens at the configured size anyway. Returns whether it moved."""
+        with self._lock:
+            self._cancel_resize()
+        if not self.visible:
+            return False
+        try:
+            return self.place((int(width), int(height))) is not None
+        except Exception as exc:  # noqa: BLE001 - a size reset must never break Clear chat
+            _log.warning("popup size reset failed: %s", type(exc).__name__)
+            return False
+
+    def _cancel_resize(self) -> None:
+        # A plain read and store: _note_hidden calls this on the GUI thread without the lock
+        # (other callers hold it).
+        session, self._resize = self._resize, None
+        if session is not None:
+            session.stop.set()
+
+    def _follow_cursor(self, session: _Resize) -> None:
+        """The thread of a mouse resize: the dragged edges go where the cursor goes, until
+        the primary button is up (one last move to where it was released), the resize is
+        ended or replaced, or :data:`RESIZE_MAX_S` is up."""
+        deadline = time.monotonic() + RESIZE_MAX_S
+        last_point: tuple[int, int] | None = None
+        try:
+            while not session.stop.is_set() and time.monotonic() < deadline:
+                down = win32util.primary_button_down()
+                point = win32util.cursor_pos()
+                if point != last_point:
+                    last_point = point
+                    self._resize_to(session, point)
+                if not down:
+                    break
+                time.sleep(RESIZE_POLL_S)
+        except Exception:  # noqa: BLE001 - a daemon thread has nobody to raise to
+            _log.exception("popup resize failed")
+
+    def _resize_to(self, session: _Resize, point: tuple[int, int]) -> None:
+        if not session.dragging:
+            moved = max(
+                abs(point[0] - session.press[0]) if session.moves[0] else 0,
+                abs(point[1] - session.press[1]) if session.moves[1] else 0,
+            )
+            if moved < session.threshold:
+                return
+            session.dragging = True
+        rect = win32util.resize_from(
+            session.start, session.moves, session.press, point, session.min_size, session.bounds
+        )
+        if rect == (session.last or session.start):
+            return
+        hwnd = self.hwnd
+        if hwnd is None:
+            return
+        win32util.set_window_pos(hwnd, rect, activate=False, keep_zorder=True)
+        session.last = rect
 
     # --- show / hide / toggle ------------------------------------------------------------
 
@@ -373,6 +550,7 @@ class Popup:
         self._shown_inactive = False
         self._last_hide_at = self._clock()
         self._last_hide_reason = reason
+        self._cancel_resize()
 
     def hide(self, reason: str = "app") -> None:
         """Hide. ``reason`` is ``blur``/``escape``/``close`` from the page, ``tray``, ``app``.

@@ -19,6 +19,7 @@ import { el, railIcon, RAIL_ICONS } from './util.js?v=13';
 import { renderMarkdown, enhanceContent, installMarkdownHandlers } from './markdown.js';
 import { t } from './i18n.js?v=3';
 import { createKeyCard } from './keycard.js';
+import { wireResize, cancelResize } from './resize.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -1354,6 +1355,7 @@ on('settings.changed', (e) => {
 });
 
 on('popup.shown', () => {
+  cancelResize();   // a drag whose release came while the popup was away
   refreshProviders();
   $('input').focus();
   if (isNearBottom(400)) scrollToBottom(true);
@@ -1788,6 +1790,7 @@ function wire() {
   $('stop').addEventListener('click', stopGeneration);
   wireAttachments();
   wireQuickActions();
+  wireResize();
   $('btn-new').addEventListener('click', newChat);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-close').addEventListener('click', () => api.call('hide_popup'));

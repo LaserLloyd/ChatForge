@@ -1,4 +1,5 @@
-"""Win32 helpers for the popup: work area, DPI, placement, rounded corners, foreground.
+"""Win32 helpers for the popup: work area, DPI, placement, resizing, rounded corners,
+foreground.
 
 Everything that talks to ``user32``/``dwmapi`` is import-guarded so the pure parts
 (:func:`place`) are testable on any OS. Coordinates from the OS are physical pixels;
@@ -49,6 +50,10 @@ DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 
 ASFW_ANY = -1
 SPI_GETWORKAREA = 0x0030
+
+VK_LBUTTON = 0x01
+VK_RBUTTON = 0x02
+SM_SWAPBUTTON = 23
 
 
 # --- pure geometry ----------------------------------------------------------------
@@ -117,6 +122,31 @@ def place(
     return Rect(left, top, left + w, top + h)
 
 
+def resize_from(
+    start: Rect,
+    moves: tuple[bool, bool],
+    press: tuple[int, int],
+    point: tuple[int, int],
+    min_size: tuple[int, int],
+    bounds: Rect,
+) -> Rect:
+    """``start`` resized by dragging its left and/or top edge from ``press`` to ``point``.
+
+    Pure, physical pixels. ``moves`` is ``(left, top)``: which edges follow the pointer. The
+    bottom-right corner stays put; the window never gets smaller than ``min_size`` and
+    never grows past the left or top of ``bounds`` (the work area), unless it already
+    reached past it before the drag.
+    """
+    left, top = start.left, start.top
+    if moves[0]:
+        left = start.left + point[0] - press[0]
+        left = max(min(bounds.left, start.left), min(left, start.right - min_size[0]))
+    if moves[1]:
+        top = start.top + point[1] - press[1]
+        top = max(min(bounds.top, start.top), min(top, start.bottom - min_size[1]))
+    return Rect(left, top, start.right, start.bottom)
+
+
 # --- Win32 bindings -----------------------------------------------------------------
 
 
@@ -170,6 +200,19 @@ def cursor_pos() -> tuple[int, int]:
     return int(pt.x), int(pt.y)
 
 
+def primary_button_down() -> bool:
+    """Whether the primary mouse button is held right now.
+
+    ``GetAsyncKeyState`` reads the physical buttons, so with the buttons swapped in the
+    mouse settings the primary one is the physical right button.
+    """
+    user32 = _user32()
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    vk = VK_RBUTTON if user32.GetSystemMetrics(SM_SWAPBUTTON) else VK_LBUTTON
+    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+
 def _rect_of(rc: wintypes.RECT) -> Rect:
     return Rect(int(rc.left), int(rc.top), int(rc.right), int(rc.bottom))
 
@@ -219,9 +262,19 @@ def window_rect(hwnd: int) -> Rect:
     return _rect_of(rc)
 
 
-def set_window_pos(hwnd: int, rect: Rect, *, topmost: bool = True, activate: bool = False) -> bool:
-    """Move and size a window in physical pixels without showing it."""
+def set_window_pos(
+    hwnd: int,
+    rect: Rect,
+    *,
+    topmost: bool = True,
+    activate: bool = False,
+    keep_zorder: bool = False,
+) -> bool:
+    """Move and size a window in physical pixels without showing it. ``keep_zorder``
+    leaves its place in the z-order alone (``topmost`` is ignored then)."""
     flags = 0 if activate else SWP_NOACTIVATE
+    if keep_zorder:
+        flags |= SWP_NOZORDER
     insert_after = HWND_TOPMOST if topmost else HWND_NOTOPMOST
     user32 = _user32()
     user32.SetWindowPos.argtypes = [

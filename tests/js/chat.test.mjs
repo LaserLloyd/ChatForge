@@ -117,6 +117,10 @@ win.pywebview = {
     list_providers: async () => ok({ providers: clone(PROVIDERS) }),
     select_model: async (provider, model) => ok({ selected: { provider, model } }),
     hide_popup: async () => { calls.push(['hide_popup']); return ok(); },
+    start_resize: async (...args) => { calls.push(['start_resize', ...args]); return ok({ resizing: true }); },
+    drag_resize: async (...args) => { calls.push(['drag_resize', ...args]); return ok({ resizing: true }); },
+    end_resize: async () => { calls.push(['end_resize']); return ok({ width: 500, height: 700 }); },
+    reset_popup_size: async () => { calls.push(['reset_popup_size']); return ok({ width: 420, height: 620 }); },
     open_settings: async () => ok(),
     open_external: async () => ok(),
     set_pinned: async (flag) => ok({ pinned: !!flag }),
@@ -1238,4 +1242,96 @@ test('the pill comes out with its × or Backspace in an empty box, and goes when
   assert.equal(pill(), null, 'a removed action leaves the composer');
   emit({ type: 'settings.changed', config: { quick_actions: clone(QUICK) } });
   await settle();
+});
+
+// ---------------------------------------------------------------- resizing ----
+
+const RESIZE_CALLS = new Set(['start_resize', 'drag_resize', 'end_resize', 'reset_popup_size']);
+const resizeCalls = () => calls.filter((c) => RESIZE_CALLS.has(c[0]));
+/** A pointer event as WebView2 sends it (jsdom: devicePixelRatio 1). */
+function pointer(type, target, init) {
+  target.dispatchEvent(new win.PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, ...init,
+  }));
+}
+
+test('the grip with a mouse: the page starts and ends the resize, the app follows the cursor', async () => {
+  await fresh();
+  const grip = $('resize-grip');
+  pointer('pointerdown', grip, { pointerType: 'mouse', clientX: 5, clientY: 6, screenX: 1493, screenY: 414 });
+  assert.equal(win.document.documentElement.dataset.resizing, 'top-left');
+  pointer('pointermove', win, { pointerType: 'mouse', clientX: 40, clientY: 50, screenX: 1300, screenY: 200 });
+  pointer('pointerup', win, { pointerType: 'mouse', clientX: 5, clientY: 6, screenX: 1300, screenY: 200 });
+  await settle();
+  assert.deepEqual(resizeCalls(), [['start_resize', 'top-left', 5, 6, true], ['end_resize']]);
+  assert.equal(win.document.documentElement.dataset.resizing, undefined);
+});
+
+test('a finger on an edge sends its moves in order, only the latest while one is on its way', async () => {
+  await fresh();
+  const edge = win.document.querySelector('[data-resize="left"]');
+  pointer('pointerdown', edge, { pointerType: 'touch', clientX: 2, clientY: 300, screenX: 1490, screenY: 700 });
+  for (const x of [1480, 1470, 1460]) pointer('pointermove', win, { pointerType: 'touch', screenX: x, screenY: 690 });
+  pointer('pointerup', win, { pointerType: 'touch', screenX: 1460, screenY: 690 });
+  pointer('pointermove', win, { pointerType: 'touch', screenX: 1400, screenY: 690 });   // after the drag
+  await settle();
+  assert.deepEqual(resizeCalls(), [
+    ['start_resize', 'left', 2, 300, false],
+    ['drag_resize', -10, -10],
+    ['drag_resize', -30, -10],
+    ['end_resize'],
+  ]);
+});
+
+test('only a primary press starts a resize; a double-click on the grip restores the default size', async () => {
+  await fresh();
+  const grip = $('resize-grip');
+  pointer('pointerdown', grip, { pointerType: 'mouse', button: 2 });
+  pointer('pointerdown', win.document.querySelector('[data-resize="top"]'), { pointerType: 'mouse', isPrimary: false, pointerId: 2 });
+  await settle();
+  assert.deepEqual(resizeCalls(), []);
+  grip.dispatchEvent(new win.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  await settle();
+  assert.deepEqual(resizeCalls(), [['reset_popup_size']]);
+});
+
+test('a press after a release that never arrived ends the old resize first', async () => {
+  await fresh();
+  const top = win.document.querySelector('[data-resize="top"]');
+  pointer('pointerdown', top, { pointerType: 'mouse', clientX: 200, clientY: 3 });
+  pointer('pointerdown', $('resize-grip'), { pointerType: 'mouse', pointerId: 2, clientX: 4, clientY: 4 });
+  pointer('pointerup', win, { pointerType: 'mouse', pointerId: 2 });
+  await settle();
+  assert.deepEqual(resizeCalls(), [
+    ['start_resize', 'top', 200, 3, true], ['end_resize'],
+    ['start_resize', 'top-left', 4, 4, true], ['end_resize'],
+  ]);
+});
+
+test('a cancelled pointer or a lost capture ends the drag', async () => {
+  await fresh();
+  const grip = $('resize-grip');
+  pointer('pointerdown', grip, { pointerType: 'pen', clientX: 4, clientY: 4, screenX: 100, screenY: 100 });
+  pointer('pointercancel', win, { pointerType: 'pen' });
+  pointer('pointerdown', grip, { pointerType: 'mouse', pointerId: 2, clientX: 4, clientY: 4 });
+  grip.dispatchEvent(new win.PointerEvent('lostpointercapture', { pointerId: 2 }));
+  await settle();
+  assert.deepEqual(resizeCalls(), [
+    ['start_resize', 'top-left', 4, 4, false], ['end_resize'],
+    ['start_resize', 'top-left', 4, 4, true], ['end_resize'],
+  ]);
+  assert.equal(win.document.documentElement.dataset.resizing, undefined);
+});
+
+test('the popup coming back during a drag whose release was missed leaves the resizing state', async () => {
+  await fresh();
+  pointer('pointerdown', $('resize-grip'), { pointerType: 'mouse', clientX: 4, clientY: 4 });
+  assert.equal(win.document.documentElement.dataset.resizing, 'top-left');
+  emit({ type: 'popup.shown' });   // e.g. Escape mid-drag, the release landed elsewhere
+  await settle();
+  assert.equal(win.document.documentElement.dataset.resizing, undefined);
+  assert.deepEqual(resizeCalls(), [['start_resize', 'top-left', 4, 4, true], ['end_resize']]);
+  pointer('pointerup', win, { pointerType: 'mouse' });   // the late release changes nothing
+  await settle();
+  assert.equal(resizeCalls().length, 2);
 });

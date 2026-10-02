@@ -1351,7 +1351,13 @@ function makeApi() {
       return ok();
     },
 
-    async new_chat() { S.conversation = []; S.contextStartTs = null; persist(); return ok(); },
+    async new_chat() {
+      S.conversation = []; S.contextStartTs = null;
+      // Clear chat also puts the popup back at its default size (reset_popup_size).
+      S.config.ui = { ...S.config.ui, width: DEFAULT_CONFIG.ui.width, height: DEFAULT_CONFIG.ui.height };
+      persist();
+      return ok();
+    },
 
     async select_model(provider_id, model_id) {
       if (!S.config.providers[provider_id]) return fail('not_found', `Unknown provider ${provider_id}.`);
@@ -1376,6 +1382,16 @@ function makeApi() {
 
     async hide_popup() { log('DEBUG', 'hide_popup'); return ok(); },
     async set_pinned(flag) { S.pinned = !!flag; return ok({ pinned: S.pinned }); },
+    // A browser tab cannot resize itself: these keep the contract (desktop/popup.py
+    // begin_resize) and remember the size the app would save.
+    async start_resize(edge, grabX, grabY, follow) { log('DEBUG', `start_resize ${edge} ${grabX},${grabY} follow=${!!follow}`); return ok({ resizing: false }); },
+    async drag_resize(dx, dy) { return ok({ resizing: false }); },
+    async end_resize() { return ok({ width: S.config.ui.width, height: S.config.ui.height }); },
+    async reset_popup_size() {
+      S.config.ui = { ...S.config.ui, width: DEFAULT_CONFIG.ui.width, height: DEFAULT_CONFIG.ui.height };
+      persist();
+      return ok({ width: S.config.ui.width, height: S.config.ui.height });
+    },
     async open_settings() {
       try { window.open('settings.html', 'chatforge-settings', 'width=900,height=700'); } catch { /* popup blocked */ }
       return ok();

@@ -81,6 +81,26 @@ class FakePopup:
         self.hidden = 0
         self.pinned = False
         self.settings_noted = 0
+        self.resizes: list[tuple] = []
+        #: What end_resize answers: the new logical size, or None (nothing changed).
+        self.end_size: tuple[int, int] | None = None
+        self.reset_to: list[tuple[int, int]] = []
+
+    def begin_resize(self, edge: str, grab_x: int, grab_y: int, *, follow: bool) -> bool:
+        self.resizes.append(("begin", edge, grab_x, grab_y, follow))
+        return True
+
+    def drag_resize(self, dx: int, dy: int) -> bool:
+        self.resizes.append(("drag", dx, dy))
+        return True
+
+    def end_resize(self) -> tuple[int, int] | None:
+        self.resizes.append(("end",))
+        return self.end_size
+
+    def reset_size(self, width: int, height: int) -> bool:
+        self.reset_to.append((width, height))
+        return True
 
     def hide_from_js(self) -> None:
         self.hidden += 1
@@ -130,6 +150,10 @@ def test_methods_keep_real_signatures_for_pywebview() -> None:
     assert params["test_provider"] == ["provider_id", "key_or_null", "model_or_null"]
     assert params["search_models"] == ["query", "author_or_null"]
     assert params["get_logs"] == ["n", "level"]
+    assert params["start_resize"] == ["edge", "grab_x", "grab_y", "follow"]
+    assert params["drag_resize"] == ["dx", "dy"]
+    assert params["end_resize"] == []
+    assert params["reset_popup_size"] == []
     for name, names in params.items():
         assert "args" not in names and "kwargs" not in names, name
 
@@ -629,6 +653,87 @@ def test_window_ops(api: Api, services: Services) -> None:
     assert popup.pinned is True
     assert api.open_settings()["ok"] is False  # no settings window wired
     assert popup.settings_noted == 1
+
+
+def test_resize_calls_reach_the_popup(api: Api, services: Services) -> None:
+    popup = FakePopup()
+    services.popup = popup
+    assert api.start_resize("top-left", 4.4, 5.6, True) == {"ok": True, "resizing": True}
+    assert api.drag_resize(-20.2, 7.5) == {"ok": True, "resizing": True}
+    assert popup.resizes == [("begin", "top-left", 4, 6, True), ("drag", -20, 8)]
+    for bad in ("bottom", "", None, ["top"]):
+        assert api.start_resize(bad, 0, 0, True)["error"]["code"] == "bad_request"
+    assert len(popup.resizes) == 2
+
+
+def test_resize_without_a_popup_is_harmless(api: Api) -> None:
+    assert api.start_resize("top", 1, 1, False) == {"ok": True, "resizing": False}
+    assert api.drag_resize(1, 1) == {"ok": True, "resizing": False}
+    assert api.end_resize() == {"ok": True, "width": 420, "height": 620}
+
+
+def test_the_size_a_resize_ends_at_is_kept(api: Api, services: Services) -> None:
+    popup = FakePopup()
+    services.popup = popup
+    popup.end_size = (612, 805)
+    services.events.drain()
+    assert api.end_resize() == {"ok": True, "width": 612, "height": 805}
+    assert (services.config.ui.width, services.config.ui.height) == (612, 805)
+    # Like every saved setting, the pages hear about it.
+    changed = services.events.drain()
+    assert [e["type"] for e in changed] == ["settings.changed"]
+    assert changed[0]["config"]["ui"]["width"] == 612
+    on_disk = load_config(services.paths).ui
+    assert (on_disk.width, on_disk.height) == (612, 805)
+    # Kept within what the popup and the config allow.
+    popup.end_size = (100, 9000)
+    assert api.end_resize() == {"ok": True, "width": 320, "height": 4000}
+
+
+def test_a_resize_that_changed_nothing_writes_nothing(
+    api: Api, services: Services, monkeypatch
+) -> None:
+    popup = FakePopup()
+    services.popup = popup
+    writes: list[dict] = []
+    monkeypatch.setattr(api, "_apply_patch", lambda patch: writes.append(patch))
+    assert api.end_resize() == {"ok": True, "width": 420, "height": 620}  # a click
+    popup.end_size = (420, 620)  # dragged back to where it was
+    services.events.drain()
+    assert api.end_resize()["ok"] is True
+    assert writes == []
+    assert services.events.drain() == []
+
+
+@pytest.mark.parametrize("call", ["new_chat", "reset_popup_size"])
+def test_clear_chat_and_reset_bring_back_the_default_size(
+    api: Api, services: Services, call: str
+) -> None:
+    popup = FakePopup()
+    services.popup = popup
+    popup.end_size = (700, 900)
+    api.end_resize()
+    reply = getattr(api, call)()
+    assert reply["ok"] is True
+    if call == "reset_popup_size":
+        assert reply == {"ok": True, "width": 420, "height": 620}
+    assert (services.config.ui.width, services.config.ui.height) == (420, 620)
+    on_disk = load_config(services.paths).ui
+    assert (on_disk.width, on_disk.height) == (420, 620)
+    assert popup.reset_to == [(420, 620)]
+
+
+def test_clear_chat_still_clears_when_the_size_reset_fails(
+    api: Api, services: Services, monkeypatch
+) -> None:
+    popup = FakePopup()
+    services.popup = popup
+
+    def broken(_width: int, _height: int) -> bool:
+        raise OSError("no window")
+
+    monkeypatch.setattr(popup, "reset_size", broken)
+    assert api.new_chat() == {"ok": True}
 
 
 def test_open_external_only_http(api: Api, monkeypatch) -> None:

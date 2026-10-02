@@ -1,4 +1,4 @@
-/* ChatForge popup (420 x 620).
+/* ChatForge popup (420 x 620 until resized from its top-left).
  *
  * Adapted from DisPatch_Chat frontend/static/app.css (MIT, LaserLloyd): .msg, .bubble,
  * .stream-cursor, .typing, code-block chrome, tables, callouts, footnotes, scroll badge and
@@ -105,6 +105,28 @@ button:disabled { cursor: not-allowed; }
 .mm-vision .rail-icon { width: 13px; height: 13px; }
 .mm-action { padding-left: 32px; }
 .mm-sep { height: 1px; margin: 4px 6px; background: var(--divider); }
+
+/* ---------------------------------------------------------- resize handles ---- */
+/* The popup sits in the lower-right corner, so it resizes from its top-left (resize.js): the
+ * grip in that corner, and thin strips along the top and left edges. Fixed to the viewport so
+ * they cover the window's outermost pixels too, where .app draws its border. */
+.resize-grip, .resize-edge { position: fixed; z-index: var(--z-sticky); touch-action: none; }
+.resize-grip {
+  top: 0; left: 0; width: 20px; height: 20px; cursor: nwse-resize; color: var(--text-tertiary);
+  /* Only the corner triangle takes the pointer, so the model chip's edge stays clickable. */
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+.resize-grip svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+.resize-grip:hover, html[data-resizing] .resize-grip { color: var(--accent); }
+.resize-top { top: 0; left: 20px; right: 0; height: 6px; cursor: ns-resize; }
+.resize-left { top: 20px; left: 0; bottom: 0; width: 6px; cursor: ew-resize; }
+/* While a handle is dragged the pointer can run ahead of the window: keep its cursor
+ * everywhere, and select no text on the way. */
+html[data-resizing], html[data-resizing] * { user-select: none !important; }
+html[data-resizing="top-left"], html[data-resizing="top-left"] * { cursor: nwse-resize !important; }
+html[data-resizing="top"], html[data-resizing="top"] * { cursor: ns-resize !important; }
+html[data-resizing="left"], html[data-resizing="left"] * { cursor: ew-resize !important; }
 
 /* ------------------------------------------------------------- status line ---- */
 .status-line {
