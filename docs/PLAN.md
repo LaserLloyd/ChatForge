@@ -1,3 +1,5 @@
+> **Historical document.** This is the original build plan for ChatForge, kept for reference. It was written before the app existed, so some of its decisions (for example the `python_off` OVMS build, Qwen3-4B as the default model, a private repository) were changed along the way. [`README.md`](../README.md) and [`SETUP.md`](SETUP.md) describe the current state.
+
 # ChatForge implementation plan
 
 ## 0. Decisions
@@ -10,7 +12,7 @@
 | One client for all providers | `OpenAICompatClient` (raw httpx SSE, adapted from CrucibleForge). Local is simply `http://127.0.0.1:<port>/v3`. |
 | Default model | `OpenVINO/Qwen3-4B-int4-ov` on NPU, `enable_thinking=false`. Fallback `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov`. |
 | Default cloud | MiniMax, International region, `MiniMax-M3`. |
-| Theme | UnifyingTheme `ui-theme/` copied verbatim. Default `laserlloyd`, with `data-families="true"` for the Light partner. DisPatch `theme.css` and `clawchat-compat.css` are **not** used (measured: 9 of 55 tokens covered). The chat CSS is ported with its tokens rewritten to contract names. |
+| Theme | ThemeForge (then called UnifyingTheme) `ui-theme/` copied verbatim; it is updated with `python src/chatforge/web/static/ui-theme/update.py`. Default `laserlloyd`, with `data-families="true"` for the Light partner. DisPatch `theme.css` and `clawchat-compat.css` are **not** used (measured: 9 of 55 tokens covered). The chat CSS is ported with its tokens rewritten to contract names. |
 | Keys | keyring, service `ChatForge`, username = provider id. The env var (`api_key_env`) wins. Keys are never written to config, logs or JS. |
 | Config | `%LOCALAPPDATA%\ChatForge\config.toml` (pydantic-settings TOML source, written with tomli-w atomically). The home folder can be overridden with `CHATFORGE_HOME`. |
 | Autostart | Startup-folder `ChatForge.vbs` (UTF-16 LE BOM) runs `pythonw -m chatforge --hidden`. On by default. No admin. |
@@ -84,7 +86,7 @@ src/chatforge/
   desktop/  __init__.py core_loop.py bridge.py events.py popup.py settings_window.py tray.py icon.py
             hotkey.py win32util.py webserver.py
   web/      index.html  settings.html
-    static/ ui-theme/ (verbatim UnifyingTheme/ui-theme, VERSION 6c17ce081f8b)
+    static/ ui-theme/ (verbatim ThemeForge bundle, then UnifyingTheme VERSION 6c17ce081f8b; now ThemeForge 1.0.0)
             vendor/   marked.min.js purify.min.js highlight.min.js github-dark.min.css README.md (verbatim)
             js/       markdown.js util.js (verbatim DisPatch)  i18n.js (shim)  bridge.js dev-mock.js
                       chat.js keycard.js settings.js
@@ -548,7 +550,7 @@ Search results that are not in the catalog get the badge "untested" and, if the 
 | `--code-inline` | `--code-bg` |
 | `--md-quote` | `--quote-bar` |
 
-Must pass `python tools/lint_colors.py src/chatforge/web/static/css` from UnifyingTheme. Only contract tokens, no raw colours. Text is quieted by tier, never by opacity.
+Must pass `python tools/lint_colors.py src/chatforge/web/static/css` from the theme repo (then UnifyingTheme, now ThemeForge). Only contract tokens, no raw colours. Text is quieted by tier, never by opacity.
 
 **ui-theme tag:**
 
@@ -827,7 +829,7 @@ Merge order: WS0 → WS2 → WS1-B → WS3 → WS5 → WS4 → WS6 → WS8a → 
 | **Idle-unload race with an in-flight request** | A single manager lock plus the `in_flight` counter. The reaper re-checks under the lock. `lease()` increments before use, and requests arriving mid-unload wait and reload. The `finally` decrement follows the SF `_forward` discipline. |
 | **Download resume** | SF `.part` + Range with the 206 check, restart on a 200, 416 recovery, sha256 against the LFS oid, an exclusive `.part` lock, `downloads.json`, and a manual Resume button. |
 | **Disk usage** | Model 2.29 GB + compile cache (estimate 1–3 GB; WS1 measures) + OVMS (~112 MiB zip, extracted size recorded by WS1) + venv (~100–150 MB estimate). Settings shows each figure, with Delete model and Clear cache. Downloads need free space ≥ total + 2 GB. C: has 415 GB free now. |
-| **Licences of copied vendor files** | `vendor/README.md` copied verbatim (MIT, BSD-3, Apache-2.0/MPL-2.0). `THIRD_PARTY_NOTICES.md` lists the vendor files, DisPatch/StudioForge/CrucibleForge (owner, MIT), UnifyingTheme `ui-theme/` (owner, private: **re-check before any public release**), OVMS (Apache-2.0, downloaded at runtime, not redistributed), Qwen (Apache-2.0, downloaded). |
+| **Licences of copied vendor files** | `vendor/README.md` copied verbatim (MIT, BSD-3, Apache-2.0/MPL-2.0). `THIRD_PARTY_NOTICES.md` lists the vendor files, DisPatch/StudioForge/CrucibleForge (owner, MIT), ThemeForge `ui-theme/` (owner; it was the private UnifyingTheme when this was written, and is now the public MIT repo ThemeForge), OVMS (Apache-2.0, downloaded at runtime, not redistributed), Qwen (Apache-2.0, downloaded). |
 | **Console flash, firewall prompt** | `CREATE_NO_WINDOW` on the OVMS spawn. `--rest_bind_address 127.0.0.1`. |
 | **Orphaned `ovms.exe`** | Job object with kill-on-close, the atexit net, kill_process_tree, and doctor reports strays. |
 | **python_off lacks template or tool support** | WS1 phase A decides. `ovms_variant = python_on` is the fallback (139 MB). |
@@ -958,7 +960,7 @@ Only if VC++ is ever missing: `winget install --id Microsoft.VCRedist.2015+.x64 
 - %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\core\downloader.py (lines 197–633 part file, retry and progress; 1288–1590 transfer and finish)
 - %USERPROFILE%\Desktop\Projects\_reference\DisPatch_Chat\frontend\static\js\markdown.js, plus js\main.js (lines 1281–1960 and 4760–4870) and js\llm.js (lines 275–395)
 - https://raw.githubusercontent.com/LaserLloyd/CrucibleForge/main/crucibleforge/api.py (`split_thinking`, `_merge_tool_call_deltas`, `stream_chat`) and %USERPROFILE%\Desktop\Projects\_reference\DisPatch_Chat\backend\app\llm_api.py (lines 226–488 and 857–913)
-- %USERPROFILE%\Desktop\Projects\_reference\UnifyingTheme\ui-theme\ (verbatim bundle), %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\tray\tray_app.py, and %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\core\autostart.py
+- the ThemeForge `ui-theme/` bundle (verbatim; https://github.com/LaserLloyd/ThemeForge), %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\tray\tray_app.py, and %USERPROFILE%\Desktop\Projects\StudioForge\src\studioforge\core\autostart.py
 
 ---
 
@@ -983,7 +985,7 @@ Verdict: APPROVE WITH REQUIRED CHANGES. All required changes below are adopted. 
    - Unit-test a traversal repo id.
 8. **Token and path corrections.**
    - DisPatch `app.css` uses 55 tokens, 17 of which ui-theme defines by name. The token-map port still stands.
-   - The colour linter is `UnifyingTheme\V26-09-16\tools\lint_colors.py`.
+   - The colour linter is `tools\lint_colors.py` in the theme repo (then UnifyingTheme, now ThemeForge).
    - DisPatch `locales/en.json` nests strings under `"msg": {...}` (line 133), so the i18n shim flattens `msg.<key>` lookups.
 
 ### Recommended changes (adopted)
@@ -1012,7 +1014,7 @@ Verdict: APPROVE WITH REQUIRED CHANGES. All required changes below are adopted. 
 2. **NPU model gate:** Qwen3-4B-int4-ov is gs128, while OVMS docs ask for channel-wise (`--group-size -1`) on NPU. WS1 tries it first. If the compile fails or tool calls are garbage, WS1 falls back automatically: to an NPU-optimised `-cw-` variant of a ≤4B model if one exists in the OpenVINO org, else to `Qwen2.5-1.5B-Instruct-int4-ov`. It reports what happened and updates `catalog.toml`'s recommended flag.
 3. Scope cuts as listed above.
 4. **Model assignments:** WS7 and WS9 run on **fable**, WS4 on **opus**. The rest are as planned.
-5. **Repo:** private `LaserLloyd/ChatForge`, as the owner requested. It stays private until the UnifyingTheme licence is reviewed.
+5. **Repo:** private `LaserLloyd/ChatForge`, as the owner requested. It was to stay private until the theme's licence was reviewed; the theme is now the public MIT repo ThemeForge and ChatForge is public.
 
 ### Execution rules for all agents
 - All agents share one working tree, `%USERPROFILE%\Desktop\Projects\ChatForge`. **Edit only the files your workstream owns.** Do not run repo-wide `ruff format` or `ruff check --fix`. Run them on your own files only.

@@ -24,13 +24,21 @@ const POLL_MS = 250;
 
 function dispatch(evt) {
   if (!evt || typeof evt.type !== 'string') return;
-  for (const key of [evt.type, '*']) {
-    const set = handlers.get(key);
-    if (!set) continue;
-    for (const fn of [...set]) {
-      try { fn(evt); } catch (e) { console.error('[bridge] handler for', evt.type, 'failed:', e); }
-    }
-  }
+  run(handlers.get(evt.type), evt);
+  run(handlers.get('*'), evt);
+}
+
+// Snapshot first, so a handler that adds or removes handlers does not change who runs in
+// this dispatch. chat.delta fires once per streamed token: no key array per event, and a
+// single handler (the usual case) is called without copying the set.
+function run(set, evt) {
+  if (!set || set.size === 0) return;
+  if (set.size === 1) { call(set.values().next().value, evt); return; }
+  for (const fn of [...set]) call(fn, evt);
+}
+
+function call(fn, evt) {
+  try { fn(evt); } catch (e) { console.error('[bridge] handler for', evt.type, 'failed:', e); }
 }
 
 // Installed at module evaluation so events emitted before the first on() are not lost

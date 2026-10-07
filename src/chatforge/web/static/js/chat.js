@@ -364,11 +364,11 @@ function fileChip(f, { onRemove = null, blind = false } = {}) {
 function docCard(doc) {
   const name = String(doc.name || 'document');
   const meta = [fileExt(name) || null, doc.size != null ? fmtSize(doc.size) : null].filter(Boolean).join(' · ');
-  const open = el('button', { class: 'btn btn-sm doc-open', type: 'button', 'aria-label': `Open ${name}`, text: 'Open' });
-  const save = el('button', { class: 'btn btn-sm doc-save', type: 'button', 'aria-label': `Download ${name}` }, [
+  const open = el('button', { class: 'ui-btn ui-btn--sm doc-open', type: 'button', 'aria-label': `Open ${name}`, text: 'Open' });
+  const save = el('button', { class: 'ui-btn ui-btn--sm doc-save', type: 'button', 'aria-label': `Download ${name}` }, [
     railIcon(ICON.download), el('span', { text: 'Download' }),
   ]);
-  const reveal = el('button', { class: 'btn btn-sm doc-reveal', type: 'button', 'aria-label': `Show in folder: ${name}` }, [
+  const reveal = el('button', { class: 'ui-btn ui-btn--sm doc-reveal', type: 'button', 'aria-label': `Show in folder: ${name}` }, [
     railIcon(ICON.folder), el('span', { text: 'Show in folder' }),
   ]);
   open.addEventListener('click', () => documentAction('open_document', doc.path, open));
@@ -657,7 +657,7 @@ function errorRow(err) {
   ]);
   const actions = el('div', { class: 'err-actions' });
   const btn = (label, fn) => {
-    const b = el('button', { class: 'btn btn-sm', type: 'button', text: label });
+    const b = el('button', { class: 'ui-btn ui-btn--sm', type: 'button', text: label });
     b.addEventListener('click', fn);
     actions.append(b);
   };
@@ -1494,7 +1494,7 @@ function renderEmpty() {
     el('p', { class: 'empty-sub', text: p ? `Chatting with ${p.display_name}${S.selected.model ? ` · ${shortModel(S.selected.model)}` : ''}.` : 'Loading…' }),
   ];
   if (needsKey) {
-    const b = el('button', { class: 'btn btn-primary', type: 'button', text: `Add your ${p.display_name} key` });
+    const b = el('button', { class: 'ui-btn ui-btn--primary', type: 'button', text: `Add your ${p.display_name} key` });
     b.addEventListener('click', () => showKeyCard(p.id, ''));
     kids.push(b);
   } else {
@@ -1874,7 +1874,7 @@ function doSend() {
 
 function showNotConnected(title, message) {
   $('chip-label').textContent = 'Not connected';
-  const retryBtn = el('button', { class: 'btn btn-primary', type: 'button', text: 'Try again' });
+  const retryBtn = el('button', { class: 'ui-btn ui-btn--primary', type: 'button', text: 'Try again' });
   retryBtn.addEventListener('click', () => location.reload());
   messagesBox().replaceChildren(el('div', { class: 'empty-state' }, [
     el('h2', { class: 'empty-title', text: title }),

@@ -23,12 +23,12 @@ Each adapted function carries an "Adapted from" comment indicating the source.
 
 ## UI Theme
 
-- **UnifyingTheme** (private repository) - UI design system copied verbatim
+- **ThemeForge** 1.0.0 (https://github.com/LaserLloyd/ThemeForge, public repository) - UI design system copied verbatim
   - `src/chatforge/web/static/ui-theme/` contains the complete theme bundle, unedited (a
-    theme update replaces the folder); ChatForge's own settings are in
-    `src/chatforge/desktop/theme.py`
+    theme update, `python src/chatforge/web/static/ui-theme/update.py`, replaces the files it
+    owns); ChatForge's own settings are in `src/chatforge/desktop/theme.py`
   - It also colours highlighted code (no highlight.js theme is shipped)
-  - Licensed under the owner's private licence; review required before public release
+  - MIT License, owned by LaserLloyd
 
 ## Runtime Dependencies
 

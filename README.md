@@ -56,7 +56,7 @@ provider you chose and the public services its tools call.
 The design lifts working pieces from LaserLloyd's other projects: the process supervisor,
 downloader, tray, autostart and logging from **StudioForge**; the chat UI, Markdown pipeline, key
 card and the OpenAI and DeepSeek presets from **DisPatch_Chat**; the streaming client from
-**CrucibleForge**; and the `ui-theme` bundle from **UnifyingTheme**. Every adapted module says so
+**CrucibleForge**; and the `ui-theme` bundle from **ThemeForge**. Every adapted module says so
 at the top.
 
 ### Components
@@ -76,7 +76,7 @@ at the top.
 
 1. `Ctrl+Alt+C` (or a tray click) shows the popup. With the local model selected, opening the
    popup starts loading it: about 45 s the very first time (the NPU compile, with a countdown in
-   the header), about 3 s from the compile cache after that.
+   the status line under the header), about 3 s from the compile cache after that.
 2. The question goes to the provider and model on the header chip, with the text of any files
    you attached.
 3. The conversation is fitted to the model's context window. If it no longer fits, the oldest
@@ -139,6 +139,7 @@ at the top.
 | Know what happens when a chat gets long | [Long conversations](#long-conversations) |
 | Use StudioForge or a cloud model | [Providers](#providers) · [Context windows](#context-windows) |
 | Know what the model can look up | [Tools](#tools) |
+| Change the look | [Themes](#themes) |
 | Attach files or get a document back | [Files and documents](#files-and-documents) |
 | Change a setting | [Settings](#settings) |
 | Pick a local model | [Local models](#local-models) |
@@ -205,7 +206,7 @@ resize it (see [Usage](#usage)). Every answer says which model wrote it and how 
 
 | A weather question, answered on the NPU | A spreadsheet in, a Word report out |
 | --- | --- |
-| ![The chat popup in the dark LaserLloyd theme. The header chip reads "Local (NPU) · Qwen2.5-1.5B-Instruct-int4-ov" with a ready dot, beside the pin, Clear chat (a circular arrow), Settings and Close buttons, and a status line says "Unloads in 10 min". The user asks "Will it rain in Lisbon this weekend?"; a weather tool chip shows "Lisbon" and the result "Weather: Lisbon, Portugal"; the answer is a short paragraph and a Markdown table of Saturday and Sunday with sky, temperature and chance of rain, signed "Qwen2.5-1.5B-Instruct-int4-ov · 47.6 tok/s", with Copy and Regenerate buttons under it. The composer has a paperclip button for attaching files and the placeholder "Message ChatForge"](docs/images/chat-weather.png) | ![The popup with MiniMax-M3 selected. The user's message carries a file chip, "Q3 sales.xlsx, 47 KB · 12.8k chars", above the text "Summarise this sheet as a one-page Word report."; the reply has a create_document tool chip reading "Saved Q3 sales summary.docx", a short bulleted summary of revenue, best month and top product, and a document card for "Q3 sales summary.docx" (DOCX · 9 KB) with Open and Show in folder buttons, signed "MiniMax-M3 · 61.8 tok/s", with Copy and Regenerate buttons under it](docs/images/chat-files.png) |
+| ![The chat popup in the dark LaserLloyd theme. The header chip reads "Local (NPU) · Qwen2.5-1.5B-Instruct-int4-ov" with a ready dot, beside the header's icon buttons, and a status line says "Unloads in 10 min". The user asks "Will it rain in Lisbon this weekend?"; a weather tool chip shows "Lisbon" and the result "Weather: Lisbon, Portugal"; the answer is a short paragraph and a Markdown table of Saturday and Sunday with sky, temperature and chance of rain, signed "Qwen2.5-1.5B-Instruct-int4-ov · 47.6 tok/s", with Copy and Regenerate buttons under it. The composer has a paperclip button for attaching files and the placeholder "Message ChatForge"](docs/images/chat-weather.png) | ![The popup with MiniMax-M3 selected. The user's message carries a file chip, "Q3 sales.xlsx, 47 KB · 12.8k chars", above the text "Summarise this sheet as a one-page Word report."; the reply has a create_document tool chip reading "Saved Q3 sales summary.docx", a short bulleted summary of revenue, best month and top product, and a document card for "Q3 sales summary.docx" (DOCX · 9 KB) with Open and Show in folder buttons, signed "MiniMax-M3 · 61.8 tok/s", with Copy and Regenerate buttons under it](docs/images/chat-files.png) |
 
 The model menu starts with the models you used last, then lists only the providers that are set up:
 
@@ -219,6 +220,8 @@ Settings has four tabs: **Models**, **Providers**, **General** and **Logs**.
 | --- | --- |
 | ![Settings, Providers tab, scrolled to the StudioForge card: base URL http://gpu-server:1234/v1, the model picker, a context window left on Auto with the note "Qwen3.8-27B-Q5_K_S reports 66k tokens (from Refresh models)" and a longest reply of 4096 tokens, an empty optional API key field with the status "No key (optional for this server)", and Save key, Test, Refresh models and Remove key buttons; the OpenAI card starts below it](docs/images/settings-providers.png) | ![Settings, General tab: idle unload minutes, max prompt length, the Ctrl+Alt+C hotkey, the LaserLloyd theme and show reasoning; the Personality box holding the default system prompt and the Instructions box holding two example instructions; start at login, hide the popup when it loses focus and show the popup when a reply finishes, all ticked; all nine tools ticked, Create documents among them, with a note that the small local model is offered five of them; home location "Lisbon, Portugal" with metric units; and "When the local model fails: answer with StudioForge"](docs/images/settings-general.png) |
 
+The popup screenshots were taken before **Clear chat** moved from the header to a labelled button at the
+bottom of the popup (in the composer's footer row), so they still show it in the header.
 The screenshots are of the real UI in Microsoft Edge (the engine behind WebView2), served from
 `src/chatforge/web` against its development mock (`static/js/dev-mock.js`) with example data:
 the conversation, the spreadsheet and its figures, the location and the server name are made up.
@@ -237,12 +240,14 @@ the conversation, the spreadsheet and its figures, the location and the server n
 login on or off. Starting a second copy just brings the running popup up.
 
 - **Popup.** `Ctrl+Alt+C` or a tray click. The header chip shows the provider and model with a
-  status dot (grey unloaded, amber loading or compiling, green ready, red error) and, while
-  loading, a countdown ("Compiling for NPU 0:12 / ~0:45" the first time, "Loading… ~3 s" after).
+  status dot (grey unloaded, amber loading or compiling, green ready, red error); while
+  loading, the status line under the header shows a countdown ("Compiling for NPU 0:12 / ~0:45"
+  the first time, "Loading… ~3 s" after). The header also holds the pin, Settings and Close.
   Enter sends, Shift+Enter adds a line, Stop cancels, and a counter appears near the
   4000-character limit on the typed text (`chat.max_prompt_chars`; attached files have their own
-  limit). The circular-arrow button (**Clear chat**, in the theme's contrast colour) starts
-  over with an empty conversation and puts the popup back at its default size. With the local
+  limit). The **Clear chat** button at the bottom of the popup, in the composer's footer row
+  beside that counter, starts over with an empty conversation and puts the popup back at its
+  default size. With the local
   model selected, opening the popup starts loading it in the background.
 - **Sticky.** The popup stays up while you work in other windows, until you close it (Escape or
   ×) or press the hotkey (or the Copilot key) again. The pin in the header shows it and turns
@@ -483,7 +488,7 @@ PNG, JPEG, GIF (its first frame), BMP, WebP, TIFF and AVIF are read; HEIC only w
 a picture, turns it upright, shrinks it to 1568 pixels on the long side and keeps a clean copy
 (JPEG, or PNG when it has transparency) **with no metadata**: the camera, GPS position and time
 are dropped. The copy is kept in `%LOCALAPPDATA%\ChatForge\attachments` (the conversation stores
-only its name and a small thumbnail) and deleted once no message needs it: after New chat, or when
+only its name and a small thumbnail) and deleted once no message needs it: after Clear chat, or when
 a long conversation is trimmed.
 
 - **Models that see pictures** get them as images: OpenAI's GPT-4o, GPT-4.1, GPT-5 and later and
@@ -544,7 +549,7 @@ Secrets are never written there.
 | --- | --- |
 | **Models** | Installed models (set active, load, unload, delete, clear compile cache), disk usage, the OVMS runtime card (install, re-check), Hugging Face search with badges (*Recommended*, *Supported*, *Untested*, *Avoid*), downloads with progress, cancel and resume |
 | **Providers** | Local: device (NPU, GPU, CPU) and `max_prompt_len` (reload required). Model lists: refresh all, refresh once a day. One card per provider: base URL (MiniMax: region), model, context window (with what the provider reported for the selected model), longest reply, API key with Save key, Test, Refresh models and Remove key. Add a custom OpenAI-compatible provider; custom ones can be removed |
-| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`; conflicts are reported), theme (LaserLloyd by default, LaserLloyd Light its light partner, and every core UnifyingTheme theme; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login, sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback |
+| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`; conflicts are reported), theme (LaserLloyd by default, LaserLloyd Light its light partner, and the six core ThemeForge themes; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login, sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback |
 | **Logs** | The last 500 redacted lines with a level filter, auto-refresh, Copy and Open folder |
 
 **Personality and instructions.** The *Personality* box is the system prompt: who the assistant
@@ -562,17 +567,44 @@ saved; empty means `Documents\ChatForge`).
 
 ### Themes
 
-The look comes from **UnifyingTheme**, the shared theme system of the LaserLloyd apps.
-`src/chatforge/web/static/ui-theme/` is its drop-in bundle, copied verbatim and never edited
-(a test checks it against the bundle's own `VERSION` digest). To update the themes, copy the
-new `ui-theme/` folder over it, or run `python tools/sync_theme.py install chatforge` in
-UnifyingTheme's package folder (add `--dest <this repo>` when the two are not side by side);
-`check chatforge` reports drift. Nothing else changes: ChatForge's own settings are
+The look comes from **ThemeForge**, the shared theme system of the LaserLloyd apps: a public MIT
+repo, [github.com/LaserLloyd/ThemeForge](https://github.com/LaserLloyd/ThemeForge).
+`src/chatforge/web/static/ui-theme/` is its drop-in bundle (ThemeForge 1.0.0), copied verbatim
+and never edited; both pages load its `ui-theme.js`, `ui-theme-base.css`, `ui-components.css`,
+`ui-components.js` and `ui-theme.css`. `tests/unit/test_theme.py` checks every file against the
+checksums in the bundle's own `files.json`. To update the themes, run
+
+```powershell
+python src/chatforge/web/static/ui-theme/update.py            # latest release
+python src/chatforge/web/static/ui-theme/update.py --check    # only report whether there is one
+python src/chatforge/web/static/ui-theme/update.py --ref vX.Y.Z  # pin a release
+```
+
+It replaces the files the bundle owns, verifies each one against the release's `files.json`
+and refuses a copy that was edited by hand. Nothing else changes: ChatForge's own settings are
 `THEME_SETTINGS` in `src/chatforge/desktop/theme.py` (the default theme, the opt-in themes it
 offers, the storage key), and the app's server writes them onto each page, listing every core
 theme in the bundle's `themes.json`. So a new core theme is in the picker on the next page
-load; an opt-in one (Night Red, Electric Yellow) appears once it is added to `opt_in` there.
-Code blocks are coloured by the theme as well, and the windows open in the theme's colour.
+load; an opt-in one appears once it is added to `opt_in` there. Code blocks are coloured by the
+theme as well, and the windows open in the theme's colour.
+
+The picker offers LaserLloyd (the default), LaserLloyd Light and the six core themes. Electric
+Yellow and Night Red are opt-in themes in the bundle that ChatForge does not offer by default.
+
+<p align="center"><img src="docs/images/themes/gallery.png" alt="A grid of ten theme cards, two per row. Each card is titled with the theme's name, has its one-line description and a few sample components in that theme's colours (tabs, a toggle, a button, tags, a code block, a table, form fields or an alert): Purple, Midnight Gold, Glacier, Forest, Paper, Daylight, Electric Yellow, LaserLloyd, LaserLloyd Light and Night Red" width="600"></p>
+
+| Theme | Kind | What it looks like |
+| --- | --- | --- |
+| [Purple](docs/images/themes/purple.png) | core, dark | Violet accent and soft lavender text on deep indigo. The base theme |
+| [Midnight Gold](docs/images/themes/midnight-gold.png) | core, OLED | Warm gold on true black, for OLED screens |
+| [Glacier](docs/images/themes/glacier.png) | core, OLED | Ice-blue text and signature on true black, with a deep teal accent. Calm |
+| [Forest](docs/images/themes/forest.png) | core, OLED | Pale sage and lichen with bark browns on true black. Earthy |
+| [Paper](docs/images/themes/paper.png) | core, light | Warm parchment with ink-brown text, a serif for prose and a red accent |
+| [Daylight](docs/images/themes/daylight.png) | core, light | Clean white with a blue accent |
+| [LaserLloyd](docs/images/themes/laserlloyd.png) | opt-in, dark | Laser blue on near-black graphite, from the author's site. Offered by ChatForge, and its default |
+| [LaserLloyd Light](docs/images/themes/laserlloyd-light.png) | opt-in, light | The light partner of LaserLloyd: laser blue on cool off-white. Offered by ChatForge |
+| [Electric Yellow](docs/images/themes/electric-yellow.png) | opt-in, dark | Acid yellow on graphite with tight radii and crisp strokes. Not offered by default |
+| [Night Red](docs/images/themes/night-red.png) | opt-in, OLED | Low-blue-light night theme: ember text on true black, no blue in any colour. Not offered by default |
 
 ## Local models
 
@@ -671,7 +703,7 @@ Everything the app writes lives outside the repo, in `%LOCALAPPDATA%\ChatForge` 
 | `logs\` | The app's log and `ovms.log` (the model server), rotated |
 | `webview\` | The WebView2 profile |
 | `ChatForge.vbs` | The script the start-at-login task runs |
-| `app-icon-v1.ico` | The window and taskbar icon, drawn on first start |
+| `app-icon-v2.ico` | The window and taskbar icon, drawn on first start |
 
 Documents the model saves go to `Documents\ChatForge`, outside this folder.
 
@@ -695,7 +727,7 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
 - The model fails to load after a driver update or a sleep/resume: Settings > Models > Clear
   cache, then Load. Setting a fallback provider keeps you answered meanwhile.
 - The local model stops using tools, loops or answers badly in a long chat: that is the small
-  1.5B model losing track of a long context. Press **Clear chat** (the circular arrow), or switch
+  1.5B model losing track of a long context. Press **Clear chat** (at the bottom of the popup), or switch
   to StudioForge or a cloud model for harder questions. To read a page, say "Fetch <url> and
   summarise it" rather than just "Summarise <url>".
 - A divider says older messages are past the context window: the chat has outgrown the model's
@@ -716,9 +748,9 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
   each step; MiniMax; the Copilot key; where everything lives; uninstall
 - [`docs/RUNTIME-NOTES.md`](docs/RUNTIME-NOTES.md) — the OVMS and NPU measurements behind the
   model choice and the defaults
-- [`docs/PLAN.md`](docs/PLAN.md) — the design: workstreams, the bridge and event contract, and
-  the file-by-file map of what was adapted from where
-- [`docs/research-brief.md`](docs/research-brief.md) — the background research
+- [`docs/PLAN.md`](docs/PLAN.md) — the original build plan, kept as history: workstreams, the
+  bridge and event contract, and the file-by-file map of what was adapted from where
+- [`docs/research-brief.md`](docs/research-brief.md) — the background research (historical)
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored libraries, adapted code, runtime
   downloads and data services
 
@@ -745,8 +777,7 @@ reads PDF attachments.
 Third-party components are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): the
 vendored marked (MIT), DOMPurify (Apache-2.0 or MPL-2.0) and highlight.js (BSD-3-Clause) in
 `src/chatforge/web/static/vendor/`; the code adapted from StudioForge, DisPatch_Chat and
-CrucibleForge (MIT, LaserLloyd); the private UnifyingTheme `ui-theme` bundle (the owner's private
-licence, to be reviewed before any public release); OpenVINO Model Server and the Qwen models,
-which are downloaded at run time under Apache-2.0 and not redistributed here; and the data
+CrucibleForge (MIT, LaserLloyd); the ThemeForge `ui-theme` bundle (MIT, LaserLloyd, a public
+repo); OpenVINO Model Server and the Qwen models, which are downloaded at run time under Apache-2.0 and not redistributed here; and the data
 services the tools call (Open-Meteo data is CC BY 4.0 and credited in every weather result,
 Wikipedia text CC BY-SA 4.0).

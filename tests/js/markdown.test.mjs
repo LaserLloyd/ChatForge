@@ -254,3 +254,50 @@ test('prose blocks (text, markdown, untagged) start wrapped; code and JSON do no
   const multi = mount(renderMarkdown(fence('text', lines), OPTS)).querySelector('.code-block-copy');
   assert.equal(multi.dataset.code, lines);
 });
+
+// ------------------------------------------------- streaming render caches ----
+
+test('repeat renders are stable, and the options are part of the cache key', () => {
+  const src = 'Look: ![pic](/media/a.png) and `~/notes/todo.md`';
+  const full = renderMarkdown(src, {});
+  assert.equal(renderMarkdown(src, {}), full);
+  assert.match(full, /<img/);
+  assert.doesNotMatch(renderMarkdown(src, { noMedia: true }), /<img/);
+  assert.doesNotMatch(renderMarkdown(src, { noLocal: true }), /data-file-path/);
+  assert.match(renderMarkdown(src, {}), /data-file-path/);
+  // Same text again after the others: still the first answer, not the last one stored.
+  assert.equal(renderMarkdown(src), full);
+});
+
+test('highlighting is not served stale when highlight.js arrives after a render', () => {
+  const code = 'def f(x):\n    return x + 1\n';
+  const before = renderMarkdown('```python\n' + code + '```', OPTS);
+  assert.doesNotMatch(before, /hljs-/);
+  win.eval(readFileSync(join(STATIC, 'vendor', 'highlight.min.js'), 'utf8'));
+  globalThis.hljs = win.hljs;
+  try {
+    const after = renderMarkdown('```python\n' + code + '```', OPTS);
+    assert.match(after, /hljs-/, 'the cached plain render was reused');
+    // A second pass (memoised highlight) is byte-identical to the first.
+    assert.equal(renderMarkdown('```python\n' + code + '```\n\nmore', OPTS).includes(after.slice(0, 200)), true);
+    // Streaming a block one chunk at a time ends on the same HTML as one render.
+    const whole = renderMarkdown('```js\nconst a = 1;\nconst b = 2;\n```', OPTS);
+    for (let n = 1; n < 30; n += 3) renderMarkdown('```js\nconst a = 1;\nconst b = 2;\n```'.slice(0, n), OPTS);
+    assert.equal(renderMarkdown('```js\nconst a = 1;\nconst b = 2;\n```', OPTS), whole);
+  } finally {
+    delete win.hljs;
+    delete globalThis.hljs;
+  }
+  assert.doesNotMatch(renderMarkdown('```python\n' + code + '```', OPTS), /hljs-/);
+});
+
+test('the fast paths agree with the full scrub on scaffolding, citations and placeholders', () => {
+  const U = String.fromCharCode;
+  assert.equal(renderMarkdown('before <system-reminder>secret</system-reminder> after', OPTS), '<p>before  after</p>\n');
+  assert.equal(renderMarkdown('a\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nhidden\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>\nb', OPTS),
+    renderMarkdown('a\nb', OPTS));
+  assert.equal(renderMarkdown(`x${U(0xe200)}cite${U(0xe202)}turn0${U(0xe201)}y`, OPTS), '<p>xy</p>\n');
+  // A forged placeholder in the source must not pull parked HTML in.
+  const forged = renderMarkdown(`a ${U(0xe300)}0${U(0xe301)} b`, OPTS);
+  assert.doesNotMatch(forged, /[]/);
+});

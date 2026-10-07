@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from structlog.testing import capture_logs
 
 from chatforge.errors import AppError
 from chatforge.tools import registry as reg
@@ -199,10 +200,17 @@ async def test_tool_exception_becomes_result(monkeypatch):
         raise RuntimeError("secret internals")
 
     monkeypatch.setattr(calculator, "run", boom)
-    r = await call(ToolRegistry(), "calculator", {"expression": "1"})
+    with capture_logs() as logs:
+        r = await call(ToolRegistry(), "calculator", {"expression": "1"})
     assert not r.ok
     assert "RuntimeError" in r.content
     assert "secret internals" not in r.content
+    # The crash is not swallowed silently: it reaches the log (with its traceback).
+    crashed = [e for e in logs if e["event"] == "tool_crashed"]
+    assert crashed
+    assert crashed[0]["tool"] == "calculator"
+    assert crashed[0]["error"] == "RuntimeError"
+    assert crashed[0]["exc_info"] is True
 
 
 async def test_content_clipped_to_max_chars():

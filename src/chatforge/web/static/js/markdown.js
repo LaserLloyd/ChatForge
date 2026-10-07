@@ -188,7 +188,10 @@ export function linkifyPlain(text) {
 // separator, U+E201 close) the models emit around a citation.
 const CITATION_LINE_RE = /[ \t]*cite(?:[^]*)?(?=\r?\n|$)/g;
 const CITATION_RE = /cite(?:[^]*)?/g;
+const CITATION_OPEN = '\ue200';
 function stripCitations(text) {
+  // Both patterns need the U+E200 opener: the common message has none, so skip two scans.
+  if (text.indexOf(CITATION_OPEN) === -1) return text;
   return text.replace(CITATION_LINE_RE, '').replace(CITATION_RE, '');
 }
 
@@ -209,10 +212,18 @@ const SCAFFOLD_TAG_RE = /<\s*\/?\s*(?:system-reminder|previous_response)\b[^>]*>
 function standaloneLine(token) {
   return new RegExp(`(?:^|\\r?\\n)[ \\t]*${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*(?=\\r?\\n|$)`, 'g');
 }
-function stripDelimitedBlock(text, begin, end) {
-  const closed = new RegExp(`${standaloneLine(begin).source}[\\s\\S]*?${standaloneLine(end).source}`, 'g');
-  const unmatched = new RegExp(`${standaloneLine(begin).source}[\\s\\S]*$`, 'g');
-  return text.replace(closed, '').replace(unmatched, '').replace(standaloneLine(end), '');
+// Compiled once: renderMarkdown runs per streamed chunk and used to build all of these
+// (five RegExp objects, each with an escaped source) on every call. The /g regexes are
+// only ever used through String.prototype.replace, which resets lastIndex, so sharing
+// them is safe.
+const RC_CLOSED_RE = new RegExp(
+  `${standaloneLine(RC_BEGIN).source}[\\s\\S]*?${standaloneLine(RC_END).source}`, 'g');
+const RC_UNMATCHED_RE = new RegExp(`${standaloneLine(RC_BEGIN).source}[\\s\\S]*$`, 'g');
+const RC_END_LINE_RE = standaloneLine(RC_END);
+function stripDelimitedBlock(text) {
+  // Every pattern above needs one of the two literal tokens.
+  if (text.indexOf(RC_BEGIN) === -1 && text.indexOf(RC_END) === -1) return text;
+  return text.replace(RC_CLOSED_RE, '').replace(RC_UNMATCHED_RE, '').replace(RC_END_LINE_RE, '');
 }
 function stripLegacyInternalContext(text) {
   let out = text;
@@ -231,8 +242,9 @@ function stripLegacyInternalContext(text) {
 }
 function stripInternalScaffolding(text) {
   if (!text) return text;
-  let out = stripDelimitedBlock(text, RC_BEGIN, RC_END);
+  let out = stripDelimitedBlock(text);
   out = stripLegacyInternalContext(out);
+  if (out.indexOf('<') === -1) return out;   // both scaffold patterns start with '<'
   out = out.replace(SCAFFOLD_BLOCK_RE, '').replace(SCAFFOLD_TAG_RE, '');
   return out;
 }
@@ -243,6 +255,9 @@ function stripInternalScaffolding(text) {
 const BLOCK_ART_LINE_RE = /^[\t  ▀▄█]+$/u;
 const BLOCK_ART_CHAR_RE = /[▀▄█]/u;
 export function isBlockArt(text) {
+  // No half-block glyph anywhere: no line can qualify. Skips the split/filter on the
+  // (overwhelmingly common) message that is not block art.
+  if (!BLOCK_ART_CHAR_RE.test(text)) return false;
   const lines = text.replace(/\r\n?/g, '\n').split('\n').filter((l) => l.trim().length > 0);
   if (lines.length < 2) return false;
   let count = 0;
@@ -288,6 +303,7 @@ const attrEscape = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;
 // codepoints so no model text can forge one, and any unclaimed token is scrubbed.
 const PLACEHOLDER_OPEN = '';
 const PLACEHOLDER_CLOSE = '';
+const PLACEHOLDER_SCRUB_RE = new RegExp(`[${PLACEHOLDER_OPEN}${PLACEHOLDER_CLOSE}]`, 'g');
 const PLACEHOLDER_RE = /(\d+)/g;
 
 // One pass over the parsed HTML, in order: every tag, and every placeholder
@@ -318,7 +334,8 @@ function makeHtmlParker() {
     // contexts the parked HTML is restored ESCAPED: visible, inert, and an
     // obvious symptom instead of silent corruption.
     restore(rendered) {
-      if (!rendered) return rendered;
+      // No placeholder codepoint: the scan below would rebuild `rendered` unchanged.
+      if (!rendered || rendered.indexOf(PLACEHOLDER_OPEN) === -1) return rendered;
       const take = (i) => parked[Number(i)] ?? '';
       let out = '';
       let pos = 0;
@@ -363,6 +380,9 @@ const CODE_SPAN_RE = /(^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\2[ \t]*$|(
 // verbatim. Mirrors backend/app/openclaw_text.py sub_outside_code().
 function subOutsideCode(text, fn) {
   if (!text) return text;
+  // CODE_SPAN_RE needs a backtick run or a ~~~ fence; with neither there is exactly one
+  // segment and no match to scan for.
+  if (text.indexOf('`') === -1 && text.indexOf('~~~') === -1) return fn(text);
   let out = '';
   let pos = 0;
   for (const m of text.matchAll(CODE_SPAN_RE)) {
@@ -464,6 +484,8 @@ const BLOCK_MATH_RE = /\$\$([\s\S]{1,600}?)\$\$|\\\[([\s\S]{1,600}?)\\\]/g;
  *  fences are untouched: a fenced block of TeX is source, and a model showing
  *  you `$\alpha$` inside backticks means the characters, not the letter. */
 function convertMath(text) {
+  // Every delimiter is `$…$`, `$$…$$`, `\(…\)` or `\[…\]`.
+  if (text.indexOf('$') === -1 && text.indexOf('\\') === -1) return text;
   return subOutsideCode(text, (seg) => seg
     .replace(BLOCK_MATH_RE, (whole, a, b) => {
       const body = (a ?? b ?? '').trim();
@@ -498,6 +520,7 @@ const FOOTNOTE_REF_RE = /\[\^([^\]\s]{1,64})\]/g;
  *  each reference. Returns the rewritten source and the notes, in the order
  *  their markers appear. */
 function extractFootnotes(text, parker) {
+  if (text.indexOf('[^') === -1) return { src: text, notes: [] };   // no definition can match
   const defs = new Map();
   let src = subOutsideCode(text, (seg) =>
     seg.replace(FOOTNOTE_DEF_RE, (whole, id, body) => {
@@ -542,6 +565,7 @@ function footnotesHtml(notes) {
 }
 
 function expandMediaDirectives(text, parker) {
+  if (text.indexOf('[[media:') === -1) return text;
   return subOutsideCode(text, (seg) => seg.replace(/\[\[media:([^\]|]+)(?:\|([^\]]*))?\]\]/g, (_, path, caption) => {
     const url = normalizeMediaUrl(path.trim());
     const cap = (caption || '').trim();
@@ -569,6 +593,7 @@ function _docIcon(name) {
 }
 
 function expandDocDirectives(text, parker, noLocal) {
+  if (text.indexOf('[[doc:') === -1) return text;
   return subOutsideCode(text, (seg) => seg.replace(/\[\[doc:([^\]|]+)(?:\|([^\]]*))?\]\]/g, (_, id, name) => {
     const fid = id.trim();
     const fname = (name || fid).trim();
@@ -973,6 +998,7 @@ function fileLinkHtml(path, line, inner, extraClass = '') {
 // exactly like expandDocDirectives: raw HTML in the SOURCE is escaped by the
 // renderer, so generated HTML has to travel behind a placeholder instead.
 function expandViewDirectives(text, parker, noLocal) {
+  if (text.indexOf('[[view:') === -1) return text;
   return subOutsideCode(text, (seg) => seg.replace(/\[\[view:([^\]|]+)(?:\|([^\]]*))?\]\]/g, (_, p, label) => {
     const path = stripFileScheme(p.trim());
     const shown = (label || '').trim() || shortenHome(path);
@@ -988,7 +1014,8 @@ function expandViewDirectives(text, parker, noLocal) {
 // Bare paths in prose. Parked, not emitted as markdown: the anchor must not be
 // re-parsed (a path with `_` or `*` in it would otherwise pick up emphasis).
 function linkifyLocalPaths(text, parker, noLocal) {
-  if (noLocal) return text;
+  // A local path always contains a '/', and the other alternatives only echo themselves.
+  if (noLocal || text.indexOf('/') === -1) return text;
   return subOutsideCode(text, (seg) => seg.replace(LOCAL_SCAN_RE,
     (whole, mdLink, tag, refDef, boundary, token) => {
       if (mdLink || tag || refDef) return whole;         // not prose — hands off
@@ -1013,7 +1040,32 @@ const HLJS_ALIASES = { 'c++': 'cpp', cxx: 'cpp', js: 'javascript', jsx: 'javascr
 // (renderCodeBlock). chat/actions.py PROSE_LANGS is the same list.
 const PROSE_LANGS = new Set(['', 'text', 'txt', 'plain', 'plaintext', 'markdown', 'md']);
 
+// highlightCode() is pure for a given (hljs, language, code), and while a reply streams the
+// same closed blocks are rendered again on every paint (highlightAuto, for an untagged one,
+// tries 14 grammars). Remember the last few results; the open block at the tail changes with
+// each token and simply misses. Keyed on the hljs object so a late-loading highlighter
+// never serves the plain-text result from before it arrived.
+const HL_CACHE_MAX = 64;
+const HL_CACHE_MAX_CHARS = 20000;   // bigger blocks are not worth holding on to
+let _hlCacheOwner = null;
+const _hlCache = new Map();
 function highlightCode(code, lang) {
+  const lib = typeof window !== 'undefined' ? window.hljs : null;
+  if (!lib || code.length > HL_CACHE_MAX_CHARS) return highlightCodeUncached(code, lang);
+  if (_hlCacheOwner !== lib) { _hlCache.clear(); _hlCacheOwner = lib; }
+  const key = `${lang || ''}\u0000${code}`;
+  const hit = _hlCache.get(key);
+  if (hit) {
+    _hlCache.delete(key); _hlCache.set(key, hit);   // refresh recency
+    return { html: hit.html, lang: hit.lang };
+  }
+  const out = highlightCodeUncached(code, lang);
+  _hlCache.set(key, out);
+  if (_hlCache.size > HL_CACHE_MAX) _hlCache.delete(_hlCache.keys().next().value);
+  return { html: out.html, lang: out.lang };
+}
+
+function highlightCodeUncached(code, lang) {
   const raw = (lang || '').trim().toLowerCase();
   const norm = HLJS_ALIASES[raw] || raw;
   try {
@@ -1367,11 +1419,37 @@ function truncate(text) {
   return `${cut}\n\n… truncated (${text.length} chars, showing first ${cut.length}).`;
 }
 
-export function renderMarkdown(text, { noMedia = false, noLocal = false } = {}) {
+// The same text is often rendered twice in a row: the last streamed paint and the finalising
+// render of a finished reply, or a history snapshot redrawn on reconnect. Keep the last few
+// results. The key is the exact input plus both options, and the cache is dropped whenever
+// marked, DOMPurify or hljs is replaced (hljs arriving late changes the output).
+const RENDER_CACHE_MAX = 4;
+const _renderCache = new Map();
+let _renderDeps = [null, null, null];
+
+export function renderMarkdown(text, opts = {}) {
+  const { noMedia = false, noLocal = false } = opts || {};
+  const src = String(text || '');
+  const deps = [window.marked, window.DOMPurify, window.hljs];
+  if (deps[0] !== _renderDeps[0] || deps[1] !== _renderDeps[1] || deps[2] !== _renderDeps[2]) {
+    _renderCache.clear();
+    _renderDeps = deps;
+  }
+  if (src.length > MAX_RENDER_CHARS * 2) return renderMarkdownUncached(src, { noMedia, noLocal });
+  const key = `${noMedia ? 1 : 0}${noLocal ? 1 : 0}${src}`;
+  const hit = _renderCache.get(key);
+  if (hit !== undefined) return hit;
+  const html = renderMarkdownUncached(src, { noMedia, noLocal });
+  _renderCache.set(key, html);
+  if (_renderCache.size > RENDER_CACHE_MAX) _renderCache.delete(_renderCache.keys().next().value);
+  return html;
+}
+
+function renderMarkdownUncached(text, { noMedia = false, noLocal = false } = {}) {
   // Scrub placeholder codepoints from the SOURCE first: a model that emitted
   // them verbatim could otherwise forge a token and pull in parked HTML.
   const cleaned = stripInternalScaffolding(stripCitations(String(text || '')))
-    .split(PLACEHOLDER_OPEN).join('').split(PLACEHOLDER_CLOSE).join('')
+    .replace(PLACEHOLDER_SCRUB_RE, '')
     .replace(/\r\n?/g, '\n');
   const src0 = noMedia ? stripMediaSource(cleaned) : cleaned;
   if (!src0.trim()) return '';
@@ -1440,13 +1518,13 @@ const URI_SAFE_ATTR = ['type', 'start', 'controls', 'muted', 'loop', 'playsinlin
   'preload', 'loading', 'download', 'open', 'checked', 'disabled', 'rel', 'target',
   'aria-label', 'data-code-encoding', 'align', 'aria-pressed', 'aria-hidden', 'role'];
 
+const ALLOWED_TAGS_NO_MEDIA = ALLOWED_TAGS.filter((t) => !['img', 'video', 'source'].includes(t));
+
 function sanitize(html, noMedia) {
   if (window.DOMPurify) {
     ensureHooks();
     return DOMPurify.sanitize(html, {
-      ALLOWED_TAGS: noMedia
-        ? ALLOWED_TAGS.filter((t) => !['img', 'video', 'source'].includes(t))
-        : ALLOWED_TAGS,
+      ALLOWED_TAGS: noMedia ? ALLOWED_TAGS_NO_MEDIA : ALLOWED_TAGS,
       ALLOWED_ATTR,
       ADD_URI_SAFE_ATTR: URI_SAFE_ATTR,
       // data: is confined to media tags via ADD_DATA_URI_TAGS below, so it is

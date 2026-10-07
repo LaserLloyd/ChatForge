@@ -436,6 +436,53 @@ def test_inline_reads_the_stored_file_or_leaves_a_note(tmp_path: Path) -> None:
     }
 
 
+def _one_ref(tmp_path: Path, pic: images.Picture | None = None) -> tuple[dict, dict]:
+    pic = pic or picture()
+    images.store(pic, tmp_path)
+    record = {"name": "photo.jpg", "kind": "image", **pic.record()}
+    return record, {"role": "user", "content": [images.ref_part(record)]}
+
+
+def test_inline_reads_an_unchanged_picture_from_disk_once(tmp_path: Path, monkeypatch) -> None:
+    images._url_cache.clear()  # noqa: SLF001
+    record, msg = _one_ref(tmp_path)
+    reads: list[str] = []
+    real = Path.read_bytes
+
+    def counting(self: Path) -> bytes:
+        reads.append(self.name)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    first = images.inline([msg], tmp_path)
+    second = images.inline([msg], tmp_path)  # the next tool round
+    assert first == second and len(reads) == 1
+
+
+def test_inline_cache_never_resurrects_a_deleted_or_rewritten_file(tmp_path: Path) -> None:
+    images._url_cache.clear()  # noqa: SLF001
+    pic = picture()
+    record, msg = _one_ref(tmp_path, pic)
+    shown = images.inline([msg], tmp_path)[0]["content"][0]
+    assert shown["type"] == "image_url"
+    stored = tmp_path / record["file"]
+    stored.write_bytes(b"changed on disk")  # same name, new size: read again
+    again = images.inline([msg], tmp_path)[0]["content"][0]
+    assert again["image_url"]["url"].endswith(base64.b64encode(b"changed on disk").decode())
+    stored.unlink()
+    gone = images.inline([msg], tmp_path)[0]["content"][0]
+    assert gone["type"] == "text" and "no longer available" in gone["text"]
+
+
+def test_inline_cache_is_capped(tmp_path: Path) -> None:
+    images._url_cache.clear()  # noqa: SLF001
+    for i in range(images._URL_CACHE_MAX + 5):  # noqa: SLF001
+        f = tmp_path / f"{i}.bin"
+        f.write_bytes(bytes([i]) * 4)
+        images._file_data_url(f, "image/png")  # noqa: SLF001
+    assert len(images._url_cache) == images._URL_CACHE_MAX  # noqa: SLF001
+
+
 def test_image_tokens() -> None:
     assert images.image_tokens(1568, 1176) == 56 * 42
     assert images.image_tokens(10, 10) == 85

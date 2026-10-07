@@ -58,6 +58,43 @@ test('four tabs render with the ARIA tabs pattern', () => {
   assert.equal($('tab-logs').tabIndex, -1);
 });
 
+test('the page is built from ThemeForge ui-* components, with none of the old duplicates left', () => {
+  const tabs = $('tab-models').parentElement;
+  assert.ok(tabs.classList.contains('ui-tabs'));
+  assert.ok([...tabs.children].every((t) => t.classList.contains('ui-tab')));
+  // aria-selected is the only selected-state signal (ui-tab styles it).
+  assert.equal(doc.querySelectorAll('.ui-tab[aria-selected="true"]').length, 1);
+  assert.ok($('panel-models').querySelector('.ui-card .ui-card__title'));
+  // The OVMS download bar is the native element (role and value come with it).
+  assert.equal($('rt-bar').tagName, 'PROGRESS');
+  assert.ok($('rt-bar').classList.contains('ui-progress'));
+  assert.equal($('rt-bar').getAttribute('aria-label'), 'OVMS download');
+  // Boolean settings are switches; the tool list uses checkboxes.
+  for (const id of ['g-autostart', 'g-sticky', 'g-reply', 'auto-refresh', 'log-auto']) {
+    assert.equal($(id).getAttribute('role'), 'switch', id);
+    assert.ok($(id).classList.contains('ui-switch'), id);
+    assert.ok($(id).closest('label').querySelector('.ui-switch-state'), id);
+  }
+  assert.ok($('tool-calculator').classList.contains('ui-checkbox'));
+  // Fields: label + control + error from the bundle.
+  assert.ok($('g-idle').classList.contains('ui-input'));
+  assert.ok($('g-reasoning').classList.contains('ui-select'));
+  assert.ok($('g-personality').classList.contains('ui-textarea'));
+  assert.ok($('err-local.max_prompt_len').classList.contains('ui-error'));
+  // Class names settings.css used to define for itself must not come back.
+  const legacy = '.tabs, .tab, .card, .card-head, .field, .input, .btn, .btn-primary, .btn-danger, .btn-danger-ghost, .chip, .err, .check, .row, .bar, .hint-box, .warn-note, .small, .note, .h2, .adv';
+  assert.equal(doc.querySelectorAll(legacy).length, 0, [...doc.querySelectorAll(legacy)].map((n) => n.className).join(' | '));
+});
+
+test('the theme picker is the runtime\'s own <select data-ui-theme-picker>', () => {
+  const sel = $('g-theme');
+  assert.equal(sel.tagName, 'SELECT');
+  assert.ok(sel.hasAttribute('data-ui-theme-picker'));
+  assert.ok(sel.classList.contains('ui-select'));
+  assert.equal(sel.getAttribute('aria-label'), 'Theme');
+  assert.ok(doc.querySelector('label[for="g-theme"]'));
+});
+
 test('Models tab lists the installed models with badges, size and actions', () => {
   const rows = [...doc.querySelectorAll('#model-list .model-row')];
   assert.equal(rows.length, 2);
@@ -73,6 +110,9 @@ test('Models tab lists the installed models with badges, size and actions', () =
     assert.ok([...rows[0].querySelectorAll('button')].some((b) => b.textContent.trim() === label), label);
   }
   assert.ok($('disk-bar').children.length === 4);
+  // Badges are ui-badge with a status variant: Recommended is success, Untested is warning.
+  assert.ok(rows[0].querySelector('.ui-badge--success'));
+  assert.ok(rows[1].querySelector('.ui-badge--warning'));
   assert.match($('rt-ovms').textContent, /Installed, version 2026\.4\.0/);
 });
 
@@ -300,7 +340,7 @@ test('General lists the quick actions: the built-in ones, Proof / Improve / Chec
   assert.deepEqual(qaNames().slice(0, 4), ['Proof this', 'Improve this', 'Check me on this', 'News insight']);
   assert.equal(qaRows().length, 12);
   const proof = qaRows()[0];
-  assert.match(proof.querySelector('.chip').textContent, /Built in/);
+  assert.match(proof.querySelector('.ui-badge').textContent, /Built in/);
   assert.match(proof.querySelector('.qa-instructions').value, /Proofread/);
   assert.equal(proof.querySelector('.qa-style').checked, true);
   assert.equal(qaRows()[3].querySelector('.qa-tools').checked, true, 'News insight may look things up');
@@ -336,7 +376,7 @@ test('editing the quick actions saves only what differs from the built-in ones',
   // The list is redrawn as the app has it now: the custom action has its id and its chip.
   const last = qaRows().at(-1);
   assert.equal(last.dataset.id, 'custom-haiku');
-  assert.match(last.querySelector('.chip').textContent, /Custom/);
+  assert.match(last.querySelector('.ui-badge').textContent, /Custom/);
   const state = await api.get_state();
   assert.equal(state.config.quick_actions[0].label, 'Proofread');
   assert.ok(!state.config.quick_actions.some((a) => a.id === 'translate'));

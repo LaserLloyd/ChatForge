@@ -9,7 +9,7 @@
  *   --text-muted -> --text-tertiary          --error(-text) -> --danger(-text)   --ok -> --success
  *   --border-light -> --border-subtle        --shadow-sm/md/lg -> --shadow-1/2/3
  *   --easing -> --ease-standard              --code-inline -> --code-bg          --md-quote -> --quote-bar
- * Load order (index.html): ui-theme-base.css, this file, ui-theme.css. The base layer holds the
+ * Load order (index.html): ui-theme-base.css, ui-components.css, this file, ui-theme.css. The base layer holds the
  * .ui-markdown text standard (TEXT.md); rules here are the popup layout and DisPatch chrome.
  */
 
@@ -42,24 +42,18 @@ button:disabled { cursor: not-allowed; }
   background: var(--surface-1); border-bottom: 1px solid var(--border-subtle);
 }
 .hdr-drag { flex: 1 1 auto; align-self: stretch; min-width: 8px; }
-.hdr-actions { display: flex; gap: 2px; flex: none; }
+.hdr-actions { display: flex; align-items: center; gap: var(--space-1); flex: none; }
 
-.icon-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: var(--control-h-sm); height: var(--control-h-sm); padding: 0;
-  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
-}
-.icon-btn:hover { background: var(--surface-3); color: var(--text-primary); }
-.icon-btn[aria-pressed="true"] { background: var(--accent-subtle); color: var(--text-link); border-color: var(--accent-muted); }
-/* Clear chat stands out in the theme's caution colour: orange beside LaserLloyd's blue, apart
- * from the accent (the pressed pin) in every theme, and readable on each header surface. */
-.icon-btn.btn-clear, .icon-btn.btn-clear:hover { color: var(--warning-text); }
+/* Header buttons are ThemeForge ghost icon buttons at a comfortable 32px hit target. */
+.hdr-btn.ui-btn--icon { width: 32px; height: 32px; }
+.hdr-btn .icon { width: 18px; height: 18px; }
+/* The pin stays a quiet accent tint while on (the bundle's solid pressed fill is too loud for a
+ * control that is on by default). */
+.hdr-btn[aria-pressed="true"] { background: var(--accent-subtle); color: var(--text-link); border-color: var(--accent-muted); }
 
 .model-wrap { position: relative; min-width: 0; flex: 0 1 auto; max-width: calc(100% - 150px); }
 .model-chip {
-  display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: var(--control-h-sm);
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: 32px;
   padding: 0 8px 0 10px; background: var(--surface-2); border: 1px solid var(--border);
   border-radius: var(--radius-pill); font-size: var(--fs-sm);
   transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
@@ -266,20 +260,7 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .err-hint { margin-top: 4px; font-size: var(--fs-xs); color: var(--text-secondary); }
 .err-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 
-/* Buttons. */
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--control-h-sm);
-  padding: 0 12px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  color: var(--text-primary); font-size: var(--fs-sm); font-weight: var(--fw-medium);
-  transition: background var(--dur-fast) var(--ease-standard);
-}
-.btn:hover:not(:disabled) { background: var(--surface-3); }
-.btn:disabled { color: var(--text-disabled); }
-.btn-primary { background: var(--cta); border-color: transparent; color: var(--on-cta); }
-.btn-primary:hover:not(:disabled) { background: var(--cta-hover); }
-.btn-primary:active:not(:disabled) { background: var(--cta-pressed); }
-.btn-primary:disabled { background: var(--surface-3); color: var(--text-disabled); }
-.btn-sm { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
+/* Buttons are ThemeForge's .ui-btn (ui-components.css); the app adds none of its own. */
 
 /* ------------------------------------------------------------ scroll badge ---- */
 .scroll-bottom {
@@ -317,7 +298,13 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .stop-btn { background: var(--danger-subtle); border-color: var(--danger-border); color: var(--danger-text); }
 .stop-btn:hover:not(:disabled) { background: var(--danger); color: var(--on-danger); }
 .stop-btn:disabled { color: var(--text-disabled); border-color: var(--border); background: var(--surface-3); }
-.composer-foot { display: flex; justify-content: flex-end; min-height: 16px; margin-top: 3px; padding: 0 4px; }
+.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; margin-top: 2px; padding: 0; }
+/* Clear chat: bottom-left, labelled, in the theme's caution colour (orange beside LaserLloyd's blue,
+ * apart from the accent in every theme). The ghost variant's hover would set the primary text
+ * colour, so both states are restated; :disabled in ui-components.css still wins at rest. */
+.btn-clear, .btn-clear:hover:not(:disabled) { color: var(--warning-text); }
+.btn-clear:hover:not(:disabled) { background: var(--warning-subtle); }
+.char-count { margin-inline-start: auto; padding-inline-end: 4px; }
 .char-count { font-size: var(--fs-micro); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .char-count[data-over="true"] { color: var(--danger-text); }
 

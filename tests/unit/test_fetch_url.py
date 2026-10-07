@@ -157,6 +157,23 @@ async def test_success_extracts_title_url_text(net):
     assert "example.com" in r.summary
 
 
+async def test_html_extraction_runs_off_the_event_loop_thread(net, monkeypatch):
+    import threading
+
+    seen = []
+    real = fetch_url.htmltext.extract
+
+    def spy(text):
+        seen.append(threading.current_thread())
+        return real(text)
+
+    monkeypatch.setattr(fetch_url.htmltext, "extract", spy)
+    r = await do_fetch(net, "https://example.com/")
+    assert r.ok
+    assert seen
+    assert seen[0] is not threading.main_thread()
+
+
 async def test_connects_to_vetted_ip_with_host_header_and_sni(net):
     await do_fetch(net, "https://example.com:8443/a/b?x=1")
     (req,) = net.requests

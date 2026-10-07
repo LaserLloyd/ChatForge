@@ -221,6 +221,8 @@ class App:
         if s.engine is not None:
             with contextlib.suppress(Exception):
                 s.engine.cancel_all("shutdown")
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(s.engine.flush(), timeout=5)
         if s.manager is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(s.manager.aclose(), timeout=15)

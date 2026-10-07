@@ -618,3 +618,26 @@ test('quick actions: News insight fetches a bare link; Settings edits the list',
   assert.equal((await api.call('update_settings', { chat: { quick_actions: [{ label: ' ' }] } })).ok, false);
   await api.call('update_settings', { chat: { quick_actions: [], hidden_quick_actions: [] } });
 });
+
+test('dispatch: type handlers then "*", snapshot semantics, single-handler fast path', () => {
+  const log = [];
+  const a = () => log.push('a');
+  const b = () => log.push('b');
+  const offA = on('perf.x', () => { log.push('first'); on('perf.x', b); off('perf.x', a); });
+  on('perf.x', a);
+  const star = on('*', (e) => { if (e.type === 'perf.x') log.push('star'); });
+  emit({ type: 'perf.x' });
+  // Both handlers present at dispatch ran (a was removed mid-dispatch, b added); '*' last.
+  assert.deepEqual(log, ['first', 'a', 'star']);
+  log.length = 0;
+  emit({ type: 'perf.x' });                       // now: first, b (added), and a is gone
+  assert.deepEqual(log, ['first', 'b', 'star']);
+  offA(); star();
+  const solo = [];
+  const stop = on('perf.solo', (e) => { solo.push(e.n); throw new Error('boom'); });
+  const origError = console.error; console.error = () => {};
+  try { emit({ type: 'perf.solo', n: 1 }); } finally { console.error = origError; }   // a throwing sole handler is contained
+  stop();
+  emit({ type: 'perf.solo', n: 2 });
+  assert.deepEqual(solo, [1]);
+});

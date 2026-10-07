@@ -45,6 +45,8 @@ packages = ["src/chatforge"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The ThemeForge bundle is vendored verbatim (tests/unit/test_theme.py checks it); never lint it.
+extend-exclude = ["src/chatforge/web/static/ui-theme"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]

@@ -95,30 +95,33 @@ function toast(msg, kind = 'info') {
   const t = $('toast');
   t.textContent = msg;
   t.dataset.kind = kind;
+  t.className = kind === 'bad' ? 'ui-toast ui-toast--danger' : 'ui-toast';
   t.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
 }
 
-function chip(text, kind = 'neutral') { return el('span', { class: `chip chip-${kind}`, text }); }
+// Badge kinds used in this file -> ThemeForge .ui-badge variants (neutral is the default).
+const BADGE_VARIANT = { ok: 'success', info: 'info', warn: 'warning', bad: 'danger', accent: 'accent', neutral: '' };
+function badgeClass(kind = 'neutral') {
+  const v = BADGE_VARIANT[kind];
+  return v ? `ui-badge ui-badge--${v}` : 'ui-badge';
+}
+function chip(text, kind = 'neutral') { return el('span', { class: badgeClass(kind), text }); }
 function badgeChip(badge) {
   const b = BADGES[badge];
   return b ? chip(b[0], b[1]) : null;
 }
 function btn(text, opts = {}) {
   const { onclick, cls = '', ...attrs } = opts;
-  const b = el('button', { type: 'button', class: `btn ${cls}`.trim(), text, ...attrs });
+  const b = el('button', { type: 'button', class: `ui-btn ui-btn--sm ${cls}`.trim(), text, ...attrs });
   if (onclick) b.addEventListener('click', onclick);
   return b;
 }
 function progressBar(label) {
-  const fill = el('i');
-  const bar = el('div', { class: 'bar', role: 'progressbar', 'aria-label': label, 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, [fill]);
-  bar.set = (pct) => {
-    const p = Math.max(0, Math.min(100, pct));
-    fill.style.width = `${p}%`;
-    bar.setAttribute('aria-valuenow', String(Math.round(p)));
-  };
+  // A native <progress>: it has the progressbar role and exposes value/max itself.
+  const bar = el('progress', { class: 'ui-progress', max: '100', value: '0', 'aria-label': label });
+  bar.set = (pct) => { bar.value = Math.max(0, Math.min(100, pct)); };
   return bar;
 }
 function legacyCopy(text) {
@@ -149,7 +152,7 @@ function localProviderId() {
 // ------------------------------------------------------------------- errors ----
 
 function clearErrors(scope = document) {
-  for (const p of scope.querySelectorAll('.err')) p.textContent = '';
+  for (const p of scope.querySelectorAll('.ui-error')) p.textContent = '';
   for (const i of scope.querySelectorAll('[aria-invalid]')) i.removeAttribute('aria-invalid');
 }
 function setError(key, msg) {
@@ -259,7 +262,7 @@ function renderModels() {
       !m.complete ? chip('Incomplete', 'bad') : null,
     ]);
     const sub = el('div', { class: 'm-sub ui-text-secondary' }, [
-      el('span', { class: 'mono', text: m.id }),
+      el('span', { class: 'ui-mono ui-small', text: m.id }),
       el('span', { text: fmtBytes(m.size_bytes) }),
       el('span', { class: compiled ? 'compiled-yes' : 'ui-text-tertiary', text: compiled ? `Compiled for ${device} ✓` : `Not compiled for ${device} yet` }),
       el('span', { class: 'ui-text-tertiary', text: fmtAgo(m.last_used_at) }),
@@ -273,8 +276,8 @@ function renderModels() {
     let actions;
     if (S.confirmDelete === m.id) {
       actions = el('div', { class: 'm-actions confirm', role: 'group', 'aria-label': `Confirm deleting ${shortName(m.id)}` }, [
-        el('span', { class: 'danger-text small', text: `Delete ${shortName(m.id)} and its files?` }),
-        btn('Delete', { cls: 'btn-danger', 'data-fk': key('confirm'), onclick: () => doDelete(m.id) }),
+        el('span', { class: 'danger-text ui-small', text: `Delete ${shortName(m.id)} and its files?` }),
+        btn('Delete', { cls: 'ui-btn--danger', 'data-fk': key('confirm'), onclick: () => doDelete(m.id) }),
         btn('Cancel', { 'data-fk': key('cancel'), onclick: () => { S.confirmDelete = null; renderModels(); focusFk(key('delete')); } }),
       ]);
     } else {
@@ -293,10 +296,10 @@ function renderModels() {
             onclick: () => doLoad(m.id),
           }),
         btn('Clear cache', { 'data-fk': key('cache'), 'aria-label': `Clear compile cache for ${shortName(m.id)}`, disabled: rt === 'loaded' ? '' : null, onclick: () => doClearCache(m.id) }),
-        btn('Delete', { cls: 'btn-danger-ghost', 'data-fk': key('delete'), 'aria-label': `Delete ${shortName(m.id)}`, onclick: () => { S.confirmDelete = m.id; renderModels(); focusFk(key('confirm')); } }),
+        btn('Delete', { cls: 'ui-btn--danger', 'data-fk': key('delete'), 'aria-label': `Delete ${shortName(m.id)}`, onclick: () => { S.confirmDelete = m.id; renderModels(); focusFk(key('confirm')); } }),
       ]);
     }
-    list.append(el('li', { class: 'model-row', 'data-id': m.id }, [el('div', { class: 'm-main' }, [title, sub, ...notes]), actions]));
+    list.append(el('li', { class: 'model-row ui-well', 'data-id': m.id }, [el('div', { class: 'm-main' }, [title, sub, ...notes]), actions]));
   }
   if (focusKey) focusFk(focusKey);
 }
@@ -343,7 +346,7 @@ async function doDelete(id) {
   if (!isOk(res)) { toast(errText(res), 'bad'); renderModels(); return; }
   toast(`${shortName(id)} deleted.`);
   await loadModels(); loadDisk();
-  const first = document.querySelector('#model-list .btn');
+  const first = document.querySelector('#model-list .ui-btn');
   if (first) first.focus(); else $('search-q').focus();
 }
 
@@ -361,9 +364,9 @@ async function loadDisk() {
     const seg = el('i', { class: `seg seg-${i + 1}` });
     seg.style.width = used ? `${(v / used) * 100}%` : '0%';
     bar.append(seg);
-    legend.append(el('li', {}, [el('span', { class: `swatch seg-${i + 1}`, 'aria-hidden': 'true' }), el('span', { text: `${label}: ` }), el('b', { class: 'tnum', text: fmtBytes(v) })]));
+    legend.append(el('li', {}, [el('span', { class: `swatch seg-${i + 1}`, 'aria-hidden': 'true' }), el('span', { text: `${label}: ` }), el('b', { class: 'ui-num', text: fmtBytes(v) })]));
   });
-  legend.append(el('li', {}, [el('span', { class: 'swatch swatch-free', 'aria-hidden': 'true' }), el('span', { text: 'Free on drive: ' }), el('b', { class: 'tnum', text: fmtBytes(res.free) })]));
+  legend.append(el('li', {}, [el('span', { class: 'swatch swatch-free', 'aria-hidden': 'true' }), el('span', { text: 'Free on drive: ' }), el('b', { class: 'ui-num', text: fmtBytes(res.free) })]));
   bar.setAttribute('aria-label', `ChatForge uses ${fmtBytes(used)}; ${fmtBytes(res.free)} free on the drive`);
 }
 
@@ -394,7 +397,7 @@ async function recheckAll() {
   const msg = $('rt-msg');
   b.disabled = true;
   b.textContent = 'Checking…';
-  msg.className = 'ui-text-secondary small';
+  msg.className = 'ui-text-secondary ui-small';
   msg.textContent = '';
   try {
     await Promise.all([refreshRuntime(), loadModels(), loadDisk()]);
@@ -407,10 +410,10 @@ async function recheckAll() {
     if (models != null) bits.push(`${models} model${models === 1 ? '' : 's'} found`);
     const at = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     msg.textContent = `Checked at ${at}: ${bits.join(' · ')}.`;
-    msg.className = rt.installed && rt.vcredist !== false ? 'ok-text small' : 'ui-text-secondary small';
+    msg.className = rt.installed && rt.vcredist !== false ? 'ok-text ui-small' : 'ui-text-secondary ui-small';
   } catch (err) {
     msg.textContent = `Re-check failed: ${(err && err.message) || err}`;
-    msg.className = 'danger-text small';
+    msg.className = 'danger-text ui-small';
   } finally {
     b.disabled = false;
     b.textContent = 'Re-check';
@@ -424,16 +427,15 @@ function onRuntimeInstall(evt) {
   const total = Number(evt.total_bytes) || 0;
   const done = Number(evt.downloaded_bytes) || 0;
   const pct = total ? (done / total) * 100 : 0;
-  bar.querySelector('i').style.width = `${pct}%`;
-  bar.setAttribute('aria-valuenow', String(Math.round(pct)));
+  bar.value = pct;
   if (status === 'error') {
     S.installing = false;
     text.textContent = `Install failed: ${evt.error || 'unknown error'}`;
-    text.className = 'danger-text small';
+    text.className = 'danger-text ui-small';
     $('rt-install').disabled = false;
     return;
   }
-  text.className = 'ui-text-secondary small';
+  text.className = 'ui-text-secondary ui-small';
   if (status === 'done') {
     S.installing = false;
     text.textContent = 'OVMS installed.';
@@ -459,7 +461,7 @@ async function installRuntime() {
     S.installing = false;
     $('rt-install').disabled = false;
     $('rt-progress-text').textContent = errText(res);
-    $('rt-progress-text').className = 'danger-text small';
+    $('rt-progress-text').className = 'danger-text ui-small';
   }
 }
 
@@ -495,13 +497,13 @@ function removeDlRow(id) {
 function buildDlRow(id, d) {
   const bar = progressBar(`Download of ${d.repo_id}`);
   const refs = {
-    status: el('span', { class: 'chip chip-neutral' }),
-    text: el('span', { class: 'ui-text-secondary small tnum' }),
+    status: el('span', { class: 'ui-badge' }),
+    text: el('span', { class: 'ui-text-secondary ui-small ui-num' }),
     bar,
     actions: el('div', { class: 'dl-actions' }),
   };
-  const li = el('li', { class: 'dl-row', 'data-id': id }, [
-    el('div', { class: 'dl-top' }, [el('strong', { class: 'mono', text: d.repo_id }), refs.status]),
+  const li = el('li', { class: 'dl-row ui-well', 'data-id': id }, [
+    el('div', { class: 'dl-top' }, [el('strong', { class: 'ui-mono ui-small', text: d.repo_id }), refs.status]),
     bar,
     el('div', { class: 'dl-bottom' }, [refs.text, refs.actions]),
   ]);
@@ -517,13 +519,13 @@ function rebuildDlActions(row, id, d) {
       if (!isOk(r)) toast(errText(r), 'bad');
     } }));
   } else if (RESUMABLE_DL.has(status)) {
-    row.refs.actions.append(btn('Resume', { cls: 'btn-primary', 'aria-label': `Resume download of ${name}`, onclick: async () => {
+    row.refs.actions.append(btn('Resume', { cls: 'ui-btn--primary', 'aria-label': `Resume download of ${name}`, onclick: async () => {
       const r = await api.call('resume_download', id);
       if (!isOk(r)) toast(errText(r), 'bad'); else refreshDownloads();
     } }));
   }
   const kind = status === 'done' ? 'ok' : (status === 'error' || status === 'failed') ? 'bad' : ACTIVE_DL.has(status) ? 'info' : 'neutral';
-  row.refs.status.className = `chip chip-${kind}`;
+  row.refs.status.className = badgeClass(kind);
   const labels = { downloading: 'Downloading', done: 'Done', cancelled: 'Cancelled', canceled: 'Cancelled', paused: 'Paused', error: 'Error', failed: 'Failed', queued: 'Queued' };
   row.refs.status.textContent = labels[status] || status;
 }
@@ -541,7 +543,7 @@ function updateDlRow(row, d) {
     if (d.files_total) txt += `, file ${Math.min((d.files_done || 0) + 1, d.files_total)} of ${d.files_total}`;
   }
   row.refs.text.textContent = txt;
-  row.refs.text.className = `${d.error ? 'danger-text' : 'ui-text-secondary'} small tnum`;
+  row.refs.text.className = `${d.error ? 'danger-text' : 'ui-text-secondary'} ui-small ui-num`;
 }
 async function refreshDownloads() {
   const res = await api.call('list_downloads');
@@ -586,9 +588,9 @@ function resultRow(r) {
   const meta = [`${fmtNum(r.downloads)} downloads`, `${fmtNum(r.likes)} likes`];
   const d = fmtDate(r.last_modified); if (d) meta.push(`updated ${d}`);
   const detailsBtn = btn('Details', { 'data-repo': r.id, 'aria-label': `Details for ${r.id}`, onclick: (e) => openDrawer(r, e.currentTarget) });
-  return el('li', { class: 'result-row', 'data-id': r.id }, [
+  return el('li', { class: 'result-row ui-well', 'data-id': r.id }, [
     el('div', { class: 'm-main' }, [
-      el('div', { class: 'm-title' }, [el('strong', { class: 'mono', text: r.id }), badge, installed ? chip('Installed', 'ok') : null]),
+      el('div', { class: 'm-title' }, [el('strong', { class: 'ui-mono ui-small', text: r.id }), badge, installed ? chip('Installed', 'ok') : null]),
       el('div', { class: 'm-sub ui-text-secondary', text: meta.join(' · ') }),
       r.note ? el('div', { class: 'm-note ui-text-tertiary', text: r.note }) : null,
     ]),
@@ -598,8 +600,8 @@ function resultRow(r) {
 function updateSearchInstalled() {
   for (const li of document.querySelectorAll('#search-results .result-row')) {
     const id = li.dataset.id; const title = li.querySelector('.m-title');
-    const has = title.querySelector('.chip-installed');
-    if (S.installedIds.has(id) && !has) { const c = chip('Installed', 'ok'); c.classList.add('chip-installed'); title.append(c); }
+    const has = title.querySelector('.installed-badge');
+    if (S.installedIds.has(id) && !has) { const c = chip('Installed', 'ok'); c.classList.add('installed-badge'); title.append(c); }
   }
 }
 
@@ -625,18 +627,18 @@ async function openDrawer(item, trigger) {
     el('div', { class: 'm-title' }, [badgeChip(item.badge || 'untested'), installed ? chip('Installed', 'ok') : null]),
     item.note ? el('p', { class: 'ui-text-secondary', text: item.note }) : null,
     el('dl', { class: 'kv' }, [
-      el('div', {}, [el('dt', { text: 'Total download' }), el('dd', { class: 'tnum', text: fmtBytes(res.total_bytes) })]),
-      el('div', {}, [el('dt', { text: 'Free disk space' }), el('dd', { class: 'tnum', text: fmtBytes(res.free_bytes) })]),
+      el('div', {}, [el('dt', { text: 'Total download' }), el('dd', { class: 'ui-num', text: fmtBytes(res.total_bytes) })]),
+      el('div', {}, [el('dt', { text: 'Free disk space' }), el('dd', { class: 'ui-num', text: fmtBytes(res.free_bytes) })]),
       el('div', {}, [el('dt', { text: 'Fits on disk' }), el('dd', { class: fits ? 'ok-text' : 'danger-text', text: fits ? 'Yes' : 'No, free up space first' })]),
-      el('div', {}, [el('dt', { text: 'Files' }), el('dd', { class: 'tnum', text: String(files.length) })]),
+      el('div', {}, [el('dt', { text: 'Files' }), el('dd', { class: 'ui-num', text: String(files.length) })]),
     ]),
   );
   if (files.length) {
     body.append(el('h3', { class: 'h3', text: 'Files' }),
-      el('ul', { class: 'file-list' }, files.slice(0, 40).map((f) => el('li', {}, [el('span', { class: 'mono', text: f.path }), el('span', { class: 'ui-text-tertiary tnum', text: fmtBytes(f.size) })]))));
+      el('ul', { class: 'file-list' }, files.slice(0, 40).map((f) => el('li', {}, [el('span', { class: 'ui-mono', text: f.path }), el('span', { class: 'ui-text-tertiary ui-num', text: fmtBytes(f.size) })]))));
   }
   const dl = btn(installed ? 'Already installed' : activeDl ? 'Downloading' : 'Download', {
-    cls: 'btn-primary', id: 'drawer-download', disabled: (!fits || installed || activeDl) ? '' : null,
+    cls: 'ui-btn--primary', id: 'drawer-download', disabled: (!fits || installed || activeDl) ? '' : null,
     onclick: async () => {
       $('drawer-download').disabled = true;
       const r = await api.call('start_download', item.id);
@@ -646,7 +648,7 @@ async function openDrawer(item, trigger) {
       refreshDownloads();
     },
   });
-  body.append(el('div', { class: 'row drawer-actions' }, [dl]));
+  body.append(el('div', { class: 'ui-row drawer-actions' }, [dl]));
 }
 function closeDrawer() {
   S.drawerToken++;
@@ -698,14 +700,14 @@ function refreshSummary(r) {
 
 async function refreshAllModels() {
   const b = $('refresh-all'); const msg = $('refresh-msg');
-  b.disabled = true; msg.className = 'small ui-text-secondary'; msg.textContent = 'Reading the model lists…';
+  b.disabled = true; msg.className = 'ui-small ui-text-secondary'; msg.textContent = 'Reading the model lists…';
   const res = await api.call('refresh_models', null);
   b.disabled = false;
-  if (!isOk(res)) { msg.className = 'small danger-text'; msg.textContent = errText(res); return; }
+  if (!isOk(res)) { msg.className = 'ui-small danger-text'; msg.textContent = errText(res); return; }
   const results = res.results || {};
   const names = Object.fromEntries((S.views || []).map((v) => [v.id, v.display_name || v.id]));
   const lines = Object.entries(results).map(([id, r]) => `${names[id] || id}: ${refreshSummary(r)}`);
-  msg.className = 'small';
+  msg.className = 'ui-small';
   msg.textContent = lines.length ? lines.join(' ') : 'No provider has a key yet, so there was nothing to refresh.';
   await loadProviders();
 }
@@ -768,36 +770,36 @@ function providerCard(v, spec) {
   const builtin = !!(spec.builtin || v.builtin);
   const hasRegion = region != null;
 
-  const msg = el('p', { class: 'ui-text-secondary small', role: 'status', 'aria-live': 'polite', id: `${uid}-msg` });
+  const msg = el('p', { class: 'ui-text-secondary ui-small', role: 'status', 'aria-live': 'polite', id: `${uid}-msg` });
   const keyLine = el('p', { class: 'key-status', id: `${uid}-keystatus`, role: 'status', 'aria-live': 'polite' });
-  const testLine = el('p', { class: 'test-line small', id: `${uid}-test`, role: 'status', 'aria-live': 'polite' });
-  const fetched = el('div', { class: 'row', hidden: '' });
+  const testLine = el('p', { class: 'test-line ui-small', id: `${uid}-test`, role: 'status', 'aria-live': 'polite' });
+  const fetched = el('div', { class: 'ui-row', hidden: '' });
 
   async function saveSpec(patch, okMsg = 'Saved.') {
     const next = { ...spec, ...patch, id, kind: spec.kind || 'openai' };
     delete next.builtin;
     if (!next.display_name) next.display_name = v.display_name || id;
     const res = await api.call('upsert_provider', next);
-    if (!isOk(res)) { msg.textContent = errText(res); msg.className = 'danger-text small'; return false; }
+    if (!isOk(res)) { msg.textContent = errText(res); msg.className = 'danger-text ui-small'; return false; }
     Object.assign(spec, patch);
     if (S.cfg && S.cfg.providers) S.cfg.providers[id] = { ...(S.cfg.providers[id] || {}), ...patch };
-    msg.textContent = okMsg; msg.className = 'ui-text-secondary small';
+    msg.textContent = okMsg; msg.className = 'ui-text-secondary ui-small';
     return true;
   }
 
   // Region -------------------------------------------------------------------
   let regionBlock = null;
-  const urlInput = el('input', { id: `${uid}-url`, class: 'input mono', type: 'url', spellcheck: 'false', value: spec.base_url || v.base_url || '', 'aria-describedby': `${uid}-url-hint` });
-  const urlField = el('div', { class: 'field' }, [
-    el('label', { for: `${uid}-url`, text: 'Base URL' }),
+  const urlInput = el('input', { id: `${uid}-url`, class: 'ui-input ui-mono', type: 'url', spellcheck: 'false', value: spec.base_url || v.base_url || '', 'aria-describedby': `${uid}-url-hint` });
+  const urlField = el('div', { class: 'ui-field' }, [
+    el('label', { class: 'ui-label', for: `${uid}-url`, text: 'Base URL' }),
     urlInput,
-    el('p', { class: 'ui-text-tertiary small', id: `${uid}-url-hint`, text: 'An OpenAI-compatible endpoint, for example https://host/v1' }),
+    el('p', { class: 'ui-help', id: `${uid}-url-hint`, text: 'An OpenAI-compatible endpoint, for example https://host/v1' }),
   ]);
   const applyUrl = async () => {
     const val = urlInput.value.trim();
     let ok_ = false;
     try { const u = new URL(val); ok_ = u.protocol === 'https:' || u.protocol === 'http:'; } catch { ok_ = false; }
-    if (!ok_) { msg.textContent = 'Enter a full http(s) URL.'; msg.className = 'danger-text small'; urlInput.setAttribute('aria-invalid', 'true'); return; }
+    if (!ok_) { msg.textContent = 'Enter a full http(s) URL.'; msg.className = 'danger-text ui-small'; urlInput.setAttribute('aria-invalid', 'true'); return; }
     urlInput.removeAttribute('aria-invalid');
     if (val !== (spec.base_url || '')) await saveSpec({ base_url: val });
   };
@@ -822,14 +824,14 @@ function providerCard(v, spec) {
       });
       group.append(el('label', { class: 'seg-opt', for: input.id }, [input, el('span', { text: label })]));
     }
-    regionBlock = el('div', { class: 'field' }, [el('span', { class: 'label', id: `${uid}-region-label`, text: 'Region' }), group]);
+    regionBlock = el('div', { class: 'ui-field' }, [el('span', { class: 'ui-label', id: `${uid}-region-label`, text: 'Region' }), group]);
     urlField.hidden = region !== 'custom';
   }
 
   // Model --------------------------------------------------------------------
-  const select = el('select', { id: `${uid}-model`, class: 'input' });
+  const select = el('select', { id: `${uid}-model`, class: 'ui-select' });
   const CUSTOM = '__custom__';
-  const custom = el('input', { id: `${uid}-model-custom`, class: 'input mono', type: 'text', spellcheck: 'false', autocomplete: 'off', placeholder: 'e.g. my-model-name', list: `${uid}-model-list` });
+  const custom = el('input', { id: `${uid}-model-custom`, class: 'ui-input ui-mono', type: 'text', spellcheck: 'false', autocomplete: 'off', placeholder: 'e.g. my-model-name', list: `${uid}-model-list` });
   const dlist = el('datalist', { id: `${uid}-model-list` });
   function fillModels() {
     clear(select); clear(dlist);
@@ -848,7 +850,7 @@ function providerCard(v, spec) {
   const applyCustom = async () => {
     const val = custom.value.trim();
     if (!val) return;
-    if (val.length > 200 || /\s/.test(val)) { msg.textContent = 'Model names cannot contain spaces.'; msg.className = 'danger-text small'; return; }
+    if (val.length > 200 || /\s/.test(val)) { msg.textContent = 'Model names cannot contain spaces.'; msg.className = 'danger-text ui-small'; return; }
     currentModel = val;
     const nextModels = models.includes(val) ? models : [...models, val];
     if (await saveSpec({ default_model: val, models: nextModels }, 'Model saved.')) { models.splice(0, models.length, ...nextModels); fillModels(); }
@@ -857,9 +859,9 @@ function providerCard(v, spec) {
   custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyCustom(); } });
 
   // Context window and reply length --------------------------------------------
-  const ctxInput = el('input', { id: `${uid}-ctx`, class: 'input narrow', type: 'number', min: '2048', max: '10000000', step: '1024', inputmode: 'numeric', placeholder: 'Auto', value: spec.context_tokens != null ? String(spec.context_tokens) : '' });
-  const ctxHint = el('p', { class: 'ui-text-tertiary small', id: `${uid}-ctx-hint` });
-  const outInput = el('input', { id: `${uid}-out`, class: 'input narrow', type: 'number', min: '256', max: '200000', step: '256', inputmode: 'numeric', value: String(spec.max_output_tokens || 2048) });
+  const ctxInput = el('input', { id: `${uid}-ctx`, class: 'ui-input narrow', type: 'number', min: '2048', max: '10000000', step: '1024', inputmode: 'numeric', placeholder: 'Auto', value: spec.context_tokens != null ? String(spec.context_tokens) : '' });
+  const ctxHint = el('p', { class: 'ui-help', id: `${uid}-ctx-hint` });
+  const outInput = el('input', { id: `${uid}-out`, class: 'ui-input narrow', type: 'number', min: '256', max: '200000', step: '256', inputmode: 'numeric', value: String(spec.max_output_tokens || 2048) });
   const fmtTokens = (n) => (n >= 1000000 ? `${(n / 1000000).toFixed(n % 1000000 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
   function paintCtxHint() {
     const reported = (spec.model_context || {})[currentModel];
@@ -874,22 +876,22 @@ function providerCard(v, spec) {
   ctxInput.addEventListener('change', async () => {
     const raw = ctxInput.value.trim();
     const n = raw === '' ? null : Number(raw);
-    if (n !== null && (!Number.isInteger(n) || n < 2048 || n > 10000000)) { msg.textContent = 'Enter a whole number of tokens from 2048 to 10000000, or leave it empty for Auto.'; msg.className = 'danger-text small'; return; }
+    if (n !== null && (!Number.isInteger(n) || n < 2048 || n > 10000000)) { msg.textContent = 'Enter a whole number of tokens from 2048 to 10000000, or leave it empty for Auto.'; msg.className = 'danger-text ui-small'; return; }
     if (await saveSpec({ context_tokens: n }, n ? `Context window set to ${fmtTokens(n)} tokens.` : 'Context window set to Auto.')) paintCtxHint();
   });
   outInput.addEventListener('change', async () => {
     const n = Number(outInput.value);
-    if (!Number.isInteger(n) || n < 256 || n > 200000) { msg.textContent = 'Enter a whole number of tokens from 256 to 200000.'; msg.className = 'danger-text small'; return; }
+    if (!Number.isInteger(n) || n < 256 || n > 200000) { msg.textContent = 'Enter a whole number of tokens from 256 to 200000.'; msg.className = 'danger-text ui-small'; return; }
     await saveSpec({ max_output_tokens: n }, `Replies can use up to ${fmtTokens(n)} tokens.`);
   });
   select.addEventListener('change', paintCtxHint);
 
   // Key ----------------------------------------------------------------------
   const keyInput = el('input', {
-    id: `${uid}-key`, class: 'input mono', type: 'password', autocomplete: 'off', spellcheck: 'false',
+    id: `${uid}-key`, class: 'ui-input ui-mono', type: 'password', autocomplete: 'off', spellcheck: 'false',
     autocapitalize: 'none', 'data-key-input': '', placeholder: 'Paste your API key',
   });
-  const eye = el('button', { type: 'button', class: 'btn eye', 'data-eye': '', 'aria-pressed': 'false', 'aria-label': 'Show API key', text: 'Show' });
+  const eye = el('button', { type: 'button', class: 'ui-btn eye', 'data-eye': '', 'aria-pressed': 'false', 'aria-label': 'Show API key', text: 'Show' });
   eye.addEventListener('click', () => {
     const show = keyInput.type === 'password';
     keyInput.type = show ? 'text' : 'password';
@@ -906,7 +908,7 @@ function providerCard(v, spec) {
 
   const takeKey = () => { const k = keyInput.value; keyInput.value = ''; keyInput.type = 'password'; eye.setAttribute('aria-pressed', 'false'); return k; };
 
-  const showTest = (text, cls) => { testLine.textContent = text; testLine.className = `test-line small ${cls}`; };
+  const showTest = (text, cls) => { testLine.textContent = text; testLine.className = `test-line ui-small ${cls}`; };
   /** Hand a typed key to the bridge. False (with the reason shown) when it was not saved. */
   async function saveTypedKey(k) {
     const res = await api.call('save_api_key', id, k);
@@ -915,7 +917,7 @@ function providerCard(v, spec) {
     return true;
   }
 
-  const saveBtn = btn('Save key', { cls: 'btn-primary', 'aria-label': `Save the API key for ${v.display_name || id}` });
+  const saveBtn = btn('Save key', { cls: 'ui-btn--primary', 'aria-label': `Save the API key for ${v.display_name || id}` });
   saveBtn.addEventListener('click', async () => {
     const k = takeKey().trim();
     if (!k) { showTest('Type a key first.', 'danger-text'); keyInput.focus(); return; }
@@ -967,13 +969,13 @@ function providerCard(v, spec) {
   const refreshBtn = btn('Refresh models', { 'aria-label': `Refresh the model list for ${v.display_name || id}` });
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.disabled = true;
-    testLine.textContent = 'Reading the model list…'; testLine.className = 'test-line small ui-text-secondary';
+    testLine.textContent = 'Reading the model list…'; testLine.className = 'test-line ui-small ui-text-secondary';
     const res = await api.call('refresh_models', id);
     refreshBtn.disabled = false;
     const r = res && res.results && res.results[id];
-    if (!isOk(res) || !r) { testLine.textContent = errText(res); testLine.className = 'test-line small danger-text'; return; }
+    if (!isOk(res) || !r) { testLine.textContent = errText(res); testLine.className = 'test-line ui-small danger-text'; return; }
     testLine.textContent = refreshSummary(r);
-    testLine.className = `test-line small ${r.ok ? 'ok-text' : 'danger-text'}`;
+    testLine.className = `test-line ui-small ${r.ok ? 'ok-text' : 'danger-text'}`;
     if (!r.ok) return;
     const view = (res.providers || []).find((p) => p.id === id) || {};
     models.splice(0, models.length, ...r.models);
@@ -991,9 +993,9 @@ function providerCard(v, spec) {
   removeBtn.addEventListener('click', async () => {
     takeKey();
     const res = await api.call('remove_api_key', id);
-    if (!isOk(res)) { testLine.textContent = errText(res); testLine.className = 'test-line small danger-text'; return; }
+    if (!isOk(res)) { testLine.textContent = errText(res); testLine.className = 'test-line ui-small danger-text'; return; }
     setKey(res.key);
-    testLine.textContent = 'Key removed.'; testLine.className = 'test-line small ui-text-secondary';
+    testLine.textContent = 'Key removed.'; testLine.className = 'test-line ui-small ui-text-secondary';
   });
   // Enter saves the typed key and tests it; on an empty field it says to type a key first.
   keyInput.addEventListener('keydown', (e) => {
@@ -1005,16 +1007,16 @@ function providerCard(v, spec) {
   // Remove provider (custom only) ----------------------------------------------
   let removeProvider = null;
   if (!builtin) {
-    const holder = el('div', { class: 'row remove-provider' });
-    const askBtn = btn('Remove provider', { cls: 'btn-danger-ghost' });
+    const holder = el('div', { class: 'ui-row remove-provider' });
+    const askBtn = btn('Remove provider', { cls: 'ui-btn--danger' });
     const render = (confirm) => {
       clear(holder);
       if (!confirm) { holder.append(askBtn); return; }
       holder.append(
-        el('span', { class: 'danger-text small', text: `Remove ${v.display_name || id} and its saved key?` }),
-        btn('Remove', { cls: 'btn-danger', onclick: async () => {
+        el('span', { class: 'danger-text ui-small', text: `Remove ${v.display_name || id} and its saved key?` }),
+        btn('Remove', { cls: 'ui-btn--danger', onclick: async () => {
           const res = await api.call('remove_provider', id);
-          if (!isOk(res)) { msg.textContent = errText(res); msg.className = 'danger-text small'; render(false); return; }
+          if (!isOk(res)) { msg.textContent = errText(res); msg.className = 'danger-text ui-small'; render(false); return; }
           toast(`${v.display_name || id} removed.`);
           await loadProviders();
           $('add-id').focus();
@@ -1028,33 +1030,33 @@ function providerCard(v, spec) {
     removeProvider = holder;
   }
 
-  const headTitle = el('h3', { class: 'h2', id: `${uid}-title`, text: v.display_name || id });
-  return el('section', { class: 'card provider-card', 'data-id': id, 'aria-labelledby': `${uid}-title` }, [
-    el('div', { class: 'card-head' }, [
+  const headTitle = el('h3', { class: 'ui-card__title', id: `${uid}-title`, text: v.display_name || id });
+  return el('section', { class: 'ui-card provider-card', 'data-id': id, 'aria-labelledby': `${uid}-title` }, [
+    el('div', { class: 'ui-card__header' }, [
       headTitle,
-      el('span', { class: 'chip chip-neutral mono', text: id }),
+      el('span', { class: 'ui-badge ui-mono', text: id }),
       chip(builtin ? 'Built in' : 'Custom', builtin ? 'neutral' : 'accent'),
     ]),
     regionBlock,
     urlField,
     el('div', { class: 'grid2' }, [
-      el('div', { class: 'field' }, [el('label', { for: `${uid}-model`, text: 'Model' }), select]),
-      el('div', { class: 'field' }, [el('label', { for: `${uid}-model-custom`, text: 'Custom model name' }), custom, dlist]),
+      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-model`, text: 'Model' }), select]),
+      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-model-custom`, text: 'Custom model name' }), custom, dlist]),
     ]),
     el('div', { class: 'grid2' }, [
-      el('div', { class: 'field' }, [el('label', { for: `${uid}-ctx`, text: 'Context window (tokens)' }), ctxInput, ctxHint]),
-      el('div', { class: 'field' }, [el('label', { for: `${uid}-out`, text: 'Longest reply (tokens)' }), outInput]),
+      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-ctx`, text: 'Context window (tokens)' }), ctxInput, ctxHint]),
+      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-out`, text: 'Longest reply (tokens)' }), outInput]),
     ]),
-    el('div', { class: 'field' }, [
-      el('label', { for: `${uid}-key`, text: v.key && v.key.required === false ? 'API key (optional)' : 'API key' }),
-      el('div', { class: 'key-row' }, [keyInput, eye]),
+    el('div', { class: 'ui-field' }, [
+      el('label', { class: 'ui-label', for: `${uid}-key`, text: v.key && v.key.required === false ? 'API key (optional)' : 'API key' }),
+      el('div', { class: 'ui-input-group' }, [keyInput, eye]),
       keyLine,
-      v.docs_url ? el('p', { class: 'small' }, [el('a', {
+      v.docs_url ? el('p', { class: 'ui-small' }, [el('a', {
         href: v.docs_url, rel: 'noopener noreferrer', text: 'Where do I get a key?',
         onclick: (e) => { e.preventDefault(); api.call('open_external', v.docs_url); },
       })]) : null,
     ]),
-    el('div', { class: 'row' }, [saveBtn, testBtn, refreshBtn, removeBtn]),
+    el('div', { class: 'ui-row' }, [saveBtn, testBtn, refreshBtn, removeBtn]),
     testLine,
     fetched,
     msg,
@@ -1075,9 +1077,9 @@ function initProviders() {
   $('auto-refresh').addEventListener('change', async (e) => {
     const want = e.target.checked;
     const res = await api.call('update_settings', { chat: { auto_refresh_models: want } });
-    if (!isOk(res)) { e.target.checked = !want; $('refresh-msg').className = 'small danger-text'; $('refresh-msg').textContent = errText(res); return; }
+    if (!isOk(res)) { e.target.checked = !want; $('refresh-msg').className = 'ui-small danger-text'; $('refresh-msg').textContent = errText(res); return; }
     if (res.config) S.cfg = { ...S.cfg, ...res.config };
-    $('refresh-msg').className = 'small ui-text-secondary';
+    $('refresh-msg').className = 'ui-small ui-text-secondary';
     $('refresh-msg').textContent = want ? 'Model lists will refresh once a day.' : 'Automatic refresh is off.';
   });
   for (const id of ['local-device', 'local-mpl']) $(id).addEventListener('input', () => { $('local-msg').textContent = ''; });
@@ -1105,9 +1107,9 @@ function initProviders() {
     if (bad) { bad.focus(); return; }
     const spec = { id, kind: 'openai', display_name: name, base_url: url, api_key_env: env || null, models, default_model: models[0] || null, quirks: [], supports_tools: true };
     const res = await api.call('upsert_provider', spec);
-    if (!isOk(res)) { $('add-msg').textContent = errText(res); $('add-msg').className = 'danger-text small'; return; }
+    if (!isOk(res)) { $('add-msg').textContent = errText(res); $('add-msg').className = 'danger-text ui-small'; return; }
     form.reset();
-    $('add-msg').className = 'ui-text-secondary small';
+    $('add-msg').className = 'ui-text-secondary ui-small';
     $('add-msg').textContent = `Added ${name}. Enter its key in the new card above, then press Test to fetch its models.`;
     await loadProviders();
     const card = document.querySelector(`.provider-card[data-id="${cssEsc(id)}"]`);
@@ -1261,8 +1263,8 @@ function initGeneral() {
       }
     }
     $('g-save').disabled = false;
-    if (ok_) { S.generalDirty = false; $('g-msg').textContent = 'Saved.'; $('g-msg').className = 'ok-text small'; }
-    else { $('g-msg').textContent = notes.length ? notes.join(' ') : 'Some settings were not saved. See the messages above.'; $('g-msg').className = 'danger-text small'; }
+    if (ok_) { S.generalDirty = false; $('g-msg').textContent = 'Saved.'; $('g-msg').className = 'ok-text ui-small'; }
+    else { $('g-msg').textContent = notes.length ? notes.join(' ') : 'Some settings were not saved. See the messages above.'; $('g-msg').className = 'danger-text ui-small'; }
   });
 }
 
@@ -1284,18 +1286,18 @@ function qaDefaults() { return (QA.data && QA.data.defaults) || []; }
 /** One editable row. `a`: {id, label, hint, instructions, tools, match_style, builtin}. */
 function quickActionRow(a, { open = false } = {}) {
   const n = ++qaSeq;
-  const label = el('input', { id: `qa-label-${n}`, class: 'input qa-label', type: 'text', maxlength: String(QA_LABEL_MAX),
+  const label = el('input', { id: `qa-label-${n}`, class: 'ui-input qa-label', type: 'text', maxlength: String(QA_LABEL_MAX),
     autocomplete: 'off', spellcheck: 'true', placeholder: 'Name, e.g. Make it friendlier' });
   label.value = a.label || '';
-  const text = el('textarea', { id: `qa-text-${n}`, class: 'input qa-instructions', rows: '4', maxlength: String(QA_INSTRUCTIONS_MAX),
+  const text = el('textarea', { id: `qa-text-${n}`, class: 'ui-textarea qa-instructions', rows: '4', maxlength: String(QA_INSTRUCTIONS_MAX),
     spellcheck: 'true', placeholder: 'What the model should do with the pasted text, and how to answer. For example: Rewrite the text in a warmer tone. Reply with only the new text in one ```text block.' });
   text.value = a.instructions || '';
-  const tools = el('input', { type: 'checkbox', class: 'qa-tools', id: `qa-tools-${n}` });
+  const tools = el('input', { type: 'checkbox', class: 'ui-checkbox qa-tools', id: `qa-tools-${n}` });
   tools.checked = !!a.tools;
-  const style = el('input', { type: 'checkbox', class: 'qa-style', id: `qa-style-${n}` });
+  const style = el('input', { type: 'checkbox', class: 'ui-checkbox qa-style', id: `qa-style-${n}` });
   style.checked = !!a.match_style;
-  const remove = btn('Remove', { cls: 'btn-danger-ghost qa-remove' });
-  const li = el('li', { class: 'qa-row', dataset: { id: a.id || '', builtin: a.builtin ? '1' : '0', hint: a.hint || '' } }, [
+  const remove = btn('Remove', { cls: 'ui-btn--ghost qa-remove' });
+  const li = el('li', { class: 'qa-row ui-well', dataset: { id: a.id || '', builtin: a.builtin ? '1' : '0', hint: a.hint || '' } }, [
     el('div', { class: 'qa-head' }, [
       label,
       chip(a.builtin ? 'Built in' : 'Custom', a.builtin ? 'neutral' : 'accent'),
@@ -1305,8 +1307,8 @@ function quickActionRow(a, { open = false } = {}) {
       el('summary', { text: 'Instructions' }),
       text,
       el('div', { class: 'qa-flags' }, [
-        el('label', { class: 'check', for: tools.id }, [tools, el('span', { text: 'Can look things up on the web' })]),
-        el('label', { class: 'check', for: style.id }, [style, el('span', { text: 'Match the formatting of my text' })]),
+        el('label', { class: 'ui-check', for: tools.id }, [tools, el('span', { text: 'Can look things up on the web' })]),
+        el('label', { class: 'ui-check', for: style.id }, [style, el('span', { text: 'Match the formatting of my text' })]),
       ]),
     ]),
   ]);
@@ -1396,7 +1398,7 @@ function initQuickActions() {
   $('qa-restore').addEventListener('click', () => {
     renderQuickActionRows(qaDefaults());
     S.generalDirty = true;
-    $('g-msg').className = 'ui-text-secondary small';
+    $('g-msg').className = 'ui-text-secondary ui-small';
     $('g-msg').textContent = 'The built-in quick actions are back. Press Save to keep them.';
   });
   // A name or instructions being fixed clears its error.

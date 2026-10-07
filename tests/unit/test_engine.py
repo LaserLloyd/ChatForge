@@ -416,6 +416,58 @@ async def test_new_chat_clears_and_persists(tmp_path) -> None:
     assert h.new_engine().conversation_items() == []
 
 
+async def test_two_rapid_saves_end_with_the_later_content_on_disk(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    from chatforge.chat import conversation as conv_store
+
+    with fake_openai_server(sse(text_chunks("ok", 1))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        engine = h.engine
+        real = conv_store.write_atomic
+        writes: list[int] = []
+
+        def slow_first(path, payload):
+            n = len(writes)
+            writes.append(n)
+            if n == 0:
+                _time.sleep(0.2)  # the earlier save is still writing when the later one starts
+            real(path, payload)
+
+        monkeypatch.setattr(conv_store, "write_atomic", slow_first)
+        engine.conversation.append({"role": "user", "content": "first"})
+        first = engine._submit()  # noqa: SLF001
+        engine.conversation.append({"role": "assistant", "content": "second"})
+        second = engine._submit()  # noqa: SLF001
+        # Serialised at submit time, on the loop: later edits cannot leak into the earlier save.
+        await asyncio.gather(first, second)
+        await engine.flush()
+        saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))
+        assert [m["content"] for m in saved["messages"]] == ["first", "second"]
+        # And a clear right after a save in flight wins over it.
+        engine.conversation.append({"role": "user", "content": "third"})
+        engine._submit()  # noqa: SLF001
+        engine.new_chat()
+        await engine.flush()
+        saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))
+        assert saved["messages"] == []
+        assert not list(h.paths.conversation_file.parent.glob("*.tmp"))
+
+
+async def test_a_stale_save_is_skipped_not_written_over_a_newer_one(tmp_path) -> None:
+    with fake_openai_server(sse(text_chunks("ok", 1))) as srv:
+        h = Harness(tmp_path, srv.base_url)
+        engine = h.engine
+        engine.conversation.append({"role": "user", "content": "old"})
+        old = engine._snapshot()  # noqa: SLF001
+        engine.conversation.append({"role": "user", "content": "new"})
+        new = engine._snapshot()  # noqa: SLF001
+        engine._write(*new)  # noqa: SLF001
+        engine._write(*old)  # noqa: SLF001 - arrives late
+        saved = json.loads(h.paths.conversation_file.read_text(encoding="utf-8"))
+        assert [m["content"] for m in saved["messages"]] == ["old", "new"]
+
+
 async def test_persistence_off_deletes_the_file(tmp_path) -> None:
     with fake_openai_server(sse(text_chunks("ok", 1)), sse(text_chunks("ok", 1))) as srv:
         h = Harness(tmp_path, srv.base_url)

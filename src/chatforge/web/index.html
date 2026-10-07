@@ -7,13 +7,16 @@
   <title>ChatForge</title>
   <link rel="icon" href="/static/img/icon.svg" type="image/svg+xml">
   <!-- Theme runtime first (blocking) so the palette is set before first paint. ui-theme/ is
-       the UnifyingTheme bundle, verbatim; ChatForge's settings are desktop/theme.py, and the
-       app's server writes them over the data-* below (every core theme, as the bundle has
-       them). These only count when the page is opened some other way. -->
+       the ThemeForge bundle (https://github.com/LaserLloyd/ThemeForge), verbatim and
+       updated with `python ui-theme/update.py`; ChatForge's settings are desktop/theme.py,
+       and the app's server writes them over the data-* below (every core theme, as the
+       bundle has them). These only count when the page is opened some other way. -->
   <script src="/static/ui-theme/ui-theme.js" data-themes="laserlloyd,laserlloyd-light,midnight-gold,glacier,forest,paper,daylight,purple" data-default="laserlloyd" data-storage-key="chatforge.theme" data-families="true"></script>
   <link rel="stylesheet" href="/static/ui-theme/ui-theme-base.css">
+  <link rel="stylesheet" href="/static/ui-theme/ui-components.css">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/ui-theme/ui-theme.css">
+  <script defer src="/static/ui-theme/ui-components.js"></script>
 </head>
 <body>
   <div id="app" class="app">
@@ -28,16 +31,13 @@
       </div>
       <div class="hdr-drag pywebview-drag-region" aria-hidden="true"></div>
       <div class="hdr-actions">
-        <button type="button" id="btn-pin" class="icon-btn" aria-pressed="true" aria-label="Sticky: keep the popup open" title="Sticky: stays open until you close it or press the hotkey again (click to let it hide when you click away)">
+        <button type="button" id="btn-pin" class="ui-btn ui-btn--ghost ui-btn--icon hdr-btn" aria-pressed="true" aria-label="Sticky: keep the popup open" title="Sticky: stays open until you close it or press the hotkey again (click to let it hide when you click away)">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H7v-2l3-3-1-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
         </button>
-        <button type="button" id="btn-new" class="icon-btn btn-clear" aria-label="Clear chat (start over)" title="Clear chat (start over at the default size)">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M6.7 2.5v4.2h4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <button type="button" id="btn-settings" class="icon-btn" aria-label="Settings" title="Settings">
+        <button type="button" id="btn-settings" class="ui-btn ui-btn--ghost ui-btn--icon hdr-btn" aria-label="Settings" title="Settings">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.70 10.34 L21.11 10.70 L21.11 13.30 L18.70 13.66 L17.91 15.56 L19.36 17.52 L17.52 19.36 L15.56 17.91 L13.66 18.70 L13.30 21.11 L10.70 21.11 L10.34 18.70 L8.44 17.91 L6.48 19.36 L4.64 17.52 L6.09 15.56 L5.30 13.66 L2.89 13.30 L2.89 10.70 L5.30 10.34 L6.09 8.44 L4.64 6.48 L6.48 4.64 L8.44 6.09 L10.34 5.30 L10.70 2.89 L13.30 2.89 L13.66 5.30 L15.56 6.09 L17.52 4.64 L19.36 6.48 L17.91 8.44 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
         </button>
-        <button type="button" id="btn-close" class="icon-btn" aria-label="Close" title="Close (Esc)">
+        <button type="button" id="btn-close" class="ui-btn ui-btn--ghost ui-btn--icon hdr-btn" aria-label="Close" title="Close (Esc)">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         </button>
       </div>
@@ -83,6 +83,10 @@
         </button>
       </div>
       <div class="composer-foot">
+        <button type="button" id="btn-new" class="ui-btn ui-btn--ghost ui-btn--sm btn-clear" aria-label="Clear chat (start over)" title="Clear chat (start over at the default size)">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M6.7 2.5v4.2h4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Clear chat</span>
+        </button>
         <span id="char-count" class="char-count" hidden></span>
       </div>
     </footer>

@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from chatforge.errors import AppError
+from chatforge.logging_setup import get_logger
+
+log = get_logger(__name__)
 
 _FENCE = re.compile(r"^\s*```[A-Za-z0-9_-]*\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL)
 
@@ -327,6 +330,8 @@ class ToolRegistry:
         try:
             result = await self._dispatch(name, args, max_chars)
         except Exception as exc:  # a tool bug must not kill the chat turn
+            # The model only sees the exception type; the log keeps the traceback.
+            log.warning("tool_crashed", tool=name, error=type(exc).__name__, exc_info=True)
             return ToolResult(False, f"Tool {name} failed: {type(exc).__name__}.", f"{name} failed")
         result.content = _clip(result.content, max_chars)
         return result

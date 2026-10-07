@@ -61,8 +61,8 @@ export function createKeyCard({ api, provider, onSuccess, onCancel, onOpenLink }
     input.focus();
   });
 
-  const save = el('button', { class: 'btn btn-primary', type: 'button', text: 'Save & test' });
-  const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel' });
+  const save = el('button', { class: 'ui-btn ui-btn--primary', type: 'button', text: 'Save & test' });
+  const cancel = el('button', { class: 'ui-btn', type: 'button', text: 'Cancel' });
 
   // Region toggle: a radiogroup of two buttons.
   let regionRow = null;

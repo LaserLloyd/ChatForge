@@ -30,7 +30,7 @@ Local (`local.device`; slower), or use StudioForge or a cloud provider only.
 In the folder where you keep your projects:
 
 ```powershell
-git clone https://github.com/LaserLloyd/ChatForge.git      # private repo: run gh auth login first
+git clone https://github.com/LaserLloyd/ChatForge.git
 cd ChatForge
 py -3.12 -m uv sync --extra dev
 ```
@@ -104,7 +104,7 @@ or double-click `launchers\ChatForge.bat`. On the first run the app:
 - shows the popup at the lower right, above the taskbar.
 
 Opening the popup with the local model selected starts loading it. The very first load compiles
-it for the NPU, about 45 s, with a countdown in the popup header; every later load takes about
+it for the NPU, about 45 s, with a countdown in the status line under the popup's header; every later load takes about
 3 s from the compile cache in `%LOCALAPPDATA%\ChatForge\cache\ov\`. After 10 idle minutes the
 model unloads (the tray dot turns grey) and loads again when you next open the popup or ask a
 question.
@@ -197,6 +197,7 @@ keep it or delete it.
 
 The runtime supervisor, downloader, tray, autostart and logging are adapted from
 **StudioForge**; the chat UI, Markdown pipeline and key card from **DisPatch_Chat**; the
-streaming client from **CrucibleForge**; the theme bundle from **UnifyingTheme**. See
-[`PLAN.md`](PLAN.md) §1.3 for the file-by-file map and
+streaming client from **CrucibleForge**; the theme bundle from **ThemeForge** (<https://github.com/LaserLloyd/ThemeForge>, public, MIT; update it
+with `python src/chatforge/web/static/ui-theme/update.py`, see the README's Themes section). See
+[`PLAN.md`](PLAN.md) §1.3 (the original plan) for the file-by-file map and
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for licences.

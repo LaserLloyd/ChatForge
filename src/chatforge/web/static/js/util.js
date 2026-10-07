@@ -19,7 +19,7 @@ export function el(tag, attrs = {}, children = []) {
     else if (k === 'dataset') Object.assign(node.dataset, v);
     else node.setAttribute(k, v);
   }
-  for (const c of [].concat(children)) {
+  for (const c of (Array.isArray(children) ? children : [children])) {
     if (c == null) continue;
     node.append(c.nodeType ? c : document.createTextNode(String(c)));
   }
@@ -62,10 +62,16 @@ export function loadStyle(href) {
   return p;
 }
 
+// Hot path (markdown.js calls it for every code span, header and attribute of every
+// streamed paint): one shared table instead of an object literal per matched character,
+// and no regex replace at all for the usual string that has nothing to escape.
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const NEEDS_ESCAPE_RE = /[&<>"']/;
+const ESCAPE_CHARS_RE = /[&<>"']/g;
+const escapeChar = (c) => ESCAPES[c];
 export function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
+  const str = String(s);
+  return NEEDS_ESCAPE_RE.test(str) ? str.replace(ESCAPE_CHARS_RE, escapeChar) : str;
 }
 
 // --- Rail icons -------------------------------------------------------------

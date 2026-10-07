@@ -10,6 +10,8 @@ These results were measured on 2026-09-30 on the target laptop:
 
 `scripts/ovms_bringup.ps1` reproduces the whole bring-up.
 
+This is a record of the Phase A measurements. The recommendations in it have since been applied: `catalog.toml` makes Qwen2.5-1.5B the recommended model and avoids Qwen3-4B, the `[chat] model` default is Qwen2.5-1.5B, and the `[local]` defaults below are the shipped ones (the config has since gained a few more keys, such as `precompile` and `npu_fallback_device`). The "WS" and "PLAN §" references point into [`PLAN.md`](PLAN.md), the original build plan.
+
 ## TL;DR
 
 - **The default local model is `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov`, not Qwen3-4B.** Qwen3-4B-int4-ov compiles on the NPU but its output is garbage (see "Model gate" below). Qwen2.5-1.5B produces coherent output, and its hermes3 tool calls are clean.
@@ -198,7 +200,7 @@ The flag is accepted and it helps modestly, at a large one-off compile cost:
 - **`finish_reason`** was only ever `stop`, `length` or `tool_calls`.
 - **Tool round trip:** sending the assistant message with its `tool_calls`, followed by `{"role":"tool","tool_call_id","content"}`, gets a correct final answer. For example: "Today's date is Wednesday, September 30, 2026 in GMT Summer Time."
 - **Quirks:**
-  - **The small model over-uses tools** when the system prompt doesn't discourage them. "What is the capital of France?" with tools offered called `current_datetime`. With the PLAN §1.7 system prompt ("Use tools only when they help …") it answered "The capital of France is Paris." directly. Keep that sentence.
+  - **The small model over-uses tools** when the system prompt doesn't discourage them. "What is the capital of France?" with tools offered called `current_datetime`. With the PLAN §1.7 system prompt ("Use tools only when they help …") it answered "The capital of France is Paris." directly. That steering now lives in `TOOLS_SENTENCE` in `chat/prompts.py` ("… answer simple questions directly"), added whenever tools are offered.
   - `tool_choice: "required"` is accepted but was not enforced (the model gave empty content). `tool_choice: "none"` is honoured.
 - **Error bodies** are always `{"error": "<text>"}`:
   - 400 `… n value cannot be greater than best_of` when `n` is 2. Never send `n`.

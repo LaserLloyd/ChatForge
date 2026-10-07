@@ -91,6 +91,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -314,6 +315,14 @@ class ChatEngine:
         self._now = now or (lambda: datetime.now().astimezone())
         self._active: dict[str, _Request] = {}
         self._send_lock = asyncio.Lock()
+        # Saves: the conversation is serialised on the loop (it is mutated there) and the
+        # file write runs in a worker thread. Each save takes a sequence number; the write
+        # lock plus "skip anything older than what is on disk" keeps two saves from
+        # interleaving or landing out of order, however the threads get scheduled.
+        self._save_seq = 0
+        self._written_seq = 0
+        self._write_lock = threading.Lock()
+        self._saves: set[asyncio.Future[None]] = set()
         self._conv = Conversation()
         if attachments_dir is not None:
             self._pictures: Path | None = Path(attachments_dir)
@@ -372,7 +381,9 @@ class ChatEngine:
         """Stop anything running and start an empty conversation."""
         self.cancel_all("new_chat")
         self._conv = Conversation()
-        self._persist()
+        # Synchronous (a click, not the end of a turn): done when this returns. It takes the
+        # next sequence number, so a save still in flight can never overwrite it.
+        self._write(*self._snapshot())
         self._clean_pictures()
 
     async def send(
@@ -446,14 +457,14 @@ class ChatEngine:
                 while task.cancelling():
                     task.uncancel()
             if started:
-                self._finish_cancelled(req, conv, text or "")
+                await self._finish_cancelled(req, conv, text or "")
             else:
                 self._emit_queued_cancel(req)
         except LLMError as exc:
             if not started:
                 self._fail(req, conv, len(conv), exc)  # nothing of ours to roll back
             elif exc.code == "cancelled" or req.cancelled:
-                self._finish_cancelled(req, conv, text or "")
+                await self._finish_cancelled(req, conv, text or "")
             else:
                 self._fail(req, conv, mark, exc)
         except Exception as exc:  # noqa: BLE001 - every failure becomes chat.error
@@ -569,12 +580,12 @@ class ChatEngine:
             partial=False,
         )
 
-    def _finish_cancelled(self, req: _Request, conv: Conversation, text: str) -> None:
+    async def _finish_cancelled(self, req: _Request, conv: Conversation, text: str) -> None:
         partial = bool(req.round_content or req.round_reasoning)
         unloaded = req.cancel_reason == "unloaded"
         # A regenerate stopped before it said anything keeps the reply it was replacing.
         if not (partial or req.turn_parts) and self._restore(req, conv):
-            self._persist()
+            saving = self._submit()
             self._emit(
                 req,
                 "chat.error",
@@ -585,6 +596,7 @@ class ChatEngine:
                 partial=False,
                 restored=True,
             )
+            await self._settle(saving)
             return
         if conv is self._conv:
             if not req.user_recorded:
@@ -604,7 +616,9 @@ class ChatEngine:
                     msg["_model"] = req.model
                 conv.append(msg)
             conv.repair_tool_calls(ts=self._clock())
-            self._persist()
+            saving = self._submit()
+        else:
+            saving = None
         unloaded = req.cancel_reason == "unloaded"
         self._emit(
             req,
@@ -615,6 +629,7 @@ class ChatEngine:
             action=None,
             partial=partial or bool(req.turn_parts),
         )
+        await self._settle(saving)
 
     # ------------------------------------------------------------------ #
     # Internals: one message
@@ -689,7 +704,7 @@ class ChatEngine:
             provider=req.provider,
         )
         conv.trim()
-        self._persist()
+        await self._settle(self._submit())
         self._clean_pictures()
 
     async def _attempt(
@@ -1182,16 +1197,52 @@ class ChatEngine:
         except Exception:  # noqa: BLE001
             return False
 
-    def _persist(self) -> None:
+    def _snapshot(self) -> tuple[int, str | None]:
+        """Take the next save number and, when persisting, the serialised conversation
+        (``None`` means delete the file). Runs on the loop, where the conversation changes."""
+        self._save_seq += 1
+        seq = self._save_seq
+        if self._file is None:
+            return seq, None
+        return seq, conv_store.serialize(self._conv) if self._persist_enabled() else None
+
+    def _write(self, seq: int, payload: str | None) -> None:
+        """Blocking: put save ``seq`` on disk unless a newer one already is."""
         if self._file is None:
             return
-        try:
-            if self._persist_enabled():
-                conv_store.save(self._file, self._conv)
-            else:
-                conv_store.delete(self._file)
-        except OSError as exc:
-            log.warning("conversation_save_failed", error=str(exc)[:200])
+        with self._write_lock:
+            if seq < self._written_seq:
+                return
+            self._written_seq = seq
+            try:
+                if payload is None:
+                    conv_store.delete(self._file)
+                else:
+                    conv_store.write_atomic(self._file, payload)
+            except OSError as exc:
+                log.warning("conversation_save_failed", error=str(exc)[:200])
+
+    def _submit(self) -> asyncio.Future[None] | None:
+        """Serialise now, write in a worker thread. The returned future is already tracked
+        (``flush`` waits for it); await it through ``_settle``."""
+        if self._file is None:
+            return None
+        seq, payload = self._snapshot()
+        save = asyncio.ensure_future(asyncio.to_thread(self._write, seq, payload))
+        self._saves.add(save)
+        save.add_done_callback(self._saves.discard)
+        return save
+
+    @staticmethod
+    async def _settle(save: asyncio.Future[None] | None) -> None:
+        """Wait for a save. If this task is cancelled meanwhile the write carries on."""
+        if save is not None:
+            await asyncio.shield(save)
+
+    async def flush(self) -> None:
+        """Wait until every save started so far is on disk (call before shutdown)."""
+        while self._saves:
+            await asyncio.gather(*list(self._saves), return_exceptions=True)
 
 
 __all__ = ["ChatEngine"]

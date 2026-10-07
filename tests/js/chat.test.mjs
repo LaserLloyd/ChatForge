@@ -1376,7 +1376,19 @@ test('sticky: a blur never hides the popup, Escape does, and the pin turns it of
   }
 });
 
-test('Clear chat wears the theme contrast colour', () => {
-  assert.ok($('btn-new').classList.contains('btn-clear'));
+test('Clear chat sits in the composer footer as a labelled ghost button, not in the header', () => {
+  const b = $('btn-new');
+  assert.ok(b.classList.contains('btn-clear'), 'keeps the caution colour hook');
+  assert.ok(b.classList.contains('ui-btn') && b.classList.contains('ui-btn--ghost') && b.classList.contains('ui-btn--sm'));
+  assert.equal(b.closest('.composer-foot'), document.querySelector('.composer-foot'));
+  assert.equal(b.closest('.hdr'), null, 'not next to Close');
+  assert.equal(b.textContent.trim(), 'Clear chat');
+  assert.match(b.getAttribute('aria-label'), /^Clear chat/);
+  assert.ok(b.title);
+  for (const id of ['btn-pin', 'btn-settings', 'btn-close']) {
+    assert.ok($(id).closest('.hdr-actions'), `${id} stays in the header`);
+    assert.ok($(id).classList.contains('ui-btn--icon'));
+  }
+  assert.ok(document.querySelector('.hdr .model-chip'));
 });
 

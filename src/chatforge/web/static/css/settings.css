@@ -1,6 +1,9 @@
-/* Settings window. Contract tokens only (ui-theme V26-09-16): no raw colours, and text is
-   quieted by choosing a lower text tier, never by opacity. Loaded after ui-theme-base.css and
-   before ui-theme.css, like every app stylesheet. */
+/* Settings window: only what ThemeForge's component layer (ui-components.css) does not
+   already provide. Tabs, cards, fields, buttons, switches, badges, callouts, progress,
+   details, fieldsets and the toast come from the ui-* classes in settings.html and
+   settings.js. Tokens only: no raw colours, and text is quieted by choosing a lower text
+   tier, never by opacity. Loaded after ui-theme-base.css and ui-components.css, before
+   ui-theme.css, like every app stylesheet. */
 
 [hidden] { display: none !important; }
 
@@ -20,96 +23,33 @@
 .s-title { margin: 0; font-size: var(--fs-xl); font-weight: var(--fw-semibold); color: var(--text-primary); letter-spacing: var(--ls-tight); }
 .s-sub { margin: 0; font-size: var(--fs-xs); }
 
-.tabs {
-  display: flex;
-  gap: var(--space-1);
-  border-bottom: var(--stroke-default) solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
-  background: var(--surface-0);
-}
-.tab {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  border-bottom: 3px solid transparent;
-  margin-bottom: -1px;
-  padding: var(--space-2) var(--space-4);
-  min-height: var(--control-h-lg);
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  color: var(--text-secondary);
-  cursor: pointer;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  transition: color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
-}
-.tab:hover { color: var(--text-primary); background: var(--surface-2); }
-.tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-link); font-weight: var(--fw-semibold); }
+/* Sticky tab strip (ui-tabs supplies the look). */
+.s-tabs { position: sticky; top: 0; z-index: var(--z-sticky); padding-top: var(--space-2); background: var(--surface-0); }
+.s-tabs .ui-tab { padding-block: var(--space-2) var(--space-3); }
+.s-tabs .ui-tab:focus-visible { outline-offset: -2px; }
 
 .panels { flex: 1; }
-.panel { display: flex; flex-direction: column; gap: var(--space-4); }
-.panel[hidden] { display: none; }
-.panel:focus { outline: none; }
+.panel, .cards { --ui-gap: var(--space-4); }   /* gap of the .ui-stack they also carry */
 
-/* ------------------------------------------------------------- focus (all) ---- */
-
-:where(button, input, select, textarea, summary, a, [tabindex]):focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-.tab:focus-visible { outline-offset: -2px; }
+/* The bundle's base layer draws the focus ring; scrollable regions keep it inside. */
 .log-view:focus-visible, .drawer:focus-visible { outline-offset: -2px; }
 
 /* ----------------------------------------------------------------- surfaces -- */
 
-.card {
-  background: var(--surface-1);
-  border: var(--stroke-default) solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.cards { display: flex; flex-direction: column; gap: var(--space-4); }
-.card-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-.card-head .note { margin-left: auto; }
+.ui-card__header { flex-wrap: wrap; }
+.card-note { margin-inline-start: auto; }
+/* Paragraphs inside the window carry no browser margin; spacing comes from the stack gaps. */
+:where(.shell, .drawer) p { margin: 0; }
 
-.h2 { margin: 0; font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
 .h3 { margin: 0; font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-primary); }
-.small { font-size: var(--fs-xs); margin: 0; }
-.note { margin: 0; font-size: var(--fs-xs); }
-.mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
-.tnum { font-variant-numeric: tabular-nums; }
 .pad-top { padding-top: var(--space-5); }
 .empty { margin: 0; font-size: var(--fs-sm); }
 .ok-text { color: var(--success-text); }
 .danger-text { color: var(--danger-text); }
 .compiled-yes { color: var(--success-text); font-weight: var(--fw-medium); }
-.spacer { flex: 1; }
 
-.warn-note {
-  padding: var(--space-2) var(--space-3);
-  background: var(--warning-subtle);
-  color: var(--warning-text);
-  border: var(--stroke-hairline) solid var(--warning-border);
-  border-radius: var(--radius-md);
-}
-.hint-box {
-  margin: 0;
-  padding: var(--space-3);
-  background: var(--danger-subtle);
-  color: var(--danger-text);
-  border: var(--stroke-hairline) solid var(--danger-border);
-  border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-}
+/* The "Visual C++ missing" callout: message, command and button on one wrapping line. */
+.callout-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
 .cmd {
   padding: var(--space-1) var(--space-2);
   background: var(--code-bg);
@@ -121,138 +61,31 @@
 
 /* -------------------------------------------------------------------- forms -- */
 
-.row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); align-items: start; }
-.field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-.field.grow { flex: 1; }
-.field.inline { flex-direction: row; align-items: center; gap: var(--space-2); }
-.field > label, .field > .label, .field.inline > label {
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-medium);
-  color: var(--text-secondary);
-}
+.ui-field.grow { flex: 1; }
+.narrow { max-width: 180px; }
+.ui-error:empty { display: none; }
 
-.input {
-  width: 100%;
-  min-height: var(--control-h-md);
-  padding: var(--space-1) var(--space-3);
-  background: var(--surface-sunken);
-  color: var(--text-primary);
-  border: var(--stroke-default) solid var(--border-strong);
-  border-radius: var(--radius-md);
-  font: inherit;
-  font-size: var(--fs-sm);
-}
-.input.narrow { max-width: 180px; }
-.input.mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
-.input::placeholder { color: var(--text-tertiary); }
-.input:hover { border-color: var(--text-tertiary); }
-.input[aria-invalid="true"] { border-color: var(--danger); }
-.input:disabled { color: var(--text-disabled); }
-select.input { cursor: pointer; }
-
-.err { margin: 0; font-size: var(--fs-xs); color: var(--danger-text); }
-.err:empty { display: none; }
-
-.check {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-h-sm);
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-
+/* Two-column layout for a ui-fieldset (the tool boxes, the prompt fields). */
 fieldset.tools {
-  margin: 0;
-  padding: var(--space-3);
-  border: var(--stroke-default) solid var(--border-subtle);
-  border-radius: var(--radius-md);
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-1) var(--space-5);
 }
-fieldset.tools legend { padding: 0 var(--space-2); font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--text-secondary); }
-fieldset.tools .err { grid-column: 1 / -1; }
-.switches { display: flex; flex-direction: column; gap: var(--space-1); }
-
-.adv { border: var(--stroke-default) solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); }
-.adv > summary { cursor: pointer; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-secondary); padding: var(--space-1) 0; }
-.adv[open] > summary { margin-bottom: var(--space-2); }
-
-/* ------------------------------------------------------------------ buttons -- */
-
-.btn {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  min-height: var(--control-h-sm);
-  padding: var(--space-1) var(--space-3);
-  background: var(--surface-2);
-  color: var(--text-primary);
-  border: var(--stroke-default) solid var(--border-strong);
-  border-radius: var(--radius-md);
-  font: inherit;
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-medium);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
-}
-.btn:hover:not(:disabled) { background: var(--surface-3); }
-.btn:active:not(:disabled) { background: var(--surface-4); }
-.btn:disabled { color: var(--text-disabled); border-color: var(--border-subtle); cursor: not-allowed; }
-.btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-primary:active:not(:disabled) { background: var(--accent-pressed); }
-.btn-primary:disabled { background: var(--surface-2); }
-.btn-danger { background: var(--danger); color: var(--on-danger); border-color: var(--danger); }
-.btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
-.btn-danger-ghost { background: transparent; color: var(--danger-text); border-color: var(--danger-border); }
-.btn-danger-ghost:hover:not(:disabled) { background: var(--danger-subtle); }
-.btn-icon { min-width: var(--control-h-sm); font-size: var(--fs-md); line-height: 1; padding: 0; }
-.btn[aria-pressed="true"]:not(:disabled) { background: var(--accent-subtle); border-color: var(--text-link); color: var(--text-link); }
-.btn[aria-pressed="true"]:disabled { color: var(--text-secondary); }
-
-/* ------------------------------------------------------------------- chips ---- */
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 var(--space-2);
-  min-height: 20px;
-  border-radius: var(--radius-pill);
-  border: var(--stroke-hairline) solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: var(--fs-micro);
-  font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-label);
-  white-space: nowrap;
-}
-.chip-ok { background: var(--success-subtle); color: var(--success-text); border-color: var(--success-border); }
-.chip-info { background: var(--info-subtle); color: var(--info-text); border-color: var(--info-border); }
-.chip-warn { background: var(--warning-subtle); color: var(--warning-text); border-color: var(--warning-border); }
-.chip-bad { background: var(--danger-subtle); color: var(--danger-text); border-color: var(--danger-border); }
-.chip-accent { background: var(--accent-subtle); color: var(--text-link); border-color: var(--border-strong); }
+fieldset.tools .ui-error { grid-column: 1 / -1; }
+.switches { display: flex; flex-direction: column; gap: var(--space-2); }
 
 /* --------------------------------------------------- model + result + dl rows -- */
 
 .model-list, .result-list, .dl-list, .legend, .file-list { list-style: none; margin: 0; padding: 0; }
 .model-list, .result-list, .dl-list { display: flex; flex-direction: column; gap: var(--space-2); }
 
+/* Rows are .ui-well; this is their layout. */
 .model-row, .result-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: var(--space-3);
   align-items: center;
-  padding: var(--space-3);
-  background: var(--surface-2);
-  border: var(--stroke-hairline) solid var(--border-subtle);
-  border-radius: var(--radius-md);
 }
 .m-main { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .m-title { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
@@ -262,29 +95,22 @@ fieldset.tools .err { grid-column: 1 / -1; }
 .m-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; align-items: center; }
 .m-actions.confirm { max-width: 360px; }
 
-.dl-row { padding: var(--space-3); background: var(--surface-2); border: var(--stroke-hairline) solid var(--border-subtle); border-radius: var(--radius-md); display: flex; flex-direction: column; gap: var(--space-2); }
+.dl-row { display: flex; flex-direction: column; gap: var(--space-2); }
 .dl-top { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .dl-bottom { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .dl-actions { display: flex; gap: var(--space-2); }
 
 .search-form { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
-.search-form .check { min-height: var(--control-h-md); }
+.search-form .ui-check { min-height: var(--control-h-md); }
 
 /* ---------------------------------------------------------------- progress ---- */
 
-.bar {
-  height: 8px;
-  background: var(--control-track);
-  border-radius: var(--radius-pill);
-  overflow: hidden;
-  display: flex;
-}
-.bar > i { display: block; height: 100%; width: 0; background: var(--highlight); border-radius: var(--radius-pill); transition: width var(--dur-fast) var(--ease-standard); }
-.progress-wrap { display: flex; flex-direction: column; gap: var(--space-1); }
+/* The OVMS download bar is a <progress class="ui-progress">; this only sets its stack gap. */
+.progress-wrap { --ui-gap: var(--space-1); }
 
 .disk { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-2); border-top: var(--stroke-hairline) solid var(--divider); }
-.disk-bar { height: 12px; border-radius: var(--radius-sm); }
-.disk-bar > .seg { height: 100%; width: 0; border-radius: 0; }
+.disk-bar { display: flex; height: 12px; overflow: hidden; background: var(--control-track); border-radius: var(--radius-sm); }
+.disk-bar > .seg { display: block; height: 100%; width: 0; }
 .disk-bar > .seg-1, .swatch.seg-1 { background: var(--cat-1); }
 .disk-bar > .seg-2, .swatch.seg-2 { background: var(--cat-2); }
 .disk-bar > .seg-3, .swatch.seg-3 { background: var(--cat-3); }
@@ -318,12 +144,9 @@ fieldset.tools .err { grid-column: 1 / -1; }
   background: var(--surface-sunken);
 }
 .seg-opt:hover span { background: var(--surface-3); color: var(--text-primary); }
-.seg-opt input:checked + span { background: var(--accent); color: var(--on-accent); font-weight: var(--fw-semibold); }
+.seg-opt input:checked + span { background: var(--selected); color: var(--on-selected); font-weight: var(--fw-semibold); }
 .seg-opt input:focus-visible + span { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(var(--focus-ring-offset) * -1 - 1px); }
 
-.key-row { display: flex; gap: var(--space-2); align-items: stretch; }
-.key-row .input { flex: 1; }
-.key-row .btn { min-height: var(--control-h-md); }
 .key-status { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); }
 .key-status[data-source="keyring"] { color: var(--success-text); }
 .key-status[data-source="env"] { color: var(--info-text); }
@@ -367,48 +190,37 @@ fieldset.tools .err { grid-column: 1 / -1; }
 }
 .drawer[hidden] { display: none; }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-bottom: var(--stroke-hairline) solid var(--divider); }
-.drawer-head .h2 { font-family: var(--font-mono); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.drawer-title { font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: var(--fw-semibold); overflow-wrap: anywhere; }
 .drawer-body { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); overflow: auto; }
 .drawer-body .kv dt { min-width: 120px; }
 .file-list { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-xs); }
 .file-list li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-secondary); }
 .drawer-actions { padding-top: var(--space-2); }
 
-.toast {
+/* #toast is a .ui-toast (look and variants); this places it. No transform: the bundle's
+   entrance animation owns it. */
+#toast {
   position: fixed;
-  left: 50%;
+  inset-inline: 0;
   bottom: var(--space-5);
-  transform: translateX(-50%);
-  max-width: min(560px, calc(100vw - 32px));
-  padding: var(--space-2) var(--space-4);
-  background: var(--surface-overlay);
-  color: var(--text-primary);
-  border: var(--stroke-default) solid var(--border-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-2);
-  font-size: var(--fs-sm);
+  width: fit-content;
+  margin-inline: auto;
   z-index: var(--z-toast);
 }
-.toast[hidden] { display: none; }
-.toast[data-kind="bad"] { border-color: var(--danger-border); color: var(--danger-text); }
 
 /* ------------------------------------------------------------ quick actions -- */
 /* settings.js "quick actions": one row per action (name, built-in/custom chip, Remove),
  * its instructions and two switches folded under "Instructions". */
 fieldset.quick-actions { grid-template-columns: 1fr; gap: var(--space-2); }
 .qa-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
-.qa-row {
-  display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3);
-  border: var(--stroke-default) solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-1);
-}
+.qa-row { display: flex; flex-direction: column; gap: var(--space-1); }   /* also a .ui-well */
 .qa-head { display: flex; align-items: center; gap: var(--space-2); }
 .qa-head .qa-label { flex: 1 1 auto; min-width: 0; }
-.qa-head .chip, .qa-head .btn { flex: none; }
+.qa-head .ui-badge, .qa-head .ui-btn { flex: none; }
 .qa-more > summary { cursor: pointer; width: max-content; font-size: var(--fs-xs); color: var(--text-secondary); padding: var(--space-1) 0; }
 .qa-more[open] > summary { margin-bottom: var(--space-1); }
-.qa-instructions { width: 100%; resize: vertical; }
 .qa-flags { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin-top: var(--space-1); }
-.qa-flags .check { font-size: var(--fs-xs); }
+.qa-flags .ui-check { font-size: var(--fs-xs); }
 
 /* ------------------------------------------------------------ narrow windows -- */
 
@@ -418,8 +230,4 @@ fieldset.quick-actions { grid-template-columns: 1fr; gap: var(--space-2); }
   .m-actions { justify-content: flex-start; }
   .pad-top { padding-top: 0; }
   .kv > div { flex-direction: column; gap: 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bar > i, .btn, .tab { transition: none; }
 }

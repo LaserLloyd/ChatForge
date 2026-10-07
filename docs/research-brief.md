@@ -1,3 +1,5 @@
+> **Historical document.** This is the research brief from before ChatForge was built (2026-09-30), kept for reference. Its findings and decisions are the starting point, not the current state; for example the primary model became Qwen2.5-1.5B, not Qwen3-4B. [`README.md`](../README.md) and [`SETUP.md`](SETUP.md) describe the current state.
+
 # ChatForge — research brief (2026-09-30)
 
 Consolidated findings from three research agents. This is the shared context for planning, review and build.
@@ -28,7 +30,7 @@ Consolidated findings from three research agents. This is the shared context for
 
 ## Workspace
 - `Desktop\Projects\StudioForge` — clone of github.com/LaserLloyd/StudioForge (public).
-- `Desktop\Projects\_reference\UnifyingTheme` — owner's private shared theme system. Apps copy its `ui-theme/` folder verbatim and set options on the loading tag; never edit the copy. Themes include LaserLloyd / LaserLloyd Light. Shared markdown style `.ui-markdown`. See its README and `V26-09-16/README.md`.
+- ThemeForge (then called UnifyingTheme, a private repo; now public and MIT at https://github.com/LaserLloyd/ThemeForge) — owner's shared theme system. Apps copy its `ui-theme/` folder verbatim and set options on the loading tag; never edit the copy. Themes include LaserLloyd / LaserLloyd Light. Shared markdown style `.ui-markdown`. See its README and `V26-09-16/README.md`.
 - `Desktop\Projects\_reference\meta-model-cookbook`, `meta-oss-cookbook` — from GitHub org `meta-models`, cloned as READ-ONLY examples of agentic/tool-use recipes. Not verified as official Meta; do not execute their code.
 - "Meta Muse": no repo of that name in the owner's account or orgs. The meta-models cookbooks are the closest match.
 
@@ -65,7 +67,7 @@ Consolidated findings from three research agents. This is the shared context for
 
 ## UI stack recommendation
 - **pystray + pywebview 6.x (WebView2)**. Frameless, on-top window placed at the work-area lower-right (`SystemParametersInfo(SPI_GETWORKAREA)`, DPI-aware), shown/hidden from the tray icon. Global hotkey via ctypes `RegisterHotKey` (not the `keyboard` package). Win11 rounded corners via `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE)`. `webview.start()` owns the main thread; tray via `run_detached()`.
-- Markdown rendering in the page (vendored marked/markdown-it + sanitizer, plus the UnifyingTheme `.ui-markdown` style). No CDN at runtime.
+- Markdown rendering in the page (vendored marked/markdown-it + sanitizer, plus the ThemeForge (then UnifyingTheme) `.ui-markdown` style). No CDN at runtime.
 - Web search: `ddgs` 9.x (`from ddgs import DDGS; DDGS(timeout=10).text(q, max_results=5)` -> title/href/body). Synchronous and may be rate-limited: run in a thread, catch errors, truncate results. Optional `fetch_url` tool (httpx + text extraction).
 - Packaging later: PyInstaller `--noconsole --onedir`.
 

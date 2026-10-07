@@ -41,8 +41,10 @@ import math
 import os
 import re
 import struct
+import threading
 import time
 import warnings
+from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -580,6 +582,33 @@ def part_tokens(part: Any) -> int:
     return DEFAULT_IMAGE_TOKENS
 
 
+_URL_CACHE_MAX = 32
+_url_cache: OrderedDict[tuple[str, int, int, str], str] = OrderedDict()
+_url_cache_lock = threading.Lock()
+
+
+def _file_data_url(path: Path, media_type: str) -> str:
+    """``data:`` URL for the picture at ``path``. Read and encoded once while the file is
+    unchanged (names are content hashes, so that is almost always); the file is ``stat``-ed
+    on every call, so one that was deleted raises ``OSError`` rather than coming from the
+    cache, and one rewritten in place (new size or mtime) is read again."""
+    st = path.stat()
+    key = (str(path), st.st_size, st.st_mtime_ns, media_type)
+    with _url_cache_lock:
+        url = _url_cache.get(key)
+        if url is not None:
+            _url_cache.move_to_end(key)
+            return url
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    url = f"data:{media_type};base64,{encoded}"
+    with _url_cache_lock:
+        _url_cache[key] = url
+        _url_cache.move_to_end(key)
+        while len(_url_cache) > _URL_CACHE_MAX:
+            _url_cache.popitem(last=False)
+    return url
+
+
 def inline(messages: list[dict], folder: Path | None) -> list[dict]:
     """``messages`` with each picture reference made a ``data:`` URL read from
     ``folder``, or a text note when the file is missing. Messages without one are
@@ -591,9 +620,7 @@ def inline(messages: list[dict], folder: Path | None) -> list[dict]:
             cache[name] = None
             if folder is not None and _FILE_RE.fullmatch(name):
                 try:
-                    raw = (Path(folder) / name).read_bytes()
-                    encoded = base64.b64encode(raw).decode("ascii")
-                    cache[name] = f"data:{media_type};base64,{encoded}"
+                    cache[name] = _file_data_url(Path(folder) / name, media_type)
                 except OSError:
                     log.warning("picture_missing", file=name)
         return cache[name]

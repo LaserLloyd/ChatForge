@@ -379,15 +379,19 @@ def test_xlsx_1904_dates() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# PDF (pypdf is optional)
+# PDF (pypdf is required; a broken install is reported)
 # --------------------------------------------------------------------------- #
 
 
-def test_pdf_without_pypdf_says_how_to_add_it(monkeypatch) -> None:
+def test_pdf_with_pypdf_unloadable_says_to_reinstall(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "pypdf", None)  # import pypdf -> ImportError
     with pytest.raises(AttachmentError) as ei:
         extract_text("paper.pdf", b"%PDF-1.7")
-    assert ei.value.message == "Reading PDFs needs the pypdf package: py -3.12 -m uv add pypdf"
+    assert ei.value.message == (
+        "PDFs cannot be read because the pypdf package failed to load. "
+        "Reinstall ChatForge to repair it."
+    )
+    assert "optional" not in ei.value.message
     assert ei.value.code == "unsupported"
 
 

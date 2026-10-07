@@ -1,8 +1,8 @@
 # Vendored third-party libraries
 
-Everything in `frontend/static/vendor/` is third-party code, copied here verbatim so the
+Everything in `src/chatforge/web/static/vendor/` is third-party code, copied here verbatim so the
 app never fetches a script or stylesheet from a CDN at runtime. These files are
-**redistributed under their own upstream licenses**, listed below. The DisPatch Chat
+**redistributed under their own upstream licenses**, listed below. The ChatForge
 project license (MIT) does **not** apply to them.
 
 Do not edit these files by hand. To upgrade one, replace it with a fresh upstream build
@@ -20,7 +20,7 @@ and update the version in the table below.
 
 * highlight.js, marked and DOMPurify state their version in the banner comment kept by
   their minifiers, so those numbers are read straight out of the files.
-* No highlight.js stylesheet is shipped: the UnifyingTheme bundle's `ui-theme-base.css`
+* No highlight.js stylesheet is shipped: the ThemeForge bundle's `ui-theme-base.css`
   colours the `hljs-*` classes from each theme's tokens.
 
 ---

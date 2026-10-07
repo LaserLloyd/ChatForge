@@ -345,14 +345,24 @@ class Conversation:
         return cls(data["messages"], context_start_ts=_timestamp(data.get("context_start_ts")))
 
 
-def save(path: Path, conv: Conversation) -> None:
-    """Atomically write ``conv`` to ``path`` (every key kept, private ones included)."""
+def serialize(conv: Conversation) -> str:
+    """``conv`` as the exact text ``save`` writes. Cheap enough to run where the conversation
+    is mutated; the (slow) file write can then happen anywhere."""
+    # One-shot ``dumps`` runs the C encoder; ``json.dump`` streams chunks through the
+    # pure-Python one (about twice as slow on a long conversation).
+    return json.dumps(conv.to_json(), ensure_ascii=False, default=str)
+
+
+def write_atomic(path: Path, payload: str) -> None:
+    """Write ``payload`` to ``path`` through a temp file, fsync and an atomic replace.
+    Blocking: call it from a worker thread on an event loop. Not safe to run twice at once
+    for one path (they share the temp name); the caller serialises."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         with tmp.open("w", encoding="utf-8", newline="\n") as fh:
-            json.dump(conv.to_json(), fh, ensure_ascii=False, default=str)
+            fh.write(payload)
             fh.flush()
             with contextlib.suppress(OSError):
                 os.fsync(fh.fileno())
@@ -360,6 +370,11 @@ def save(path: Path, conv: Conversation) -> None:
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
+
+
+def save(path: Path, conv: Conversation) -> None:
+    """Atomically write ``conv`` to ``path`` (every key kept, private ones included)."""
+    write_atomic(path, serialize(conv))
 
 
 def load(path: Path) -> Conversation:

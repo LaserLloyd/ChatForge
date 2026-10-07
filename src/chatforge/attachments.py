@@ -5,7 +5,7 @@ standard library: plain text and code in the common encodings, HTML (its visible
 Word ``.docx``, Excel ``.xlsx`` and PowerPoint ``.pptx`` (read straight from the XML parts
 inside the zip), OpenDocument ``.odt``/``.ods``/``.odp`` (likewise), RTF, old Word ``.doc``
 (from its OLE2 container and piece table), e-mail ``.eml`` and Outlook ``.msg``, and PDF
-when the optional ``pypdf`` package is installed. Old ``.xls`` and ``.ppt`` files (and the
+with ``pypdf`` (a required dependency). Old ``.xls`` and ``.ppt`` files (and the
 rare ``.doc`` not read here) are converted by Microsoft Office itself when it is installed
 (Windows, COM, hidden, read-only, macros off). Archives, programs, other old formats and
 pictures raise :class:`AttachmentError`, whose message the UI shows as it is (the pictures
@@ -77,7 +77,11 @@ MAX_NAME_CHARS = 255
 TOO_MUCH_DATA = "The file unpacks to too much data to read."
 TOO_COMPLEX = "The file is too complex to read."
 
-PDF_NEEDS_PYPDF = "Reading PDFs needs the pypdf package: py -3.12 -m uv add pypdf"
+# ``pypdf`` is a required dependency; this only shows when its import fails (a broken install).
+PDF_NEEDS_PYPDF = (
+    "PDFs cannot be read because the pypdf package failed to load. "
+    "Reinstall ChatForge to repair it."
+)
 IMAGES_UNSUPPORTED = (
     "This kind of picture cannot be read. Attach PNG, JPEG, GIF, BMP, WebP or TIFF pictures."
 )
@@ -2188,7 +2192,7 @@ def _msg(data: bytes, limit: int) -> tuple[str, str | None]:
 
 
 def _pdf(data: bytes, limit: int) -> tuple[str, str | None]:
-    """Page by page with ``pypdf`` (optional: not installed by default)."""
+    """Page by page with ``pypdf`` (a required dependency; the import is lazy)."""
     try:
         import pypdf
     except ImportError:

@@ -1,9 +1,10 @@
-"""Theme: the UnifyingTheme bundle stays a verbatim drop-in, and ChatForge's own settings
+"""Theme: the ThemeForge bundle stays a verbatim drop-in, and ChatForge's own settings
 (desktop/theme.py) reach every page and window without editing it."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import urllib.request
 from pathlib import Path
@@ -23,23 +24,30 @@ def _attrs(page: str) -> dict[str, str]:
     return dict(re.findall(r'(data-[a-z-]+)="([^"]*)"', match.group(1)))
 
 
-def test_the_bundle_is_the_unedited_unifying_theme_copy() -> None:
-    # VERSION ends with a digest of every other file, computed like UnifyingTheme's
-    # sync_theme.py build. A mismatch means the copy was edited: change UnifyingTheme and
-    # copy the folder again (sync_theme.py install chatforge) instead. The bytes are hashed
-    # as checked out: .gitattributes keeps them LF on Windows too (eol=lf).
+def test_the_bundle_is_the_unedited_themeforge_copy() -> None:
+    # files.json travels inside the bundle and lists the SHA-256 of every file the bundle
+    # owns (hashed over LF line endings, as update.py does; .gitattributes keeps the files
+    # LF on Windows too). A mismatch means the copy was edited: move the change into
+    # app.css or settings.css and run `python ui-theme/update.py` instead.
     bundle = theme.BUNDLE_DIR
-    files = {
-        p.relative_to(bundle).as_posix(): p.read_bytes().decode("utf-8")
-        for p in sorted(bundle.rglob("*"))
-        if p.is_file() and p.name != "VERSION"
-    }
-    digest = hashlib.sha256(
-        "".join(f"{k}\0{v}\0" for k, v in sorted(files.items())).encode("utf-8")
-    ).hexdigest()[:12]
+    manifest = json.loads((bundle / "files.json").read_text(encoding="utf-8"))
+    assert manifest["name"] == "ThemeForge"
     version = (bundle / "VERSION").read_text(encoding="utf-8").split()
-    assert version[0] == "unifyingTheme"
-    assert version[-1] == digest, "web/static/ui-theme/ differs from the UnifyingTheme bundle"
+    assert version[:2] == ["ThemeForge", manifest["version"]]
+    assert version[-1] == manifest["hash"]
+    edited = []
+    for rel, expected in manifest["files"].items():
+        if rel == "files.json":
+            continue
+        data = (bundle / rel).read_bytes().replace(b"\r\n", b"\n")
+        if hashlib.sha256(data).hexdigest() != expected:
+            edited.append(rel)
+    assert not edited, f"web/static/ui-theme/ differs from the ThemeForge bundle: {edited}"
+    # Every file the page heads load is one the bundle owns.
+    for page in ("index.html", "settings.html"):
+        html = (WEB_ROOT / page).read_text(encoding="utf-8")
+        for rel in re.findall(r"/static/ui-theme/([\w./-]+)", html):
+            assert rel in manifest["files"], f"{page} loads {rel}, not in the bundle"
 
 
 def test_the_picker_offers_the_opt_ins_then_every_core_theme() -> None:

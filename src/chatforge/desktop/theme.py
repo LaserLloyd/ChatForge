@@ -1,10 +1,11 @@
 """ChatForge's theme settings (PLAN 1.9).
 
-``web/static/ui-theme/`` is the UnifyingTheme drop-in bundle, copied verbatim: the same
-files in every app, never edited here. A theme update is copying the new folder over it,
-or, from UnifyingTheme's package folder, ``python tools/sync_theme.py install chatforge``
-(``check chatforge`` reports drift; add ``--dest <this repo>`` when the two repos are not
-side by side). No code here changes for a new bundle.
+``web/static/ui-theme/`` is the ThemeForge drop-in bundle
+(https://github.com/LaserLloyd/ThemeForge), copied verbatim: the same files in every app,
+never edited here. A theme update is ``python src/chatforge/web/static/ui-theme/update.py``
+(``--check`` only reports; ``--ref vX.Y.Z`` pins a release), which replaces the files the
+bundle owns, verifies each one against the release's ``files.json`` and refuses a copy that
+was edited by hand. No code here changes for a new bundle.
 
 What is ChatForge's own is :data:`THEME_SETTINGS`. The static server writes it onto the
 ``ui-theme.js`` tag of each page as it sends it (:func:`apply_to_page`), listing every core

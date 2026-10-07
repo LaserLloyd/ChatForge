@@ -153,10 +153,12 @@ async def _fetch(
         raise FetchError(f"Unsupported content type '{ctype or 'unknown'}'; only text/HTML/JSON.")
     text = _decode(body, ctype, response.charset_encoding)
     title = ""
+    # HTMLParser on a page near max_bytes takes a few hundred ms of pure Python: run it in a
+    # worker thread so the core loop (streaming, bridge calls, downloads) is not stalled.
     if ctype == "text/html":
-        title, text = htmltext.extract(text)
+        title, text = await asyncio.to_thread(htmltext.extract, text)
     else:
-        text = htmltext.collapse_text(text)
+        text = await asyncio.to_thread(htmltext.collapse_text, text)
     parts = []
     if title:
         parts.append(f"Title: {title}")
