@@ -11,6 +11,19 @@ import re
 
 from chatforge.tools import doc_markdown as md
 
+#: Every page the tool writes carries this policy: opened from ``file://`` it can run no
+#: script and fetch nothing (inline styles and ``data:`` pictures only).
+CSP_META = (
+    '<meta http-equiv="Content-Security-Policy" '
+    "content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">"
+)
+#: A start tag, quoted attribute values (which may hold ``>``) included.
+_TAG = r"""(?:"[^"]*"|'[^']*'|[^'">])*"""
+#: What may come before the policy: a doctype, ``<html>`` and ``<head>`` start tags.
+_PROLOGUE = re.compile(
+    rf"\A\ufeff?\s*(?:<!doctype{_TAG}>\s*)?(?:<html(?:\s{_TAG})?>\s*)?(?:<head(?:\s{_TAG})?>)?",
+    re.IGNORECASE,
+)
 _SAFE_URL = re.compile(r"^(https?://|mailto:)", re.IGNORECASE)
 _STYLE = """
 :root { color-scheme: light dark; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0;
@@ -117,6 +130,15 @@ def looks_like_html(content: str) -> bool:
     return content.lstrip()[:1] == "<"
 
 
+def with_csp(page: str) -> str:
+    """``page`` (HTML written by the model) with :data:`CSP_META` in its ``<head>``: right
+    after the doctype, ``<html>`` and ``<head>`` start tags it begins with, or first of
+    all, so nothing in the page is read before the policy."""
+    match = _PROLOGUE.match(page)
+    at = match.end() if match else 0
+    return f"{page[:at]}\n{CSP_META}\n{page[at:]}"
+
+
 def markdown_to_html(markdown: str, title: str = "") -> str:
     """A standalone HTML page from Markdown-style text. The ``<title>`` is the first
     heading, else ``title``."""
@@ -125,10 +147,11 @@ def markdown_to_html(markdown: str, title: str = "") -> str:
     name = html.escape((heading or title or "Document").strip())
     return (
         '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        f"{CSP_META}\n"
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>{name}</title>\n<style>{_STYLE}</style>\n</head>\n<body>\n<main>\n"
         f"{_body(blocks)}\n</main>\n</body>\n</html>\n"
     )
 
 
-__all__ = ["looks_like_html", "markdown_to_html"]
+__all__ = ["CSP_META", "looks_like_html", "markdown_to_html", "with_csp"]

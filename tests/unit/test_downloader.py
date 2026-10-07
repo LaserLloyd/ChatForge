@@ -520,3 +520,64 @@ async def test_downloads_json_is_throttled_to_1hz(
     dl._persist(force=True)
     assert len(writes) == 3
     assert not list(env.downloads_file.parent.glob("*.tmp"))
+
+
+# -- code files are never downloaded -----------------------------------------
+
+
+async def test_code_files_in_a_repo_are_skipped_and_logged(env: Env, caplog) -> None:
+    for name in (
+        "modeling_custom.py",
+        "setup.PY",
+        "cached.pyc",
+        "install.sh",
+        "run.bat",
+        "fix.ps1",
+        "sub/helper.py",
+    ):
+        env.repo.files[name] = FakeFile(b"print('x')\n", lfs=False)
+    env.repo.files["README.pyx.md"] = FakeFile(b"docs", lfs=False)  # not a skipped ending
+    with caplog.at_level("INFO"):
+        group = await run(env.make())
+    assert group["status"] == "completed"
+    for name in ("modeling_custom.py", "setup.PY", "cached.pyc", "install.sh", "run.bat"):
+        assert not (env.model_dir / name).exists()
+        assert not env.fake.resolve_requests(name)
+    assert not (env.model_dir / "fix.ps1").exists()
+    assert not (env.model_dir / "sub" / "helper.py").exists()
+    assert (env.model_dir / "README.pyx.md").read_bytes() == b"docs"
+    assert (env.model_dir / BIN).read_bytes() == BIN_BYTES
+    lines = [r.getMessage() for r in caplog.records if "skipped_code" in r.getMessage()]
+    assert len(lines) == 1
+    assert "files=7" in lines[0] and "modeling_custom.py" in lines[0]
+
+
+async def test_a_repo_of_only_code_has_nothing_to_download(env: Env) -> None:
+    env.repo.files.clear()
+    env.repo.files["run.py"] = FakeFile(b"x", lfs=False)
+    dl = env.make()
+    await dl.start()
+    with pytest.raises(ModelError) as info:
+        await dl.enqueue(REPO)
+    assert info.value.code == "empty_repo"
+
+
+async def test_no_skip_line_when_nothing_is_skipped(env: Env, caplog) -> None:
+    with caplog.at_level("INFO"):
+        await run(env.make())
+    assert not [r for r in caplog.records if "skipped_code" in r.getMessage()]
+
+
+# -- the token is registered for log scrubbing -------------------------------
+
+
+def test_the_hf_token_is_registered_as_a_secret(env: Env) -> None:
+    from chatforge import logging_setup
+
+    token = "hf_" + "A1b2C3d4E5f6G7h8"
+    env.make(token=token)
+    assert token in logging_setup._secret_values
+    assert logging_setup._scrub_text(f"Authorization failed for {token}") == (
+        f"Authorization failed for {logging_setup._REDACTED}"
+    )
+    logging_setup._secret_values.discard(token)

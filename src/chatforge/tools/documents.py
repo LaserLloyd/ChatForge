@@ -12,9 +12,17 @@ folder, created on first use. The format comes from the file name's extension (o
 - ``.csv`` / ``.tsv``: a Markdown table is converted; CSV text is written as it is. A
   ``.csv`` starts with a byte-order mark so Excel reads it as UTF-8.
 - ``.html``: Markdown becomes a standalone page (:mod:`doc_html`); HTML is kept as it is.
-- Other text formats (``.md``, ``.txt``, ``.json``, code ...) are written as UTF-8.
+- Other text formats (``.md``, ``.txt``, ``.json``, code ...) are written as UTF-8. Scripts
+  (``.js``, ``.ps1``, ``.py``, ``.sh``) get ``.txt`` appended (``report.js.txt``): a
+  double-click must open them, never run them.
 
-Files are never overwritten: a taken name gets `` (2)``, `` (3)`` ... .
+CSV/TSV cells that start with ``= + - @`` or a tab/CR get a ``'`` in front (formula
+injection). A generated ``.html`` carries a Content-Security-Policy that forbids scripts
+and network requests.
+
+Files are written under a hidden temporary name and then given their final name without
+replacing anything: a taken name gets `` (2)``, `` (3)`` ... , and a failed write leaves no
+partial file under the real name.
 
 :func:`resolve_document`, :func:`open_document`, :func:`reveal_document` and
 :func:`save_copy` back the bridge's ``open_document`` / ``reveal_document`` /
@@ -53,6 +61,9 @@ TEXT_FORMATS = frozenset(
     {".md", ".txt", ".csv", ".tsv", ".json", ".html", ".htm", ".xml", ".yaml", ".yml",
      ".py", ".js", ".ts", ".css", ".sql", ".ps1", ".sh"}
 )  # fmt: skip
+#: Run (Windows Script Host, PowerShell, ...) when opened, so they are saved with ``.txt``
+#: appended.
+SCRIPT_FORMATS = frozenset({".js", ".ps1", ".py", ".sh"})
 OFFICE_FORMATS = frozenset({".docx", ".xlsx", ".pptx"})
 FORMATS = TEXT_FORMATS | OFFICE_FORMATS
 #: ``format`` values that name a type in words rather than by extension.
@@ -92,6 +103,8 @@ _RESERVED = frozenset(
      *(f"COM{i}" for i in range(10)), *(f"LPT{i}" for i in range(10))}
 )  # fmt: skip
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
+#: Direction controls (they make ``gpj.exe`` show as ``exe.jpg``) are dropped from names.
+_BIDI_CHARS = re.compile("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 #: Opened with their default app. Anything else (scripts above all: ``.js`` and ``.py``
 #: would run, not open) opens in Notepad.
 SAFE_TO_OPEN = frozenset(
@@ -187,7 +200,7 @@ def sanitize_filename(filename: str, fmt: str | None = None) -> str:
     supported extension the ``format`` decides (default ``.md``).
     """
     name = re.split(r"[\\/]", str(filename or ""))[-1]
-    name = _BAD_CHARS.sub("_", name).strip().strip(".").strip()
+    name = _BAD_CHARS.sub("_", _BIDI_CHARS.sub("", name)).strip().strip(".").strip()
     stem, dot, ext = name.rpartition(".")
     if not dot:
         stem, ext = name, ""
@@ -225,17 +238,47 @@ def _human_size(size: int) -> str:
 
 def _write_new(folder: Path, name: str, data: bytes) -> Path:
     """Write ``data`` to ``name`` in ``folder``, or to ``name (2)``, ``name (3)`` ... when
-    it is taken. Exclusive creation: an existing file is never replaced."""
+    it is taken. The bytes go to a hidden temporary file in ``folder`` first and are given
+    their final name only when complete, without replacing an existing file; the temporary
+    file is deleted on any error, so a full disk never leaves a partial document."""
     stem, ext = os.path.splitext(name)
-    for n in range(1, 1000):
-        candidate = folder / (name if n == 1 else f"{stem} ({n}){ext}")
-        try:
-            with open(candidate, "xb") as fh:
-                fh.write(data)
-        except FileExistsError:
-            continue
-        return candidate
-    raise OSError("too many files with this name")
+    temp = folder / f".{uuid.uuid4().hex[:12]}.part"
+    try:
+        with open(temp, "xb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for n in range(1, 1000):
+            candidate = folder / (name if n == 1 else f"{stem} ({n}){ext}")
+            if _link_new(temp, candidate):
+                return candidate
+        raise OSError("too many files with this name")
+    finally:
+        _discard(temp)
+
+
+def _link_new(temp: Path, final: Path) -> bool:
+    """Give ``temp`` the name ``final``; False when that name is taken. A hard link makes
+    the name appear complete in one step. Where links are not supported (FAT, some network
+    drives), the name is claimed by exclusive creation and the file renamed over it."""
+    try:
+        os.link(temp, final)
+    except FileExistsError:
+        return False
+    except OSError:
+        pass
+    else:
+        return True
+    try:
+        open(final, "xb").close()  # noqa: SIM115 - only claims the name
+    except FileExistsError:
+        return False
+    try:
+        os.replace(temp, final)
+    except OSError:
+        _discard(final)
+        raise
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -247,6 +290,32 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+#: A spreadsheet reads a cell starting with one of these as a formula.
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _defuse(cell: str) -> str:
+    """``cell`` with a ``'`` in front when a spreadsheet would run it as a formula."""
+    return "'" + cell if cell.startswith(_FORMULA_START) else cell
+
+
+def _defuse_text(body: str, delimiter: str) -> str:
+    """CSV/TSV text with every formula-like cell defused. Text without one is returned
+    as it is; otherwise it is parsed and written again."""
+    try:
+        rows = list(csv.reader(io.StringIO(body, newline=""), delimiter=delimiter))
+    except csv.Error:
+        rows = [line.split(delimiter) for line in body.splitlines()]
+    if not any(cell.startswith(_FORMULA_START) for row in rows for cell in row):
+        return body
+    buf = io.StringIO()
+    newline = "\r\n" if "\r\n" in body else "\n"
+    csv.writer(buf, delimiter=delimiter, lineterminator=newline).writerows(
+        [[_defuse(c) for c in row] for row in rows]
+    )
+    return buf.getvalue()
+
+
 def _delimited(content: str, ext: str) -> tuple[bytes, list[str]]:
     """``.csv``/``.tsv``: the first Markdown table (or a ```` ```csv ```` block inside other
     text) converted; plain CSV text kept as it is."""
@@ -255,11 +324,12 @@ def _delimited(content: str, ext: str) -> tuple[bytes, list[str]]:
     markdown = [t for t in tables if t.markdown]
     fenced = [t for t in tables if t.source == "fence"]
     notes: list[str] = []
+    delimiter = "\t" if ext == ".tsv" else ","
     table = markdown[0] if markdown else (fenced[0] if fenced else None)
     if table is not None:
         buf = io.StringIO()
-        writer = csv.writer(buf, delimiter="\t" if ext == ".tsv" else ",", lineterminator="\r\n")
-        writer.writerows(md.table_text(table))
+        writer = csv.writer(buf, delimiter=delimiter, lineterminator="\r\n")
+        writer.writerows([_defuse(c) for c in row] for row in md.table_text(table))
         body = buf.getvalue()
         if len(markdown) > 1:
             notes.append(
@@ -267,7 +337,7 @@ def _delimited(content: str, ext: str) -> tuple[bytes, list[str]]:
                 "several tables (one sheet each)."
             )
     else:
-        body = inner
+        body = _defuse_text(inner, delimiter)
     data = body.encode("utf-8", errors="replace")
     return (b"\xef\xbb\xbf" + data if ext == ".csv" else data), notes
 
@@ -297,6 +367,8 @@ def build_document(ext: str, content: str, title: str = "") -> tuple[bytes, str,
     if ext in (".html", ".htm") and not doc_html.looks_like_html(content):
         page = doc_html.markdown_to_html(md.unfence(content, md.MARKDOWN_FENCES), title)
         return page.encode("utf-8", errors="replace"), "", []
+    if ext in (".html", ".htm"):
+        return doc_html.with_csp(content).encode("utf-8", errors="replace"), "", []
     return content.encode("utf-8", errors="replace"), "", []
 
 
@@ -326,6 +398,9 @@ def create_document(
         )
     stem, ext = os.path.splitext(name)
     ext = ext.lower()
+    renamed = ""
+    if ext in SCRIPT_FORMATS:
+        renamed = f"{name}.txt"
     try:
         data, holds, notes = build_document(ext, content, stem)
     except ContentError as exc:
@@ -337,7 +412,7 @@ def create_document(
     target_dir = documents_dir(folder)
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        path = _write_new(target_dir, name, data)
+        path = _write_new(target_dir, renamed or name, data)
     except OSError as exc:
         log.warning("document_save_failed", error=type(exc).__name__)
         return ToolResult(
@@ -349,6 +424,12 @@ def create_document(
     log.info("document_saved", kind=ext, size=size)
     document = {"name": path.name, "path": str(path), "size": size, "kind": kind_for(path.name)}
     about = f"{_human_size(size)}, {holds}" if holds else _human_size(size)
+    if renamed:
+        notes = [
+            f"The file was saved as {path.name} (with .txt added) so that opening it can "
+            "never run it; the content is unchanged. Tell the user to rename it to use it.",
+            *notes,
+        ]
     note = "".join(f" Note: {n}" for n in notes)
     return ToolResult(
         True,

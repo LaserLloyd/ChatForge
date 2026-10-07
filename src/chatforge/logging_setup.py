@@ -34,6 +34,10 @@ _SECRET_KEYS = {
     "authorization",
     "password",
     "secret",
+    "cookie",
+    "set-cookie",
+    "x-goog-api-key",
+    "proxy-authorization",
 }
 _REDACTED = "***REDACTED***"
 
@@ -112,6 +116,15 @@ class _ScrubFilter(logging.Filter):
             record.msg = scrubbed
             record.args = None
         return True
+
+
+class _ScrubFormatter(logging.Formatter):
+    """Scrub the *final* line, exception text included: the filter only sees the message,
+    but a traceback is rendered later (``exc_text``) and can carry a key, e.g. in an
+    ``httpx`` error that echoes a request."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _scrub_text(super().format(record))
 
 
 class RingBufferHandler(logging.Handler):
@@ -228,7 +241,7 @@ def configure_logging(
     scrub = _ScrubFilter()
     if sys.stderr is not None:
         stream = _SafeStreamHandler(sys.stderr)
-        stream.setFormatter(logging.Formatter("%(message)s"))
+        stream.setFormatter(_ScrubFormatter("%(message)s"))
         stream.addFilter(scrub)
         root.addHandler(stream)
     root.addHandler(RING_BUFFER)
@@ -238,7 +251,7 @@ def configure_logging(
         file_handler = SafeRotatingFileHandler(
             log_dir / APP_LOG_NAME, max_bytes=max_bytes, backup_count=backup_count
         )
-        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        file_handler.setFormatter(_ScrubFormatter("%(asctime)s %(levelname)s %(message)s"))
         file_handler.addFilter(scrub)
         root.addHandler(file_handler)
         _file_handler = file_handler

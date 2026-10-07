@@ -1,19 +1,25 @@
 """Kernel-enforced lifetime for the OVMS child, plus process-tree helpers.
 
 Adapted from StudioForge src/studioforge/core/supervisor.py (MIT, LaserLloyd):
-``WindowsChildJob``, ``create_child_job``, ``_load_win32``, ``CREATE_SUSPENDED``,
-the ``_TRACKED_PIDS``/atexit net, ``kill_process_tree``, ``process_is_alive``,
+``WindowsChildJob``, ``create_child_job``, ``CREATE_SUSPENDED``, the
+``_TRACKED_PIDS``/atexit net, ``kill_process_tree``, ``process_is_alive``,
 ``process_create_time``, ``describe_exit_code`` and ``WINDOWS_EXIT_STATUS``.
-Cut: the POSIX pdeathsig shim (ChatForge's child only ever runs on Windows; on
-POSIX the atexit net and the process group are the fallback).
+
+The job object talks to kernel32 through :mod:`ctypes` (no pywin32). On Linux the
+equivalent kernel-enforced lifetime is ``prctl(PR_SET_PDEATHSIG, SIGTERM)`` in the
+child (:func:`make_pdeathsig_preexec`); the atexit net covers a clean exit on both.
 """
 
 from __future__ import annotations
 
 import atexit
 import contextlib
+import ctypes
 import os
+import signal
 import subprocess
+import sys
+from collections.abc import Callable
 from typing import Any
 
 import psutil
@@ -90,19 +96,80 @@ def tracked_pids() -> set[int]:
 #: ``OpenProcess`` rights needed to move a process into a job object.
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
+#: ``JOBOBJECTINFOCLASS.JobObjectExtendedLimitInformation``.
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+#: ``LimitFlags``: kill every process in the job when the last handle closes.
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 
 
-# Adapted from StudioForge src/studioforge/core/supervisor.py _load_win32 (MIT, LaserLloyd)
-def _load_win32() -> tuple[Any, Any]:
-    """Import the pywin32 job-object bindings.
+class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801 - Win32 name
+    """``JOBOBJECT_BASIC_LIMIT_INFORMATION`` (64 bytes on x64, 48 on x86)."""
+
+    _fields_ = (
+        ("PerProcessUserTimeLimit", ctypes.c_int64),  # LARGE_INTEGER
+        ("PerJobUserTimeLimit", ctypes.c_int64),  # LARGE_INTEGER
+        ("LimitFlags", ctypes.c_uint32),  # DWORD
+        ("MinimumWorkingSetSize", ctypes.c_size_t),  # SIZE_T
+        ("MaximumWorkingSetSize", ctypes.c_size_t),  # SIZE_T
+        ("ActiveProcessLimit", ctypes.c_uint32),  # DWORD
+        ("Affinity", ctypes.c_size_t),  # ULONG_PTR
+        ("PriorityClass", ctypes.c_uint32),  # DWORD
+        ("SchedulingClass", ctypes.c_uint32),  # DWORD
+    )
+
+
+class IO_COUNTERS(ctypes.Structure):  # noqa: N801 - Win32 name
+    """``IO_COUNTERS`` (six ULONGLONGs, 48 bytes)."""
+
+    _fields_ = (
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    )
+
+
+class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801 - Win32 name
+    """``JOBOBJECT_EXTENDED_LIMIT_INFORMATION`` (144 bytes on x64, 112 on x86)."""
+
+    _fields_ = (
+        ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoInfo", IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    )
+
+
+def _load_kernel32() -> Any:
+    """``kernel32`` with the job-object prototypes declared (Windows only).
 
     A module-level function purely so tests can monkeypatch it to raise
-    (simulating a box without pywin32) or to return fakes.
+    (simulating a failure) or to return a fake that records the calls.
     """
-    import win32api
-    import win32job
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    handle, dword, boolean = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int32
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    kernel32.CreateJobObjectW.restype = handle
+    kernel32.SetInformationJobObject.argtypes = [handle, ctypes.c_int32, ctypes.c_void_p, dword]
+    kernel32.SetInformationJobObject.restype = boolean
+    kernel32.AssignProcessToJobObject.argtypes = [handle, handle]
+    kernel32.AssignProcessToJobObject.restype = boolean
+    kernel32.OpenProcess.argtypes = [dword, boolean, dword]
+    kernel32.OpenProcess.restype = handle
+    kernel32.CloseHandle.argtypes = [handle]
+    kernel32.CloseHandle.restype = boolean
+    return kernel32
 
-    return win32job, win32api
+
+def _last_error() -> OSError:
+    """The calling thread's last Win32 error as an ``OSError`` (``WinError`` on Windows)."""
+    code = getattr(ctypes, "get_last_error", lambda: 0)()  # Windows-only in ctypes
+    winerror = getattr(ctypes, "WinError", None)
+    return winerror(code) if winerror is not None else OSError(f"Win32 error {code}")
 
 
 # Adapted from StudioForge src/studioforge/core/supervisor.py WindowsChildJob (MIT, LaserLloyd)
@@ -119,19 +186,34 @@ class WindowsChildJob:
     legal on Windows 8+; where nesting is refused anyway the failure is logged
     and the load continues unprotected -- a safety net must never be the reason
     a model will not load.
+
+    Implemented with ``ctypes`` calls to ``CreateJobObjectW``,
+    ``SetInformationJobObject``, ``AssignProcessToJobObject`` (via ``OpenProcess``)
+    and ``CloseHandle``; no pywin32.
     """
 
     def __init__(self) -> None:
-        win32job, _ = _load_win32()
-        self._win32job = win32job
-        self._handle: Any = win32job.CreateJobObject(None, "")
-        info = win32job.QueryInformationJobObject(
-            self._handle, win32job.JobObjectExtendedLimitInformation
-        )
-        info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        win32job.SetInformationJobObject(
-            self._handle, win32job.JobObjectExtendedLimitInformation, info
-        )
+        kernel32 = _load_kernel32()
+        self._k32 = kernel32
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise _last_error()
+        self._handle: Any = handle
+        try:
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            ok = kernel32.SetInformationJobObject(
+                handle,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+            if not ok:
+                raise _last_error()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                kernel32.CloseHandle(handle)
+            raise
         self._closed = False
         self._warned_pids: set[int] = set()
 
@@ -144,13 +226,16 @@ class WindowsChildJob:
         if not self.available:
             return False
         try:
-            win32job, win32api = self._win32job, _load_win32()[1]
-            handle = win32api.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+            kernel32 = self._k32
+            process = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, 0, pid)
+            if not process:
+                raise _last_error()
             try:
-                win32job.AssignProcessToJobObject(self._handle, handle)
+                if not kernel32.AssignProcessToJobObject(self._handle, process):
+                    raise _last_error()
             finally:
                 with contextlib.suppress(Exception):
-                    handle.Close()
+                    kernel32.CloseHandle(process)
         except Exception as exc:  # noqa: BLE001 - the net must not break the load
             if pid not in self._warned_pids:
                 self._warned_pids.add(pid)
@@ -169,9 +254,9 @@ class WindowsChildJob:
         if self._closed:
             return
         self._closed = True
+        handle, self._handle = self._handle, None
         with contextlib.suppress(Exception):
-            self._handle.Close()
-        self._handle = None
+            self._k32.CloseHandle(handle)
 
 
 # Adapted from StudioForge src/studioforge/core/supervisor.py create_child_job (MIT, LaserLloyd)
@@ -188,6 +273,56 @@ def create_child_job() -> WindowsChildJob | None:
             detail="ovms.exe will not be killed automatically if the app is hard-killed",
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Kernel-enforced child lifetime (Linux parent-death signal)
+# ---------------------------------------------------------------------------
+
+#: ``prctl`` option: the signal the kernel sends this process when its parent dies.
+PR_SET_PDEATHSIG = 1
+
+
+def make_pdeathsig_preexec(
+    sig: int = signal.SIGTERM, *, parent_pid: int | None = None
+) -> Callable[[], None] | None:
+    """A ``preexec_fn`` that arms ``prctl(PR_SET_PDEATHSIG, sig)`` in the child.
+
+    With it a hard kill of the app (SIGKILL, a crash) also ends ovms, which the
+    atexit net cannot do. ``None`` where it is unavailable (not Linux, no ``prctl``).
+
+    The kernel delivers the signal when the *thread* that forked the child exits, so
+    spawn from a thread that lives as long as the app (the asyncio loop thread does).
+    If the parent already died between the fork and the ``prctl`` call the child exits
+    at once instead of living on unprotected.
+
+    Libc is bound here, in the parent; the returned function only calls ``prctl`` and
+    ``getppid`` so it is safe to run between ``fork`` and ``exec``.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [
+            ctypes.c_int,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+        ]
+        prctl.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        return None
+    expected_parent = parent_pid if parent_pid is not None else os.getpid()
+    signum = int(sig)
+
+    def _arm() -> None:
+        prctl(PR_SET_PDEATHSIG, signum, 0, 0, 0)
+        if os.getppid() != expected_parent:
+            os._exit(1)
+
+    return _arm
 
 
 def resume_process(pid: int) -> None:
@@ -299,11 +434,17 @@ def kill_process_tree(pid: int, *, timeout: float = 15.0, force: bool = False) -
 
 
 def find_processes(name: str = "ovms.exe") -> list[int]:
-    """Pids of every running process called ``name`` (case-insensitive). Never raises."""
-    wanted = name.lower()
+    """Pids of every running process called ``name`` (case-insensitive). Never raises.
+
+    ``ovms.exe`` and ``ovms`` are the same program on Windows and Linux, so either
+    name matches both.
+    """
+    wanted = {name.lower()}
+    if name.lower() in ("ovms.exe", "ovms"):
+        wanted = {"ovms.exe", "ovms"}
     pids: list[int] = []
     for proc in psutil.process_iter(["name"]):
         with contextlib.suppress(psutil.Error):
-            if (proc.info.get("name") or "").lower() == wanted:
+            if (proc.info.get("name") or "").lower() in wanted:
                 pids.append(proc.pid)
     return pids

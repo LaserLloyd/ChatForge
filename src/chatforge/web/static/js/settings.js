@@ -42,6 +42,8 @@ const S = {
   drawerToken: 0,
   confirmDelete: null,
   installing: false,
+  tabScroll: {},             // tab -> window.scrollY when it was left
+  recommended: null,         // catalog's recommended model id (via search_models)
 };
 
 // ------------------------------------------------------------------ helpers ----
@@ -89,16 +91,70 @@ function errText(res) {
 const cssEsc = (v) => ((window.CSS && window.CSS.escape) ? window.CSS.escape(String(v)) : String(v).replace(/["\\]/g, '\\$&'));
 function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 function shortName(id) { return String(id).split('/').pop(); }
+function fmtDur(s) {
+  s = Math.max(0, Math.round(Number(s) || 0));
+  return s < 90 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+}
 
-let toastTimer = null;
+/** Unsaved edits on the General tab: the marker beside Save, Revert, the leave warning. */
+function setDirty(flag) {
+  S.generalDirty = !!flag;
+  $('g-dirty').hidden = !flag;
+  $('g-revert').disabled = !flag;
+  $('tab-general').dataset.dirty = flag ? 'true' : 'false';
+}
+
+const TOAST_KINDS = { ok: 'success', success: 'success', warn: 'warning', bad: 'danger', danger: 'danger', info: 'info' };
+const TOAST_MS = 4000;
+/** A toast. Errors ("bad") stay until dismissed and are announced as alerts; the rest
+ *  hide after a few seconds, and the timer waits while the pointer or focus is on them.
+ *  The node comes from the bundle's UIComponents.toast() when it is loaded. */
 function toast(msg, kind = 'info') {
-  const t = $('toast');
-  t.textContent = msg;
-  t.dataset.kind = kind;
-  t.className = kind === 'bad' ? 'ui-toast ui-toast--danger' : 'ui-toast';
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  const variant = TOAST_KINDS[kind] || 'info';
+  const sticky = variant === 'danger';
+  const UC = window.UIComponents;
+  const host = $('toast');
+  let node;
+  if (UC && typeof UC.toast === 'function') {
+    node = UC.toast(msg, { kind: variant, timeout: 0 });
+  } else {
+    host.hidden = false;
+    node = el('div', { class: `ui-toast ui-toast--${variant}`, text: msg });
+    host.append(node);
+  }
+  node.dataset.kind = variant;
+  node.classList.add('s-toast');
+  node.setAttribute('role', sticky ? 'alert' : 'status');
+  let timer = null;
+  const dismiss = () => {
+    clearTimeout(timer);
+    node.remove();
+    if (host && !host.querySelector('.ui-toast')) host.hidden = true;
+  };
+  const arm = () => { clearTimeout(timer); if (!sticky) timer = setTimeout(dismiss, TOAST_MS); };
+  const hold = () => clearTimeout(timer);
+  node.append(el('button', { type: 'button', class: 'ui-btn ui-btn--sm ui-btn--ghost ui-btn--icon toast-close', 'aria-label': 'Dismiss', text: '\u00d7', onclick: dismiss }));
+  node.addEventListener('mouseenter', hold);
+  node.addEventListener('mouseleave', arm);
+  node.addEventListener('focusin', hold);
+  node.addEventListener('focusout', arm);
+  arm();
+  return node;
+}
+
+/** The bundle's themed confirm dialog, or the browser's when it is not loaded. */
+async function confirmAction({ title, message, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false }) {
+  const UC = window.UIComponents;
+  if (UC && typeof UC.confirm === 'function') return UC.confirm({ title, message, confirmLabel, cancelLabel, danger });
+  return window.confirm(`${title ? `${title}\n\n` : ''}${message}`);
+}
+
+/** The reply to a save carried key_removed: the stored key was for the old address. */
+function noteKeyRemoved(res) {
+  if (!res || !res.key_removed) return false;
+  toast('Key removed: the address changed. Enter the key again.', 'warn');
+  refreshKeyStatuses();
+  return true;
 }
 
 // Badge kinds used in this file -> ThemeForge .ui-badge variants (neutral is the default).
@@ -174,18 +230,38 @@ function showFieldErrors(errors) {
 
 const TAB_IDS = ['models', 'providers', 'general', 'logs'];
 
-function clearKeyInputs() {
+/** Show/Hide toggle state of a key field's button (text, label and pressed state). */
+function setEye(eye, show) {
+  eye.setAttribute('aria-pressed', String(show));
+  eye.setAttribute('aria-label', show ? 'Hide API key' : 'Show API key');
+  eye.textContent = show ? 'Hide' : 'Show';
+}
+/** Mask every key field again. The text stays, so a typed key survives a tab switch. */
+function maskKeyInputs() {
   for (const i of document.querySelectorAll('input[data-key-input]')) {
-    i.value = '';
     i.type = 'password';
     const eye = i.parentElement && i.parentElement.querySelector('[data-eye]');
-    if (eye) eye.setAttribute('aria-pressed', 'false');
+    if (eye) setEye(eye, false);
   }
+}
+/** Wipe every key field (the window is going away). */
+function clearKeyInputs() {
+  for (const i of document.querySelectorAll('input[data-key-input]')) i.value = '';
+  maskKeyInputs();
+}
+
+function restoreScroll(name) {
+  const y = S.tabScroll[name] || 0;
+  try { window.scrollTo(0, y); } catch { /* no layout */ }
 }
 
 function selectTab(name, focus = false) {
   if (!TAB_IDS.includes(name)) return;
-  clearKeyInputs();
+  maskKeyInputs();
+  if (name !== S.tab) {
+    S.tabScroll[S.tab] = window.scrollY || 0;
+    stopHotkeyRecording();
+  }
   S.tab = name;
   for (const t of TAB_IDS) {
     const tab = $(`tab-${t}`);
@@ -193,12 +269,14 @@ function selectTab(name, focus = false) {
     tab.setAttribute('aria-selected', String(on_));
     tab.tabIndex = on_ ? 0 : -1;
     $(`panel-${t}`).hidden = !on_;
-    if (on_ && focus) tab.focus();
+    if (on_ && focus) tab.focus({ preventScroll: true });
   }
+  restoreScroll(name);
   if (name === 'logs') { refreshLogs(); syncLogTimer(); } else { syncLogTimer(); }
-  if (name === 'models') { loadModels(); loadDisk(); refreshRuntime(); }
-  if (name === 'providers') loadProviders();
-  if (name === 'general') { refreshAutostart(); }
+  if (name === 'models') { loadModels().then(() => restoreScroll(name)); loadDisk(); refreshRuntime(); }
+  if (name === 'providers') loadProviders().then(() => restoreScroll(name));
+  if (name === 'general') { refreshAutostart(); refreshFallbackWarning(); }
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { if (S.tab === name) restoreScroll(name); });
 }
 
 function initTabs() {
@@ -223,6 +301,7 @@ async function loadModels() {
   const res = await api.call('list_models');
   if (!isOk(res)) { toast(errText(res), 'bad'); return; }
   S.models = pick(res, 'models');
+  S.modelsLoaded = true;
   S.installedIds = new Set(S.models.map((m) => m.id));
   renderModels();
 }
@@ -244,6 +323,7 @@ function renderModels() {
   const device = (S.cfg && S.cfg.local && S.cfg.local.device) || 'NPU';
   const active = S.selected.model;
   $('active-note').textContent = active ? `Active model: ${shortName(active)}` : 'No active model';
+  const installed = !S.rtInfo || S.rtInfo.installed !== false;
 
   for (const m of S.models) {
     const cat = m.catalog || null;
@@ -252,9 +332,11 @@ function renderModels() {
     const isActive = active === m.id && S.selected.provider === localProviderId();
     const compiled = !!(m.compiled && m.compiled[device]);
     const key = (a) => `${m.id}:${a}`;
+    const name = shortName(m.id);
+    const whyId = `why-${m.id.replace(/[^\w-]/g, '_')}`;
 
     const title = el('div', { class: 'm-title' }, [
-      el('strong', { class: 'm-name', text: (cat && cat.label) || shortName(m.id) }),
+      el('strong', { class: 'm-name', text: (cat && cat.label) || name }),
       badgeChip(badge),
       isActive ? chip('Active', 'accent') : null,
       rt === 'loaded' ? chip('Loaded', 'ok') : null,
@@ -263,7 +345,7 @@ function renderModels() {
     ]);
     const sub = el('div', { class: 'm-sub ui-text-secondary' }, [
       el('span', { class: 'ui-mono ui-small', text: m.id }),
-      el('span', { text: fmtBytes(m.size_bytes) }),
+      el('span', { class: 'ui-num', text: fmtBytes(m.size_bytes) }),
       el('span', { class: compiled ? 'compiled-yes' : 'ui-text-tertiary', text: compiled ? `Compiled for ${device} ✓` : `Not compiled for ${device} yet` }),
       el('span', { class: 'ui-text-tertiary', text: fmtAgo(m.last_used_at) }),
     ]);
@@ -272,36 +354,74 @@ function renderModels() {
     if (!m.complete) {
       notes.push(el('div', { class: 'm-note danger-text', text: `Missing files: ${(m.missing || []).join(', ') || 'unknown'}. Delete it and download again.` }));
     }
+    if (rt === 'loading') {
+      notes.push(el('div', { class: 'm-load', 'data-load': m.id }, [
+        el('progress', { class: 'ui-progress', max: '100', 'aria-label': `Loading ${name}` }),
+        el('span', { class: 'load-text ui-small ui-num ui-text-secondary', role: 'status' }),
+      ]));
+    }
 
     let actions;
+    let why = null;
     if (S.confirmDelete === m.id) {
-      actions = el('div', { class: 'm-actions confirm', role: 'group', 'aria-label': `Confirm deleting ${shortName(m.id)}` }, [
-        el('span', { class: 'danger-text ui-small', text: `Delete ${shortName(m.id)} and its files?` }),
-        btn('Delete', { cls: 'ui-btn--danger', 'data-fk': key('confirm'), onclick: () => doDelete(m.id) }),
+      actions = el('div', { class: 'm-actions confirm', role: 'group', 'aria-label': `Confirm deleting ${name}` }, [
+        el('span', { class: 'danger-text ui-small', text: `Delete ${name} and its files?` }),
+        btn('Delete model', { cls: 'ui-btn--danger', 'data-fk': key('confirm'), onclick: () => doDelete(m.id) }),
         btn('Cancel', { 'data-fk': key('cancel'), onclick: () => { S.confirmDelete = null; renderModels(); focusFk(key('delete')); } }),
       ]);
     } else {
-      const installed = !S.rtInfo || S.rtInfo.installed !== false;
+      // Why "Use this model" is disabled, said under the buttons instead of in a tooltip.
+      if (rt !== 'loaded' && rt !== 'loading') {
+        if (!installed) why = 'The runtime is not installed yet. Install it first (Local runtime, below).';
+        else if (!m.complete) why = 'Some files are missing. Delete it and download again.';
+      }
+      const blocked = rt === 'loading' || (rt !== 'loaded' && !!why);
       actions = el('div', { class: 'm-actions' }, [
-        isActive
-          ? btn('Active', { 'aria-pressed': 'true', disabled: '', 'data-fk': key('select') })
-          : btn('Set active', { 'data-fk': key('select'), 'aria-label': `Set ${shortName(m.id)} as the active model`, onclick: () => setActive(m.id) }),
         rt === 'loaded'
-          ? btn('Unload', { 'data-fk': key('unload'), 'aria-label': `Unload ${shortName(m.id)}`, onclick: () => doUnload() })
-          : btn(rt === 'loading' ? 'Loading…' : 'Load', {
+          ? btn('Unload', { 'data-fk': key('unload'), 'aria-label': `Unload ${name}`, onclick: () => doUnload() })
+          : btn(rt === 'loading' ? 'Loading…' : 'Use this model', {
+            cls: 'ui-btn--primary',
             'data-fk': key('load'),
-            'aria-label': `Load ${shortName(m.id)}`,
-            disabled: (rt === 'loading' || !m.complete || !installed) ? '' : null,
-            title: !installed ? 'Install the OVMS runtime first' : null,
+            'aria-label': rt === 'loading' ? `Loading ${name}` : `Use ${name}: make it the active model and load it`,
+            disabled: blocked ? '' : null,
+            'aria-describedby': why ? whyId : null,
             onclick: () => doLoad(m.id),
           }),
-        btn('Clear cache', { 'data-fk': key('cache'), 'aria-label': `Clear compile cache for ${shortName(m.id)}`, disabled: rt === 'loaded' ? '' : null, onclick: () => doClearCache(m.id) }),
-        btn('Delete', { cls: 'ui-btn--danger', 'data-fk': key('delete'), 'aria-label': `Delete ${shortName(m.id)}`, onclick: () => { S.confirmDelete = m.id; renderModels(); focusFk(key('confirm')); } }),
+        btn('Clear cache', { cls: 'ui-btn--ghost', 'data-fk': key('cache'), 'aria-label': `Clear compile cache for ${name}`, disabled: rt === 'loaded' ? '' : null, onclick: () => doClearCache(m.id) }),
+        btn('Delete model', { cls: 'ui-btn--danger', 'data-fk': key('delete'), 'aria-label': `Delete ${name}`, onclick: () => { S.confirmDelete = m.id; renderModels(); focusFk(key('confirm')); } }),
       ]);
     }
-    list.append(el('li', { class: 'model-row ui-well', 'data-id': m.id }, [el('div', { class: 'm-main' }, [title, sub, ...notes]), actions]));
+    const side = el('div', { class: 'm-side' }, [actions, why ? el('p', { class: 'm-why ui-small ui-text-secondary', id: whyId, text: why }) : null]);
+    list.append(el('li', { class: 'model-row ui-well', 'data-id': m.id }, [el('div', { class: 'm-main' }, [title, sub, ...notes]), side]));
   }
   if (focusKey) focusFk(focusKey);
+  paintLoad();
+  renderFirstRun();
+}
+
+/** Elapsed / expected seconds of the load in progress, from runtime.status (updated in place). */
+function loadLine() {
+  const rt = S.runtime || {};
+  const exp = Number(rt.expected_s) || 0;
+  const done = Number(rt.elapsed_s) || 0;
+  const dev = rt.device || 'NPU';
+  const what = rt.state === 'compiling'
+    ? (rt.first_compile ? `Compiling for ${dev}, the first time for this model` : `Loading onto ${dev}`)
+    : 'Starting the runtime';
+  let text = `${what}: ${fmtDur(done)}`;
+  if (exp) text += done > exp ? `, longer than the expected ${fmtDur(exp)}` : ` of about ${fmtDur(exp)}`;
+  return { text, pct: exp ? Math.min(100, (done / exp) * 100) : null };
+}
+function paintLoad() {
+  const rt = S.runtime || {};
+  const line = loadLine();
+  for (const box of document.querySelectorAll('[data-load]')) {
+    if (box.dataset.load !== rt.model_id) continue;
+    const bar = box.querySelector('progress');
+    if (line.pct == null) bar.removeAttribute('value'); else bar.value = line.pct;
+    box.querySelector('.load-text').textContent = line.text;
+  }
+  if (!$('firstrun').hidden) paintFirstRunLoad(line);
 }
 
 function focusFk(key) {
@@ -309,14 +429,7 @@ function focusFk(key) {
   if (node && !node.disabled) node.focus();
 }
 
-async function setActive(id) {
-  const res = await api.call('select_model', localProviderId(), id);
-  if (!isOk(res)) { toast(errText(res), 'bad'); return; }
-  S.selected = { provider: localProviderId(), model: id };
-  renderModels();
-  focusFk(`${id}:load`);
-  toast(`${shortName(id)} is now the active model.`);
-}
+/** "Use this model": select it, then load it (doLoad selects first). */
 async function doLoad(id) {
   if (S.selected.model !== id || S.selected.provider !== localProviderId()) {
     const r = await api.call('select_model', localProviderId(), id);
@@ -325,7 +438,10 @@ async function doLoad(id) {
   }
   const res = await api.call('load_model');
   if (!isOk(res)) { toast(errText(res), 'bad'); return; }
-  S.runtime = { ...S.runtime, state: 'starting', model_id: id };
+  // load_model's own runtime.status events may already have arrived; keep their numbers.
+  if (!(S.runtime.model_id === id && ['starting', 'compiling'].includes(S.runtime.state))) {
+    S.runtime = { ...S.runtime, state: 'starting', model_id: id, elapsed_s: 0, expected_s: 0 };
+  }
   renderModels();
   toast('Loading the model. The first NPU compile can take several minutes.');
 }
@@ -356,9 +472,16 @@ async function loadDisk() {
   const res = await api.call('disk_usage');
   const bar = $('disk-bar'); const legend = $('disk-legend');
   clear(bar); clear(legend);
-  if (!isOk(res)) { bar.setAttribute('aria-label', 'Disk usage unavailable'); return; }
+  if (!isOk(res)) { bar.hidden = true; $('disk').hidden = true; return; }
   const parts = [['models', 'Models'], ['cache', 'Compile cache'], ['runtime', 'Runtime'], ['logs', 'Logs']];
   const used = parts.reduce((n, [k]) => n + (Number(res[k]) || 0), 0);
+  // Nothing stored yet: no bar of empty segments, only the free space.
+  $('disk').hidden = used === 0 && !(Number(res.free) > 0);
+  bar.hidden = used === 0;
+  if (used === 0) {
+    legend.append(el('li', {}, [el('span', { text: 'Nothing stored yet. Free on drive: ' }), el('b', { class: 'ui-num', text: fmtBytes(res.free) })]));
+    return;
+  }
   parts.forEach(([k, label], i) => {
     const v = Number(res[k]) || 0;
     const seg = el('i', { class: `seg seg-${i + 1}` });
@@ -379,7 +502,9 @@ async function refreshRuntime() {
   const installed = !!res.installed;
   $('rt-ovms').textContent = installed ? `Installed, version ${res.version || 'unknown'}${res.variant ? ` (${res.variant})` : ''}` : 'Not installed';
   $('rt-ovms').className = installed ? 'ok-text' : 'ui-text-secondary';
+  // vcredist: true / false on Windows; null where it does not apply (hide the row, no warning).
   const vc = res.vcredist !== false;
+  $('rt-vc').closest('div').hidden = res.vcredist == null;
   $('rt-vc').textContent = vc ? 'Installed' : 'Missing';
   $('rt-vc').className = vc ? 'ok-text' : 'danger-text';
   $('rt-vc-help').hidden = vc;
@@ -390,7 +515,7 @@ async function refreshRuntime() {
   renderModels();
 }
 
-/** The "Re-check" button: re-read the runtime, rescan the models folder and disk usage,
+/** The "Check again" button: re-read the runtime, rescan the models folder and disk usage,
  *  and say what was found (a re-check that changes nothing must still visibly finish). */
 async function recheckAll() {
   const b = $('rt-recheck');
@@ -405,18 +530,18 @@ async function recheckAll() {
     const models = Array.isArray(S.models) ? S.models.length : null;
     const bits = [
       rt.installed ? `OVMS ${rt.version || ''} installed`.replace('  ', ' ') : 'OVMS not installed',
-      rt.vcredist === false ? 'Visual C++ runtime missing' : 'Visual C++ runtime OK',
-    ];
+      rt.vcredist === false ? 'Visual C++ runtime missing' : (rt.vcredist == null ? null : 'Visual C++ runtime OK'),
+    ].filter(Boolean);
     if (models != null) bits.push(`${models} model${models === 1 ? '' : 's'} found`);
     const at = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     msg.textContent = `Checked at ${at}: ${bits.join(' · ')}.`;
     msg.className = rt.installed && rt.vcredist !== false ? 'ok-text ui-small' : 'ui-text-secondary ui-small';
   } catch (err) {
-    msg.textContent = `Re-check failed: ${(err && err.message) || err}`;
+    msg.textContent = `Check failed: ${(err && err.message) || err}`;
     msg.className = 'danger-text ui-small';
   } finally {
     b.disabled = false;
-    b.textContent = 'Re-check';
+    b.textContent = 'Check again';
   }
 }
 
@@ -430,14 +555,17 @@ function onRuntimeInstall(evt) {
   bar.value = pct;
   if (status === 'error') {
     S.installing = false;
-    text.textContent = `Install failed: ${evt.error || 'unknown error'}`;
+    S.installNote = `Install failed: ${evt.error || 'unknown error'}`;
+    text.textContent = S.installNote;
     text.className = 'danger-text ui-small';
     $('rt-install').disabled = false;
+    renderFirstRun();
     return;
   }
-  text.className = 'ui-text-secondary ui-small';
+  text.className = 'ui-text-secondary ui-small ui-num';
   if (status === 'done') {
     S.installing = false;
+    S.installNote = '';
     text.textContent = 'OVMS installed.';
     refreshRuntime().then(() => setTimeout(() => { if (!S.installing) $('rt-progress').hidden = true; }, 3000));
     loadDisk();
@@ -449,6 +577,8 @@ function onRuntimeInstall(evt) {
   text.textContent = total
     ? `${label}: ${fmtBytes(done)} of ${fmtBytes(total)} (${Math.round(pct)}%), ${fmtSpeed(evt.speed_bps)}, ${fmtEta(evt.eta_s)} left`
     : `${label}…`;
+  S.installNote = text.textContent;
+  renderFirstRun();
 }
 
 async function installRuntime() {
@@ -462,12 +592,156 @@ async function installRuntime() {
     $('rt-install').disabled = false;
     $('rt-progress-text').textContent = errText(res);
     $('rt-progress-text').className = 'danger-text ui-small';
+    S.installNote = errText(res);
+    renderFirstRun();
   }
+}
+
+// --------------------------------------------------------------- first run ----
+// A checklist at the top of Models while the runtime or every model is missing:
+// 1 install the runtime, 2 download the recommended model, 3 load it.
+
+/** The catalog's recommended model: the search results carry it as badge "recommended". */
+async function findRecommended() {
+  if (S.recommended) return S.recommended;
+  const local = S.models.find((m) => m.catalog && m.catalog.npu === 'recommended');
+  if (local) { S.recommended = local.id; return S.recommended; }
+  const res = await api.call('search_models', '', authorName());
+  const hit = isOk(res) ? pick(res, 'results').find((r) => r.badge === 'recommended') : null;
+  if (hit) S.recommended = hit.id;
+  return S.recommended;
+}
+
+function activeDownload() {
+  return [...dlRows.values()].find((r) => ACTIVE_DL.has(r.status)) || null;
+}
+
+function setStep(n, state, text) {
+  const li = $(`fr-step-${n}`);
+  li.dataset.state = state;
+  if (state === 'current') li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+  li.querySelector('.step-no').textContent = state === 'done' ? '✓' : String(n);
+  $(`fr-text-${n}`).textContent = text;
+  $(`fr-text-${n}`).className = `${state === 'error' ? 'danger-text' : 'ui-text-secondary'} ui-small ui-num`;
+}
+
+function paintFirstRunLoad(line) {
+  if (S.runtime && S.runtime.state !== 'ready' && ['starting', 'compiling'].includes(S.runtime.state)) {
+    $('fr-text-3').textContent = line.text;
+  }
+}
+
+function renderFirstRun() {
+  const card = $('firstrun');
+  if (!S.rtInfo || !S.modelsLoaded) { card.hidden = true; return; }
+  const rt = S.rtInfo;
+  const installed = rt.installed !== false;
+  const vc = rt.vcredist !== false;
+  const done = S.models.filter((m) => m.complete);
+  const runState = (S.runtime && S.runtime.state) || 'unloaded';
+  const ready = runState === 'ready';
+  const loading = runState === 'starting' || runState === 'compiling';
+  if (!installed || !done.length) S.firstRun = true;
+  const show = !!S.firstRun && !ready;
+  if (S.firstRun && ready) {
+    S.firstRun = false;
+    toast('The model is loaded. You can chat now.', 'ok');
+  }
+  card.hidden = !show;
+  if (!show) return;
+
+  const dl = activeDownload();
+  const failed = [...dlRows.values()].find((r) => r.status === 'error' || r.status === 'failed');
+  // Step 1
+  if (installed) setStep(1, 'done', `The runtime${rt.version ? ` (version ${rt.version})` : ''} is installed.`);
+  else if (!vc) setStep(1, 'current', 'The Visual C++ runtime is missing, so it cannot be installed yet. Install it first (see Local runtime, below).');
+  else setStep(1, 'current', S.installing || S.installNote ? (S.installNote || 'Starting…') : 'A one-time download. Nothing is sent from your PC.');
+  $('fr-install').hidden = installed;
+  $('fr-install').disabled = S.installing || !vc;
+  // Step 2
+  const step2 = 'current';
+  if (done.length) setStep(2, 'done', `${shortName(done[0].id)} is downloaded.`);
+  else if (dl) {
+    const d = dl.last || {};
+    const pct = d.total_bytes ? Math.round((d.downloaded_bytes / d.total_bytes) * 100) : 0;
+    setStep(2, step2, `Downloading ${shortName(dl.repo)}: ${pct}%${ACTIVE_DL.has(dl.status) && d.eta_s ? `, ${fmtEta(d.eta_s)} left` : ''}`);
+  } else if (failed) setStep(2, 'error', `The last download stopped: ${friendlyDlError((failed.last || {}).error)} Press the button to try again.`);
+  else setStep(2, step2, 'About 1 GB, downloaded once from Hugging Face. It runs on your NPU.');
+  $('fr-download').hidden = done.length > 0;
+  $('fr-download').disabled = !!dl;
+  $('fr-download').textContent = dl ? 'Downloading…' : 'Download recommended model';
+  // Step 3
+  const ok3 = installed && done.length > 0;
+  if (ready) setStep(3, 'done', 'The model is loaded.');
+  else if (loading) setStep(3, 'current', loadLine().text);
+  else if (ok3) setStep(3, 'current', 'Loads the model onto the NPU. The first time takes a few minutes.');
+  else {
+    const need = [!installed && 'install the runtime', !done.length && 'download a model'].filter(Boolean);
+    setStep(3, 'todo', `Waiting: ${need.join(' and ')} first.`);
+  }
+  $('fr-load').disabled = !ok3 || loading;
+  $('fr-load').hidden = ready;
+  $('fr-load').textContent = loading ? 'Loading…' : 'Load the model';
+  const doneCount = (installed ? 1 : 0) + (done.length ? 1 : 0) + (ready ? 1 : 0);
+  $('fr-progress').textContent = `${doneCount} of 3 done`;
+  // The first step that is not done is the current one.
+  const first = [installed, done.length > 0, ready].findIndex((v) => !v);
+  for (let n = 1; n <= 3; n++) {
+    const li = $(`fr-step-${n}`);
+    if (li.dataset.state !== 'done' && li.dataset.state !== 'error') {
+      li.dataset.state = n - 1 === first ? 'current' : 'todo';
+      if (n - 1 === first) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+    }
+  }
+}
+
+async function downloadRecommended() {
+  const msg = $('fr-msg');
+  msg.className = 'ui-small ui-text-secondary';
+  msg.textContent = 'Looking up the recommended model…';
+  $('fr-download').disabled = true;
+  const id = await findRecommended();
+  if (!id) {
+    msg.className = 'ui-small danger-text';
+    msg.textContent = 'Could not find the recommended model. Check your internet connection and try again, or search below.';
+    $('fr-download').disabled = false;
+    return;
+  }
+  const r = await api.call('start_download', id);
+  if (!isOk(r)) {
+    msg.className = 'ui-small danger-text';
+    msg.textContent = errText(r);
+    $('fr-download').disabled = false;
+    return;
+  }
+  msg.textContent = '';
+  await refreshDownloads();
+  renderFirstRun();
+}
+
+async function loadFirstModel() {
+  const ready = S.models.filter((m) => m.complete);
+  const pickM = ready.find((m) => m.id === S.selected.model) || ready.find((m) => m.catalog && m.catalog.npu === 'recommended') || ready[0];
+  if (pickM) await doLoad(pickM.id);
 }
 
 // ---------------------------------------------------------------- downloads ----
 
-const dlRows = new Map();   // id -> { li, refs, status }
+const dlRows = new Map();   // id -> { li, refs, status, repo, last }
+const FINISHED_DL = new Set(['done', 'error', 'failed']);
+
+/** A plain-language reason for a failed download; the raw text goes in a title. */
+function friendlyDlError(raw) {
+  const e = String(raw || '');
+  if (/space|disk|ENOSPC|write/i.test(e)) return 'There is not enough free disk space.';
+  if (/401|403|gated|token|denied|forbidden/i.test(e)) return 'Hugging Face refused the download.';
+  if (/time.?out|connect|network|resolve|getaddrinfo|ssl|reset|unreachable|offline/i.test(e)) return 'The connection to Hugging Face failed.';
+  if (/sha|hash|checksum|verif|corrupt/i.test(e)) return 'A downloaded file did not match its checksum.';
+  return 'The download stopped.';
+}
+function syncClearButton() {
+  $('dl-clear').hidden = ![...dlRows.values()].some((r) => FINISHED_DL.has(r.status));
+}
 
 function dlId(d) { return d.group_id || d.download_id || d.id; }
 
@@ -486,13 +760,22 @@ function upsertDownload(d) {
     $('download-list').prepend(row.li);
   }
   row.repo = d.repo_id;
+  row.last = d;
   if (row.status !== status) { row.status = status; rebuildDlActions(row, id, d); }
   updateDlRow(row, d);
   $('download-empty').hidden = dlRows.size > 0;
+  syncClearButton();
+  renderFirstRun();
 }
 function removeDlRow(id) {
   const row = dlRows.get(id);
   if (row) { row.li.remove(); dlRows.delete(id); }
+  $('download-empty').hidden = dlRows.size > 0;
+  syncClearButton();
+}
+function clearFinishedDownloads() {
+  for (const [id, row] of [...dlRows]) if (FINISHED_DL.has(row.status)) removeDlRow(id);
+  renderFirstRun();
 }
 function buildDlRow(id, d) {
   const bar = progressBar(`Download of ${d.repo_id}`);
@@ -515,6 +798,11 @@ function rebuildDlActions(row, id, d) {
   const name = shortName(d.repo_id);
   if (ACTIVE_DL.has(status)) {
     row.refs.actions.append(btn('Cancel', { 'aria-label': `Cancel download of ${name}`, onclick: async () => {
+      const yes = await confirmAction({
+        title: 'Cancel the download?', message: 'Cancel and delete the partial download?',
+        confirmLabel: 'Cancel and delete', cancelLabel: 'Keep downloading', danger: true,
+      });
+      if (!yes || !ACTIVE_DL.has(row.status)) return;
       const r = await api.call('cancel_download', id);
       if (!isOk(r)) toast(errText(r), 'bad');
     } }));
@@ -536,13 +824,14 @@ function updateDlRow(row, d) {
   row.refs.bar.set(pct);
   let txt;
   if (row.status === 'done') txt = `${fmtBytes(total || done)} downloaded`;
-  else if (d.error) txt = String(d.error);
+  else if (d.error) txt = `${friendlyDlError(d.error)} Press Resume to try again.`;
   else {
     txt = `${fmtBytes(done)} of ${fmtBytes(total)} (${Math.round(pct)}%)`;
     if (ACTIVE_DL.has(row.status)) txt += `, ${fmtSpeed(d.speed_bps)}, ${fmtEta(d.eta_s)} left`;
     if (d.files_total) txt += `, file ${Math.min((d.files_done || 0) + 1, d.files_total)} of ${d.files_total}`;
   }
   row.refs.text.textContent = txt;
+  if (d.error) row.refs.text.title = String(d.error); else row.refs.text.removeAttribute('title');
   row.refs.text.className = `${d.error ? 'danger-text' : 'ui-text-secondary'} ui-small ui-num`;
 }
 async function refreshDownloads() {
@@ -576,6 +865,8 @@ async function doSearch() {
   clear(list);
   if (!isOk(res)) { $('search-status').textContent = errText(res); return; }
   const items = pick(res, 'results');
+  const rec = items.find((r) => r.badge === 'recommended');
+  if (rec && !S.recommended) S.recommended = rec.id;
   $('search-status').textContent = items.length
     ? `${items.length} result${items.length === 1 ? '' : 's'}${author ? ` from ${author}` : ''}`
     : 'No matching models. Try another search, or turn off the author filter.';
@@ -623,9 +914,14 @@ async function openDrawer(item, trigger) {
   const fits = res.fits_disk !== false;
   const installed = S.installedIds.has(item.id);
   const activeDl = [...dlRows.values()].some((r) => r.repo === item.id && ACTIVE_DL.has(r.status));
+  const avoid = item.badge === 'avoid';
   body.append(
     el('div', { class: 'm-title' }, [badgeChip(item.badge || 'untested'), installed ? chip('Installed', 'ok') : null]),
-    item.note ? el('p', { class: 'ui-text-secondary', text: item.note }) : null,
+    avoid ? el('div', { class: 'ui-callout ui-callout--danger', role: 'alert' }, [
+      el('strong', { class: 'ui-callout__title', text: 'Rated Avoid for this PC' }),
+      el('span', { text: item.note || 'This model is known not to work well on the NPU.' }),
+    ]) : null,
+    !avoid && item.note ? el('p', { class: 'ui-text-secondary', text: item.note }) : null,
     el('dl', { class: 'kv' }, [
       el('div', {}, [el('dt', { text: 'Total download' }), el('dd', { class: 'ui-num', text: fmtBytes(res.total_bytes) })]),
       el('div', {}, [el('dt', { text: 'Free disk space' }), el('dd', { class: 'ui-num', text: fmtBytes(res.free_bytes) })]),
@@ -637,9 +933,17 @@ async function openDrawer(item, trigger) {
     body.append(el('h3', { class: 'h3', text: 'Files' }),
       el('ul', { class: 'file-list' }, files.slice(0, 40).map((f) => el('li', {}, [el('span', { class: 'ui-mono', text: f.path }), el('span', { class: 'ui-text-tertiary ui-num', text: fmtBytes(f.size) })]))));
   }
-  const dl = btn(installed ? 'Already installed' : activeDl ? 'Downloading' : 'Download', {
-    cls: 'ui-btn--primary', id: 'drawer-download', disabled: (!fits || installed || activeDl) ? '' : null,
+  const dl = btn(installed ? 'Already installed' : activeDl ? 'Downloading' : avoid ? 'Download anyway' : 'Download', {
+    cls: avoid ? 'ui-btn--danger' : 'ui-btn--primary', id: 'drawer-download', disabled: (!fits || installed || activeDl) ? '' : null,
     onclick: async () => {
+      if (avoid) {
+        const yes = await confirmAction({
+          title: 'Download a model rated Avoid?',
+          message: `${item.note || 'This model is known not to work well on the NPU.'} Download it anyway?`,
+          confirmLabel: 'Download anyway', cancelLabel: 'Do not download', danger: true,
+        });
+        if (!yes) return;
+      }
       $('drawer-download').disabled = true;
       const r = await api.call('start_download', item.id);
       if (!isOk(r)) { toast(errText(r), 'bad'); $('drawer-download').disabled = false; return; }
@@ -665,6 +969,10 @@ function initModels() {
   let t = null;
   $('search-q').addEventListener('input', () => { clearTimeout(t); t = setTimeout(doSearch, 450); });
   $('drawer-close').addEventListener('click', closeDrawer);
+  $('dl-clear').addEventListener('click', clearFinishedDownloads);
+  $('fr-install').addEventListener('click', installRuntime);
+  $('fr-download').addEventListener('click', downloadRecommended);
+  $('fr-load').addEventListener('click', loadFirstModel);
   $('drawer').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeDrawer(); } });
   $('rt-vc-copy').addEventListener('click', async () => { toast((await copyText($('rt-vc-cmd').textContent)) ? 'Command copied.' : 'Could not copy. Select the command and press Ctrl+C.'); });
 }
@@ -678,13 +986,34 @@ async function loadSettings() {
   return res;
 }
 
-async function loadProviders() {
-  await loadSettings();
+const remoteViews = () => S.views.filter((v) => v.kind !== 'ovms');
+
+/** The cards are built once and then only refreshed in place, so a typed key and a test
+ *  result survive a tab switch. `force` rebuilds them (a provider was added or removed). */
+async function loadProviders(force = false) {
   const res = await api.call('list_providers');
   if (isOk(res)) S.views = pick(res, 'providers');
+  const ids = remoteViews().map((v) => v.id);
+  const same = !force && cards.size === ids.length && ids.every((id) => cards.has(id));
+  if (same) {
+    for (const v of remoteViews()) cards.get(v.id).setKey(v.key);
+    refreshFallbackWarning();
+    return;
+  }
+  await loadSettings();
   fillLocalCard();
   renderProviderCards();
   $('auto-refresh').checked = !(S.cfg && S.cfg.chat && S.cfg.chat.auto_refresh_models === false);
+}
+
+/** Pull the saved model lists into the cards that are already on screen. */
+async function syncCards() {
+  await loadSettings();
+  const res = await api.call('list_providers');
+  if (isOk(res)) S.views = pick(res, 'providers');
+  const ids = remoteViews().map((v) => v.id);
+  if (cards.size !== ids.length || !ids.every((id) => cards.has(id))) { await loadProviders(true); return; }
+  for (const v of remoteViews()) cards.get(v.id).reload(((S.cfg && S.cfg.providers) || {})[v.id] || {}, v);
 }
 
 /** "Model list updated: 2 new (A, B), 1 removed (C)." for one refresh result. */
@@ -709,7 +1038,7 @@ async function refreshAllModels() {
   const lines = Object.entries(results).map(([id, r]) => `${names[id] || id}: ${refreshSummary(r)}`);
   msg.className = 'ui-small';
   msg.textContent = lines.length ? lines.join(' ') : 'No provider has a key yet, so there was nothing to refresh.';
-  await loadProviders();
+  await syncCards();
 }
 
 function fillLocalCard() {
@@ -729,6 +1058,7 @@ async function saveLocal() {
   }
   const res = await api.call('update_settings', { local: { device: $('local-device').value, max_prompt_len: mpl } });
   if (res && res.config) S.cfg = res.config;
+  noteKeyRemoved(res);
   if (!isOk(res)) {
     const left = showFieldErrors(res.errors);
     $('local-msg').textContent = left.length ? left.join('; ') : errText(res);
@@ -752,13 +1082,30 @@ const cards = new Map();   // id -> { setKey }
 
 function renderProviderCards() {
   const host = $('provider-cards');
+  // Keys typed into a card that is about to be rebuilt are carried over.
+  const typed = new Map([...host.querySelectorAll('.provider-card')].map((c) => [c.dataset.id, c.querySelector('input[data-key-input]').value]));
   clear(host); cards.clear();
   for (const v of S.views) {
     if (v.kind === 'ovms') continue;
     const spec = (S.cfg && S.cfg.providers && S.cfg.providers[v.id]) || {};
     host.append(providerCard(v, spec));
+    const keep = typed.get(v.id);
+    if (keep) host.querySelector(`.provider-card[data-id="${cssEsc(v.id)}"] input[data-key-input]`).value = keep;
   }
 }
+
+const clockNow = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+/** Per-field error: the message in its own ui-error line, aria-invalid on the input. */
+function fieldFail(input, errEl, message) {
+  input.setAttribute('aria-invalid', 'true');
+  errEl.textContent = message;
+}
+function fieldOk(input, errEl) {
+  input.removeAttribute('aria-invalid');
+  errEl.textContent = '';
+}
+
+const isLoopbackHost = (h) => ['localhost', '127.0.0.1', '::1', '[::1]'].includes(h) || h.endsWith('.localhost') || /^127\./.test(h);
 
 function providerCard(v, spec) {
   const id = v.id;
@@ -781,6 +1128,7 @@ function providerCard(v, spec) {
     if (!next.display_name) next.display_name = v.display_name || id;
     const res = await api.call('upsert_provider', next);
     if (!isOk(res)) { msg.textContent = errText(res); msg.className = 'danger-text ui-small'; return false; }
+    noteKeyRemoved(res);
     Object.assign(spec, patch);
     if (S.cfg && S.cfg.providers) S.cfg.providers[id] = { ...(S.cfg.providers[id] || {}), ...patch };
     msg.textContent = okMsg; msg.className = 'ui-text-secondary ui-small';
@@ -789,20 +1137,33 @@ function providerCard(v, spec) {
 
   // Region -------------------------------------------------------------------
   let regionBlock = null;
-  const urlInput = el('input', { id: `${uid}-url`, class: 'ui-input ui-mono', type: 'url', spellcheck: 'false', value: spec.base_url || v.base_url || '', 'aria-describedby': `${uid}-url-hint` });
+  const urlInput = el('input', { id: `${uid}-url`, class: 'ui-input ui-mono', type: 'url', spellcheck: 'false', value: spec.base_url || v.base_url || '', 'aria-describedby': `${uid}-url-hint ${uid}-url-warn ${uid}-url-err` });
+  const urlErr = el('p', { class: 'ui-error', id: `${uid}-url-err`, role: 'alert' });
+  const urlWarn = el('p', { class: 'ui-help warn-text', id: `${uid}-url-warn`, hidden: '' });
   const urlField = el('div', { class: 'ui-field' }, [
     el('label', { class: 'ui-label', for: `${uid}-url`, text: 'Base URL' }),
     urlInput,
     el('p', { class: 'ui-help', id: `${uid}-url-hint`, text: 'An OpenAI-compatible endpoint, for example https://host/v1' }),
+    urlWarn,
+    urlErr,
   ]);
+  /** Plain http to a host that is not this computer: the key and messages are not encrypted. */
+  const paintUrlWarn = () => {
+    let plain = false;
+    try { const u = new URL(urlInput.value.trim()); plain = u.protocol === 'http:' && !isLoopbackHost(u.hostname.toLowerCase()); } catch { plain = false; }
+    urlWarn.hidden = !plain;
+    urlWarn.textContent = plain ? 'This address uses plain http, so your key and messages cross the network unencrypted. Use https unless the server is on your own network.' : '';
+  };
+  paintUrlWarn();
   const applyUrl = async () => {
     const val = urlInput.value.trim();
     let ok_ = false;
     try { const u = new URL(val); ok_ = u.protocol === 'https:' || u.protocol === 'http:'; } catch { ok_ = false; }
-    if (!ok_) { msg.textContent = 'Enter a full http(s) URL.'; msg.className = 'danger-text ui-small'; urlInput.setAttribute('aria-invalid', 'true'); return; }
-    urlInput.removeAttribute('aria-invalid');
+    if (!ok_) { fieldFail(urlInput, urlErr, 'Enter a full http(s) URL, for example https://host/v1.'); return; }
+    fieldOk(urlInput, urlErr);
     if (val !== (spec.base_url || '')) await saveSpec({ base_url: val });
   };
+  urlInput.addEventListener('input', () => { fieldOk(urlInput, urlErr); paintUrlWarn(); });
   urlInput.addEventListener('change', applyUrl);
   urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyUrl(); } });
 
@@ -861,7 +1222,13 @@ function providerCard(v, spec) {
   // Context window and reply length --------------------------------------------
   const ctxInput = el('input', { id: `${uid}-ctx`, class: 'ui-input narrow', type: 'number', min: '2048', max: '10000000', step: '1024', inputmode: 'numeric', placeholder: 'Auto', value: spec.context_tokens != null ? String(spec.context_tokens) : '' });
   const ctxHint = el('p', { class: 'ui-help', id: `${uid}-ctx-hint` });
-  const outInput = el('input', { id: `${uid}-out`, class: 'ui-input narrow', type: 'number', min: '256', max: '200000', step: '256', inputmode: 'numeric', value: String(spec.max_output_tokens || 2048) });
+  const outInput = el('input', { id: `${uid}-out`, class: 'ui-input narrow ui-num', type: 'number', min: '256', max: '200000', step: '256', inputmode: 'numeric', value: String(spec.max_output_tokens || 2048), 'aria-describedby': `${uid}-out-err` });
+  const ctxErr = el('p', { class: 'ui-error', id: `${uid}-ctx-err`, role: 'alert' });
+  const outErr = el('p', { class: 'ui-error', id: `${uid}-out-err`, role: 'alert' });
+  ctxInput.setAttribute('aria-describedby', `${uid}-ctx-hint ${uid}-ctx-err`);
+  ctxInput.classList.add('ui-num');
+  ctxInput.addEventListener('input', () => fieldOk(ctxInput, ctxErr));
+  outInput.addEventListener('input', () => fieldOk(outInput, outErr));
   const fmtTokens = (n) => (n >= 1000000 ? `${(n / 1000000).toFixed(n % 1000000 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
   function paintCtxHint() {
     const reported = (spec.model_context || {})[currentModel];
@@ -876,12 +1243,14 @@ function providerCard(v, spec) {
   ctxInput.addEventListener('change', async () => {
     const raw = ctxInput.value.trim();
     const n = raw === '' ? null : Number(raw);
-    if (n !== null && (!Number.isInteger(n) || n < 2048 || n > 10000000)) { msg.textContent = 'Enter a whole number of tokens from 2048 to 10000000, or leave it empty for Auto.'; msg.className = 'danger-text ui-small'; return; }
+    if (n !== null && (!Number.isInteger(n) || n < 2048 || n > 10000000)) { fieldFail(ctxInput, ctxErr, 'Enter a whole number of tokens from 2048 to 10000000, or leave it empty for Auto.'); return; }
+    fieldOk(ctxInput, ctxErr);
     if (await saveSpec({ context_tokens: n }, n ? `Context window set to ${fmtTokens(n)} tokens.` : 'Context window set to Auto.')) paintCtxHint();
   });
   outInput.addEventListener('change', async () => {
     const n = Number(outInput.value);
-    if (!Number.isInteger(n) || n < 256 || n > 200000) { msg.textContent = 'Enter a whole number of tokens from 256 to 200000.'; msg.className = 'danger-text ui-small'; return; }
+    if (!Number.isInteger(n) || n < 256 || n > 200000) { fieldFail(outInput, outErr, 'Enter a whole number of tokens from 256 to 200000.'); return; }
+    fieldOk(outInput, outErr);
     await saveSpec({ max_output_tokens: n }, `Replies can use up to ${fmtTokens(n)} tokens.`);
   });
   select.addEventListener('change', paintCtxHint);
@@ -891,22 +1260,34 @@ function providerCard(v, spec) {
     id: `${uid}-key`, class: 'ui-input ui-mono', type: 'password', autocomplete: 'off', spellcheck: 'false',
     autocapitalize: 'none', 'data-key-input': '', placeholder: 'Paste your API key',
   });
-  const eye = el('button', { type: 'button', class: 'ui-btn eye', 'data-eye': '', 'aria-pressed': 'false', 'aria-label': 'Show API key', text: 'Show' });
+  const eye = el('button', { type: 'button', class: 'ui-btn eye', 'data-eye': '' });
+  setEye(eye, false);
   eye.addEventListener('click', () => {
     const show = keyInput.type === 'password';
     keyInput.type = show ? 'text' : 'password';
-    eye.setAttribute('aria-pressed', String(show));
+    setEye(eye, show);
   });
-  const removeBtn = btn('Remove key', { 'aria-label': `Remove the saved key for ${v.display_name || id}` });
+  const removeBtn = btn('Remove key', { cls: 'ui-btn--danger', 'aria-label': `Remove key for ${v.display_name || id}` });
   const setKey = (key) => {
     keyLine.textContent = keyStatusText(key, envName);
     keyLine.dataset.source = (key && key.source) || 'none';
     removeBtn.disabled = !(key && (key.source === 'keyring' || key.env_overrides_saved));
   };
   setKey(v.key);
-  cards.set(id, { setKey });
+  cards.set(id, {
+    setKey,
+    /** New saved spec (model lists) from outside the card, e.g. after "Refresh all models". */
+    reload(ns, view) {
+      Object.assign(spec, ns);
+      models.splice(0, models.length, ...(ns.models || view.models || []));
+      currentModel = ns.default_model || view.default_model || models[0] || '';
+      fillModels();
+      paintCtxHint();
+      setKey(view.key);
+    },
+  });
 
-  const takeKey = () => { const k = keyInput.value; keyInput.value = ''; keyInput.type = 'password'; eye.setAttribute('aria-pressed', 'false'); return k; };
+  const takeKey = () => { const k = keyInput.value; keyInput.value = ''; keyInput.type = 'password'; setEye(eye, false); return k; };
 
   const showTest = (text, cls) => { testLine.textContent = text; testLine.className = `test-line ui-small ${cls}`; };
   /** Hand a typed key to the bridge. False (with the reason shown) when it was not saved. */
@@ -917,7 +1298,7 @@ function providerCard(v, spec) {
     return true;
   }
 
-  const saveBtn = btn('Save key', { cls: 'ui-btn--primary', 'aria-label': `Save the API key for ${v.display_name || id}` });
+  const saveBtn = btn('Save key', { 'aria-label': `Save key for ${v.display_name || id}`, title: 'Save the key without testing it' });
   saveBtn.addEventListener('click', async () => {
     const k = takeKey().trim();
     if (!k) { showTest('Type a key first.', 'danger-text'); keyInput.focus(); return; }
@@ -929,7 +1310,7 @@ function providerCard(v, spec) {
   // A key in the field is saved before the test (the inline key card's "Save & test"):
   // a key that was only tested was lost when Settings closed, after showing "Connected".
   // The test then checks the key the chat will use, saved or from the environment.
-  const testBtn = btn('Test', { 'aria-label': `Save a typed key and test the connection to ${v.display_name || id}` });
+  const testBtn = btn('Save & test', { cls: 'ui-btn--primary', 'aria-label': `Save & test the connection to ${v.display_name || id}`, title: 'Saves the key you typed (if any), then tests the connection' });
   testBtn.addEventListener('click', async () => {
     const k = takeKey().trim();
     testBtn.disabled = true; saveBtn.disabled = true;
@@ -946,7 +1327,7 @@ function providerCard(v, spec) {
     if (res && res.ok) {
       const list = res.models || [];
       const lat = res.latency_s != null ? ` in ${Number(res.latency_s).toFixed(2)} s` : '';
-      showTest(`${savedNote}Connected${lat}. ${list.length ? `${list.length} model${list.length === 1 ? '' : 's'} available.` : ''}`.trim(), 'ok-text');
+      showTest(`${savedNote}Connected${lat}. ${list.length ? `${list.length} model${list.length === 1 ? '' : 's'} available.` : ''} Checked at ${clockNow()}.`.replace(/\s+/g, ' ').trim(), 'ok-text');
       if (list.length) {
         for (const m of list) if (!dlist.querySelector(`option[value="${cssEsc(m)}"]`)) dlist.append(el('option', { value: m }));
         if (JSON.stringify(list) !== JSON.stringify(models)) {
@@ -963,10 +1344,10 @@ function providerCard(v, spec) {
     } else {
       const err = (res && (res.error && typeof res.error === 'object' ? res.error.message : res.error)) || 'The test failed.';
       const hint = (res && (res.hint || (res.error && res.error.hint))) || '';
-      showTest(`${k ? 'Key saved, but the test failed: ' : ''}${hint ? `${err} ${hint}` : err}`, 'danger-text');
+      showTest(`${k ? 'Key saved, but the test failed: ' : ''}${hint ? `${err} ${hint}` : err} Checked at ${clockNow()}.`, 'danger-text');
     }
   });
-  const refreshBtn = btn('Refresh models', { 'aria-label': `Refresh the model list for ${v.display_name || id}` });
+  const refreshBtn = btn('Refresh models', { 'aria-label': `Refresh models for ${v.display_name || id}` });
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.disabled = true;
     testLine.textContent = 'Reading the model list…'; testLine.className = 'test-line ui-small ui-text-secondary';
@@ -1018,7 +1399,7 @@ function providerCard(v, spec) {
           const res = await api.call('remove_provider', id);
           if (!isOk(res)) { msg.textContent = errText(res); msg.className = 'danger-text ui-small'; render(false); return; }
           toast(`${v.display_name || id} removed.`);
-          await loadProviders();
+          await loadProviders(true);
           $('add-id').focus();
         } }),
         btn('Cancel', { onclick: () => { render(false); askBtn.focus(); } }),
@@ -1044,8 +1425,8 @@ function providerCard(v, spec) {
       el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-model-custom`, text: 'Custom model name' }), custom, dlist]),
     ]),
     el('div', { class: 'grid2' }, [
-      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-ctx`, text: 'Context window (tokens)' }), ctxInput, ctxHint]),
-      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-out`, text: 'Longest reply (tokens)' }), outInput]),
+      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-ctx`, text: 'Context window (tokens)' }), ctxInput, ctxHint, ctxErr]),
+      el('div', { class: 'ui-field' }, [el('label', { class: 'ui-label', for: `${uid}-out`, text: 'Longest reply (tokens)' }), outInput, outErr]),
     ]),
     el('div', { class: 'ui-field' }, [
       el('label', { class: 'ui-label', for: `${uid}-key`, text: v.key && v.key.required === false ? 'API key (optional)' : 'API key' }),
@@ -1069,6 +1450,7 @@ async function refreshKeyStatuses() {
   if (!isOk(res)) return;
   S.views = pick(res, 'providers');
   for (const v of S.views) { const c = cards.get(v.id); if (c) c.setKey(v.key); }
+  refreshFallbackWarning();
 }
 
 function initProviders() {
@@ -1079,6 +1461,7 @@ function initProviders() {
     const res = await api.call('update_settings', { chat: { auto_refresh_models: want } });
     if (!isOk(res)) { e.target.checked = !want; $('refresh-msg').className = 'ui-small danger-text'; $('refresh-msg').textContent = errText(res); return; }
     if (res.config) S.cfg = { ...S.cfg, ...res.config };
+    noteKeyRemoved(res);
     $('refresh-msg').className = 'ui-small ui-text-secondary';
     $('refresh-msg').textContent = want ? 'Model lists will refresh once a day.' : 'Automatic refresh is off.';
   });
@@ -1110,8 +1493,8 @@ function initProviders() {
     if (!isOk(res)) { $('add-msg').textContent = errText(res); $('add-msg').className = 'danger-text ui-small'; return; }
     form.reset();
     $('add-msg').className = 'ui-text-secondary ui-small';
-    $('add-msg').textContent = `Added ${name}. Enter its key in the new card above, then press Test to fetch its models.`;
-    await loadProviders();
+    $('add-msg').textContent = `Added ${name}. Enter its key in the new card above, then press Save & test to fetch its models.`;
+    await loadProviders(true);
     const card = document.querySelector(`.provider-card[data-id="${cssEsc(id)}"]`);
     if (card) { card.scrollIntoView({ block: 'nearest' }); const k = card.querySelector('input[data-key-input]'); if (k) k.focus(); }
   });
@@ -1135,7 +1518,8 @@ function fillGeneral() {
   $('g-units').value = (c.tools && c.tools.units) || 'metric';
   fillFallback();
   fillQuickActions();
-  S.generalDirty = false;
+  syncHotkeyReset();
+  setDirty(false);
 }
 
 /** The ticked tools, plus any enabled tool this page has no box for. A save replaces
@@ -1171,6 +1555,18 @@ function fillFallback() {
   sel.value = [...sel.options].some((o) => o.value === want) ? want : '';
   $('g-fallback-model').value = (c.chat && c.chat.fallback_model) || '';
   fillFallbackModels();
+  refreshFallbackWarning();
+}
+
+/** "No key saved for X" under the fallback choice when that provider cannot answer yet. */
+function refreshFallbackWarning() {
+  const id = $('g-fallback').value;
+  const view = id ? S.views.find((p) => p.id === id) : null;
+  const key = view && view.key;
+  const missing = !!(key && key.source === 'none' && key.required !== false);
+  const warn = $('g-fallback-warn');
+  warn.hidden = !missing;
+  warn.textContent = missing ? `No key saved for ${view.display_name || id}. It cannot answer until you add one under Providers.` : '';
 }
 
 async function refreshAutostart() {
@@ -1181,9 +1577,21 @@ async function refreshAutostart() {
 
 function initGeneral() {
   const form = $('general-form');
-  form.addEventListener('input', () => { S.generalDirty = true; $('g-msg').textContent = ''; });
-  form.addEventListener('change', () => { S.generalDirty = true; });
-  $('g-fallback').addEventListener('change', () => { $('g-fallback-model').value = ''; fillFallbackModels(); });
+  // The theme and "Start at login" apply as soon as they change; they are not part of Save.
+  $('g-autostart').dataset.nodirty = '';
+  const counts = (e) => !(e.target.closest && e.target.closest('[data-nodirty], #g-theme-grid, #g-theme'));
+  form.addEventListener('input', (e) => { if (counts(e)) { setDirty(true); $('g-msg').textContent = ''; } });
+  form.addEventListener('change', (e) => { if (counts(e)) setDirty(true); });
+  $('g-fallback').addEventListener('change', () => { $('g-fallback-model').value = ''; fillFallbackModels(); refreshFallbackWarning(); });
+  $('g-revert').addEventListener('click', () => {
+    stopHotkeyRecording();
+    clearErrors(form);
+    fillGeneral();
+    $('g-restart').hidden = true;
+    $('g-msg').className = 'ui-text-secondary ui-small';
+    $('g-msg').textContent = 'Changes reverted.';
+  });
+  initHotkey();
   initQuickActions();
 
   $('g-autostart').addEventListener('change', async (e) => {
@@ -1238,33 +1646,148 @@ function initGeneral() {
     };
     $('g-save').disabled = true;
     const prevHotkey = (S.cfg && S.cfg.ui && S.cfg.ui.hotkey) || '';
+    // The hotkey first: Windows may refuse it, and that must not be reported as if the
+    // other settings had failed. The rest is saved either way.
+    let hotkeyError = null;
+    if (hotkey !== prevHotkey) {
+      const hk = await api.call('set_hotkey', hotkey);
+      if (isOk(hk)) {
+        const applied = (hk && hk.hotkey) || hotkey;
+        S.cfg = { ...S.cfg, ui: { ...((S.cfg && S.cfg.ui) || {}), hotkey: applied } };
+        $('g-hotkey').value = applied;
+      } else {
+        hotkeyError = typeof hk.error === 'string' ? hk.error : errText(hk);
+      }
+    }
     const res = await api.call('update_settings', patch);
-    let ok_ = isOk(res);
-    const notes = [];
+    const saved = isOk(res);
     if (res && res.config) S.cfg = { ...S.cfg, ...res.config };
-    // Saved: the editor shows the list as the app now has it (new custom ids, edited flags).
-    if (ok_ && res.quick_actions) { QA.data = res.quick_actions; fillQuickActions(); }
-    if (!ok_) {
+    noteKeyRemoved(res);
+    $('g-save').disabled = false;
+    const msg = $('g-msg');
+    if (!saved) {
       const left = showFieldErrors(res.errors);
-      notes.push(left.length ? left.join('; ') : errText(res));
-    } else if ((res.restart_required || []).length) {
+      if (hotkeyError) setError('ui.hotkey', hotkeyError);
+      msg.className = 'danger-text ui-small';
+      msg.textContent = `Nothing was saved${hotkey !== prevHotkey && !hotkeyError ? ' except the hotkey' : ''}. ${left.length ? left.join('; ') : (res && res.errors && Object.keys(res.errors).length ? 'See the messages above.' : errText(res))}`;
+      return;
+    }
+    // Saved: the editor shows the list as the app now has it (new custom ids, edited flags).
+    if (res.quick_actions) { QA.data = res.quick_actions; fillQuickActions(); }
+    if ((res.restart_required || []).length) {
       $('g-restart').hidden = false;
       $('g-restart').textContent = `Restart or reload required for: ${res.restart_required.join(', ')}.`;
     }
-    if (ok_ && hotkey !== prevHotkey) {
-      const hk = await api.call('set_hotkey', hotkey);
-      if (!isOk(hk)) {
-        ok_ = false;
-        const m = typeof hk.error === 'string' ? hk.error : errText(hk);
-        setError('ui.hotkey', m);
-        $('g-hotkey').focus();
-      } else {
-        S.cfg = { ...S.cfg, ui: { ...(S.cfg.ui || {}), hotkey } };
-      }
+    if (hotkeyError) {
+      // Everything else is saved; only the hotkey field still differs from the app.
+      setError('ui.hotkey', hotkeyError);
+      setDirty(true);
+      msg.className = 'warn-text ui-small';
+      msg.textContent = `Saved, except the hotkey: ${hotkeyError}`;
+      toast(msg.textContent, 'warn');
+      $('g-hotkey').focus();
+      return;
     }
-    $('g-save').disabled = false;
-    if (ok_) { S.generalDirty = false; $('g-msg').textContent = 'Saved.'; $('g-msg').className = 'ok-text ui-small'; }
-    else { $('g-msg').textContent = notes.length ? notes.join(' ') : 'Some settings were not saved. See the messages above.'; $('g-msg').className = 'danger-text ui-small'; }
+    setDirty(false);
+    msg.className = 'ok-text ui-small';
+    msg.textContent = 'Saved.';
+    toast('Settings saved', 'ok');
+  });
+}
+
+// ------------------------------------------------------------------- hotkey ----
+
+const DEFAULT_HOTKEY = 'Ctrl+Alt+C';
+const COPILOT_HOTKEY = 'Copilot';
+const NAMED_KEYS = {
+  Space: 'Space', Enter: 'Enter', Tab: 'Tab', Delete: 'Delete', Insert: 'Insert', Home: 'Home', End: 'End',
+  PageUp: 'PageUp', PageDown: 'PageDown', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+  Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+};
+let recording = false;
+
+/** The key of a keydown in the hotkey field's text format (Ctrl+Alt+C), or null. */
+function keyFromEvent(e) {
+  const c = String(e.code || '');
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3);
+  if (/^Digit\d$/.test(c)) return c.slice(5);
+  if (/^F\d{1,2}$/.test(c)) return c;
+  return NAMED_KEYS[c] || null;
+}
+function modsFromEvent(e) {
+  return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Win'].filter(Boolean);
+}
+function syncHotkeyReset() {
+  $('g-hotkey-reset').hidden = $('g-hotkey').value.trim() === DEFAULT_HOTKEY;
+}
+function stopHotkeyRecording() {
+  if (!recording) return;
+  recording = false;
+  document.removeEventListener('keydown', onRecordKey, true);
+  const b = $('g-hotkey-record');
+  b.textContent = 'Record';
+  b.setAttribute('aria-pressed', 'false');
+  $('g-hotkey').placeholder = DEFAULT_HOTKEY;
+}
+function onRecordKey(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const input = $('g-hotkey');
+  const mods = modsFromEvent(e);
+  if (['Control', 'Alt', 'Shift', 'Meta', 'AltGraph'].includes(e.key)) {
+    input.placeholder = mods.length ? `${mods.join('+')}+…` : DEFAULT_HOTKEY;   // modifiers alone: keep waiting
+    return;
+  }
+  if (!mods.length && e.key === 'Escape') { stopHotkeyRecording(); $('g-hotkey-record').focus(); return; }
+  if (!mods.length && e.key === 'Backspace') {
+    input.value = '';
+    stopHotkeyRecording();
+    setDirty(true); syncHotkeyReset(); setError('ui.hotkey', '');
+    $('g-hotkey-record').focus();
+    return;
+  }
+  const key = keyFromEvent(e);
+  // The Copilot key arrives as Meta+Shift+F23.
+  if (key === 'F23' && e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey) {
+    input.value = COPILOT_HOTKEY;
+    setError('ui.hotkey', '');
+    stopHotkeyRecording();
+    setDirty(true); syncHotkeyReset();
+    $('g-hotkey-record').focus();
+    return;
+  }
+  if (!key) { setError('ui.hotkey', 'That key cannot be used in a hotkey. Try a letter, digit or F-key.'); return; }
+  if (!mods.length) { setError('ui.hotkey', 'Hold Ctrl, Alt, Shift or Win together with the key.'); return; }
+  input.value = [...mods, key].join('+');
+  setError('ui.hotkey', '');
+  stopHotkeyRecording();
+  setDirty(true); syncHotkeyReset();
+  $('g-hotkey-record').focus();
+}
+function initHotkey() {
+  const rec = $('g-hotkey-record');
+  rec.addEventListener('click', () => {
+    if (recording) { stopHotkeyRecording(); return; }
+    recording = true;
+    setError('ui.hotkey', '');
+    rec.textContent = 'Press the keys… (Esc cancels)';
+    rec.setAttribute('aria-pressed', 'true');
+    document.addEventListener('keydown', onRecordKey, true);
+  });
+  rec.addEventListener('blur', () => { if (recording) stopHotkeyRecording(); });
+  $('g-hotkey').addEventListener('input', syncHotkeyReset);
+  $('g-hotkey-copilot').addEventListener('click', () => {
+    $('g-hotkey').value = COPILOT_HOTKEY;
+    setError('ui.hotkey', '');
+    setDirty(true); syncHotkeyReset();
+    $('g-hotkey').focus();
+  });
+  $('g-hotkey-reset').addEventListener('click', () => {
+    $('g-hotkey').value = DEFAULT_HOTKEY;
+    setError('ui.hotkey', '');
+    setDirty(true); syncHotkeyReset();
+    $('g-hotkey').focus();
   });
 }
 
@@ -1283,29 +1806,54 @@ let qaSeq = 0;
 
 function qaDefaults() { return (QA.data && QA.data.defaults) || []; }
 
+/** A "35/40" counter that appears once the field is within 20% of its limit. */
+function attachCounter(input, max, out) {
+  const update = () => {
+    const n = input.value.length;
+    out.hidden = n < max * 0.8;
+    out.textContent = `${n}/${max}`;
+    out.classList.toggle('danger-text', n >= max);
+  };
+  input.addEventListener('input', update);
+  update();
+}
+const previewOf = (text) => (String(text).replace(/\s+/g, ' ').trim() || 'No instructions yet.');
+
 /** One editable row. `a`: {id, label, hint, instructions, tools, match_style, builtin}. */
 function quickActionRow(a, { open = false } = {}) {
   const n = ++qaSeq;
   const label = el('input', { id: `qa-label-${n}`, class: 'ui-input qa-label', type: 'text', maxlength: String(QA_LABEL_MAX),
-    autocomplete: 'off', spellcheck: 'true', placeholder: 'Name, e.g. Make it friendlier' });
+    autocomplete: 'off', spellcheck: 'true', placeholder: 'Name, e.g. Make it friendlier', 'aria-describedby': `qa-label-count-${n}` });
   label.value = a.label || '';
+  const labelCount = el('span', { id: `qa-label-count-${n}`, class: 'qa-count ui-small ui-num ui-text-tertiary', hidden: '' });
   const text = el('textarea', { id: `qa-text-${n}`, class: 'ui-textarea qa-instructions', rows: '4', maxlength: String(QA_INSTRUCTIONS_MAX),
-    spellcheck: 'true', placeholder: 'What the model should do with the pasted text, and how to answer. For example: Rewrite the text in a warmer tone. Reply with only the new text in one ```text block.' });
+    spellcheck: 'true', 'aria-describedby': `qa-text-count-${n}`,
+    placeholder: 'What the model should do with the pasted text, and how to answer. For example: Rewrite the text in a warmer tone. Reply with only the new text in one ```text block.' });
   text.value = a.instructions || '';
+  const textCount = el('span', { id: `qa-text-count-${n}`, class: 'qa-count ui-small ui-num ui-text-tertiary', hidden: '' });
+  attachCounter(label, QA_LABEL_MAX, labelCount);
+  attachCounter(text, QA_INSTRUCTIONS_MAX, textCount);
   const tools = el('input', { type: 'checkbox', class: 'ui-checkbox qa-tools', id: `qa-tools-${n}` });
   tools.checked = !!a.tools;
   const style = el('input', { type: 'checkbox', class: 'ui-checkbox qa-style', id: `qa-style-${n}` });
   style.checked = !!a.match_style;
+  const up = el('button', { type: 'button', class: 'ui-btn ui-btn--sm ui-btn--ghost ui-btn--icon qa-up', text: '↑' });
+  const down = el('button', { type: 'button', class: 'ui-btn ui-btn--sm ui-btn--ghost ui-btn--icon qa-down', text: '↓' });
   const remove = btn('Remove', { cls: 'ui-btn--ghost qa-remove' });
+  const preview = el('p', { class: 'qa-preview ui-small ui-text-tertiary', text: previewOf(text.value) });
   const li = el('li', { class: 'qa-row ui-well', dataset: { id: a.id || '', builtin: a.builtin ? '1' : '0', hint: a.hint || '' } }, [
     el('div', { class: 'qa-head' }, [
+      el('span', { class: 'qa-move', role: 'group', 'aria-label': 'Move' }, [up, down]),
       label,
+      labelCount,
       chip(a.builtin ? 'Built in' : 'Custom', a.builtin ? 'neutral' : 'accent'),
       remove,
     ]),
+    preview,
     el('details', { class: 'qa-more' }, [
       el('summary', { text: 'Instructions' }),
       text,
+      textCount,
       el('div', { class: 'qa-flags' }, [
         el('label', { class: 'ui-check', for: tools.id }, [tools, el('span', { text: 'Can look things up on the web' })]),
         el('label', { class: 'ui-check', for: style.id }, [style, el('span', { text: 'Match the formatting of my text' })]),
@@ -1317,14 +1865,28 @@ function quickActionRow(a, { open = false } = {}) {
   const sync = () => {
     const name = label.value.trim() || 'this action';
     remove.setAttribute('aria-label', `Remove ${name}`);
+    up.setAttribute('aria-label', `Move ${name} up`);
+    down.setAttribute('aria-label', `Move ${name} down`);
     text.setAttribute('aria-label', `Instructions for ${name}`);
   };
   label.addEventListener('input', sync);
+  text.addEventListener('input', () => { preview.textContent = previewOf(text.value); });
   sync();
+  const move = (dir) => {
+    const other = dir < 0 ? li.previousElementSibling : li.nextElementSibling;
+    if (!other) return;
+    if (dir < 0) other.before(li); else other.after(li);
+    setDirty(true);
+    syncQuickActionButtons();
+    const target = dir < 0 ? up : down;
+    (target.disabled ? (dir < 0 ? down : up) : target).focus();
+  };
+  up.addEventListener('click', () => move(-1));
+  down.addEventListener('click', () => move(1));
   remove.addEventListener('click', () => {
     const next = li.nextElementSibling || li.previousElementSibling;
     li.remove();
-    S.generalDirty = true;
+    setDirty(true);
     syncQuickActionButtons();
     (next ? next.querySelector('.qa-remove') : $('qa-add')).focus();
   });
@@ -1337,7 +1899,12 @@ function renderQuickActionRows(items) {
 }
 
 function syncQuickActionButtons() {
-  $('qa-add').disabled = $('qa-list').children.length >= QA_MAX;
+  const rows = [...$('qa-list').children];
+  $('qa-add').disabled = rows.length >= QA_MAX;
+  rows.forEach((li, i) => {
+    li.querySelector('.qa-up').disabled = i === 0;
+    li.querySelector('.qa-down').disabled = i === rows.length - 1;
+  });
 }
 
 function fillQuickActions() {
@@ -1360,6 +1927,11 @@ function collectQuickActions(fail) {
     if (more) more.open = true;
     fail('chat.quick_actions', message, input);
   };
+  // Built-in actions keep their built-in order unless the list was reordered; then every
+  // built-in is written out, in the order shown (see the note in the report to Python).
+  const shown = [...$('qa-list').querySelectorAll('.qa-row')].filter((li) => li.dataset.builtin === '1' && defaults.has(li.dataset.id)).map((li) => li.dataset.id);
+  const wanted = [...defaults.keys()].filter((id) => shown.includes(id));
+  const reordered = shown.some((id, i) => id !== wanted[i]);
   [...$('qa-list').querySelectorAll('.qa-row')].forEach((li, i) => {
     const labelIn = li.querySelector('.qa-label');
     const textIn = li.querySelector('.qa-instructions');
@@ -1378,7 +1950,7 @@ function collectQuickActions(fail) {
     present.add(base.id);
     const text = instructions === base.instructions ? '' : instructions;   // '' keeps the built-in text
     const ownHint = hint === base.hint ? '' : hint;
-    if (label !== base.label || text || ownHint || tools !== base.tools || matchStyle !== base.match_style) {
+    if (reordered || label !== base.label || text || ownHint || tools !== base.tools || matchStyle !== base.match_style) {
       quick_actions.push({ id: base.id, label, instructions: text, hint: ownHint, tools, match_style: matchStyle });
     }
   });
@@ -1391,13 +1963,19 @@ function initQuickActions() {
     if ($('qa-list').children.length >= QA_MAX) return;
     const li = quickActionRow({ id: '', label: '', instructions: '', tools: false, match_style: true, builtin: false }, { open: true });
     $('qa-list').append(li);
-    S.generalDirty = true;
+    setDirty(true);
     syncQuickActionButtons();
     li.querySelector('.qa-label').focus();
   });
-  $('qa-restore').addEventListener('click', () => {
+  $('qa-restore').addEventListener('click', async () => {
+    const yes = await confirmAction({
+      title: 'Restore the built-in quick actions?',
+      message: 'This replaces your edits, order and removed actions with the built-in ones, and drops your custom actions. Nothing is kept until you press Save.',
+      confirmLabel: 'Restore defaults', cancelLabel: 'Keep my actions', danger: true,
+    });
+    if (!yes) return;
     renderQuickActionRows(qaDefaults());
-    S.generalDirty = true;
+    setDirty(true);
     $('g-msg').className = 'ui-text-secondary ui-small';
     $('g-msg').textContent = 'The built-in quick actions are back. Press Save to keep them.';
   });
@@ -1410,15 +1988,45 @@ function initQuickActions() {
 // -------------------------------------------------------------------- theme ----
 
 let remoteTheme = false;
+
+/** One radio card per theme, from UITheme.list() (each entry has slug, name, ground,
+ *  themeColor and swatch). Picking one calls UITheme.set(slug), exactly as the select did;
+ *  the hidden <select data-ui-theme-picker> stays for the runtime's own sync. */
+function buildThemeGrid() {
+  const UI = window.UITheme;
+  const grid = $('g-theme-grid');
+  clear(grid);
+  const current = UI.current();
+  for (const t of UI.list()) {
+    const input = el('input', { type: 'radio', name: 'ui-theme', id: `theme-${t.slug}`, class: 'theme-radio', value: t.slug, 'data-nodirty': '' });
+    input.checked = t.slug === current;
+    input.addEventListener('change', () => { if (input.checked) UI.set(t.slug); });
+    const swatch = el('span', { class: 'theme-swatch', 'aria-hidden': 'true' }, [el('i', { class: 'theme-dot' })]);
+    swatch.style.setProperty('--sw-ground', t.themeColor || t.swatch);
+    swatch.style.setProperty('--sw-accent', t.swatch || t.themeColor);
+    grid.append(el('label', { class: 'theme-card', for: input.id }, [
+      input,
+      swatch,
+      el('span', { class: 'theme-name', text: t.name }),
+      el('span', { class: 'theme-ground ui-small ui-text-tertiary', text: t.ground === 'light' ? 'Light' : 'Dark' }),
+    ]));
+  }
+}
+function paintThemeGrid(slug) {
+  for (const input of document.querySelectorAll('#g-theme-grid input[type="radio"]')) input.checked = input.value === slug;
+}
+
 function initTheme() {
   const UI = window.UITheme;
   if (!UI) return;
   try { UI.mountPicker($('g-theme')); } catch { /* the runtime already fills data-ui-theme-picker selects */ }
+  buildThemeGrid();
   UI.onChange(async ({ slug }) => {
+    paintThemeGrid(slug);
     if (remoteTheme) return;
     const res = await api.call('update_settings', { ui: { theme: slug } });
     if (!isOk(res)) toast(errText(res), 'bad');
-    else if (S.cfg) S.cfg.ui = { ...(S.cfg.ui || {}), theme: slug };
+    else { noteKeyRemoved(res); if (S.cfg) S.cfg.ui = { ...(S.cfg.ui || {}), theme: slug }; }
   });
 }
 function applyTheme(slug) {
@@ -1431,12 +2039,35 @@ function applyTheme(slug) {
 // --------------------------------------------------------------------- logs ----
 
 let logTimer = null; let logBusy = false; let lastLogText = null; let lastLines = [];
+const LOG_LINES = 500;
+
+/** A log line's level class, from the level word near the start of the line. */
+function logLevelClass(line) {
+  const head = line.slice(0, 64);
+  if (/\b(ERROR|CRITICAL|FATAL)\b/.test(head)) return 'll-error';
+  if (/\bWARN(ING)?\b/.test(head)) return 'll-warn';
+  return '';
+}
+
+/** Draw the lines that match the filter box; warnings and errors get their status colours. */
+function renderLogLines() {
+  const view = $('log-view');
+  const f = $('log-filter').value.trim().toLowerCase();
+  const shown = f ? lastLines.filter((l) => l.toLowerCase().includes(f)) : lastLines;
+  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 24;
+  view.replaceChildren(...shown.map((l) => el('span', { class: `ll ${logLevelClass(l)}`.trim(), text: `${l}\n` })));
+  if (atBottom) view.scrollTop = view.scrollHeight;
+  const n = lastLines.length;
+  $('log-count').textContent = f
+    ? `${shown.length} of the last ${n} line${n === 1 ? '' : 's'} match`
+    : `The last ${n} line${n === 1 ? '' : 's'} (at most ${LOG_LINES})`;
+}
 
 async function refreshLogs() {
   if (logBusy) return;
   logBusy = true;
   try {
-    const res = await api.call('get_logs', 500, $('log-level').value);
+    const res = await api.call('get_logs', LOG_LINES, $('log-level').value);
     if (!isOk(res)) { $('log-count').textContent = errText(res); return; }
     const raw = Array.isArray(res) ? res : (res.lines || res.logs || []);
     const lines = Array.isArray(raw) ? raw : String(raw).split('\n');
@@ -1444,11 +2075,7 @@ async function refreshLogs() {
     lastLines = lines;
     if (text === lastLogText) return;
     lastLogText = text;
-    const view = $('log-view');
-    const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 24;
-    view.textContent = text;
-    if (atBottom) view.scrollTop = view.scrollHeight;
-    $('log-count').textContent = `${lines.length} line${lines.length === 1 ? '' : 's'}`;
+    renderLogLines();
   } finally { logBusy = false; }
 }
 function syncLogTimer() {
@@ -1460,13 +2087,24 @@ function initLogs() {
   $('log-level').addEventListener('change', () => { lastLogText = null; refreshLogs(); });
   $('log-auto').addEventListener('change', syncLogTimer);
   $('log-refresh').addEventListener('click', () => { lastLogText = null; refreshLogs(); });
+  $('log-filter').addEventListener('input', renderLogLines);
   $('log-open').addEventListener('click', async () => {
     const res = await api.call('open_logs_folder');
     if (!isOk(res)) toast(errText(res), 'bad');
   });
+  $('log-open-config').addEventListener('click', async () => {
+    const res = await api.call('open_config_folder');
+    if (!isOk(res)) toast(errText(res), 'bad');
+  });
+  $('log-diagnostics').addEventListener('click', async () => {
+    const res = await api.call('diagnostics');
+    if (!isOk(res) || typeof res.text !== 'string') { toast(errText(res), 'bad'); return; }
+    const ok_ = await copyText(res.text);
+    toast(ok_ ? 'Diagnostics copied. Keys are left out.' : 'Could not copy. Try again from a window that has focus.', ok_ ? 'ok' : 'bad');
+  });
   $('log-copy').addEventListener('click', async () => {
     const ok_ = await copyText(lastLines.join('\n'));
-    toast(ok_ ? 'Logs copied to the clipboard.' : 'Could not copy. Select the text and press Ctrl+C.', ok_ ? 'info' : 'bad');
+    toast(ok_ ? 'Logs copied to the clipboard.' : 'Could not copy. Select the text and press Ctrl+C.', ok_ ? 'ok' : 'bad');
   });
   document.addEventListener('visibilitychange', () => { syncLogTimer(); if (!document.hidden && S.tab === 'logs') refreshLogs(); });
 }
@@ -1483,7 +2121,7 @@ function initEvents() {
   on('runtime.status', (e) => {
     const changed = e.state !== S.runtime.state || e.model_id !== S.runtime.model_id;
     S.runtime = { ...S.runtime, ...e };
-    if (changed) renderModels();
+    if (changed) renderModels(); else paintLoad();
   });
   on('runtime.install', onRuntimeInstall);
   on('download.progress', onDownloadProgress);
@@ -1531,7 +2169,16 @@ async function init() {
   fillLocalCard();
   await Promise.all([loadModels(), loadDisk(), refreshRuntime(), refreshAutostart(), refreshDownloads()]);
   doSearch();
-  window.addEventListener('beforeunload', clearKeyInputs);
+  // Typed keys are wiped when the window goes away (not on a cancelled leave).
+  window.addEventListener('pagehide', clearKeyInputs);
+  // Unsaved General edits: ask before the window closes (best effort inside WebView2).
+  window.addEventListener('beforeunload', (e) => {
+    if (!S.generalDirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+  // A file dropped on the window must not navigate it to file://.
+  for (const type of ['dragover', 'drop']) document.addEventListener(type, (e) => e.preventDefault());
   document.documentElement.dataset.ready = 'true';
 }
 

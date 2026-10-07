@@ -19,6 +19,7 @@ import fnmatch
 import logging
 import os
 import re
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -135,6 +136,8 @@ def parse_hotkey(spec: str) -> tuple[tuple[str, ...], str]:
     """
     if not isinstance(spec, str) or not spec.strip():
         raise ValueError("hotkey is empty; use a form like Ctrl+Alt+Space")
+    if " ".join(spec.lower().split()) in ("copilot", "copilot key"):
+        return (), "Copilot"  # the Copilot key (Win+Shift+F23): the one modifier-less value
     parts = [p.strip() for p in spec.split("+")]
     if len(parts) < 2 or any(not p for p in parts):
         raise ValueError(
@@ -505,6 +508,12 @@ class ChatCfg(BaseModel):
     persist_conversation: bool = True
 
 
+def default_ovms_variant() -> str:
+    """``python_on`` on Windows (the archive bundles its interpreter); ``python_off`` on
+    Linux, where the ``python_on`` build needs a system python3 with numpy and Jinja2."""
+    return "python_off" if sys.platform.startswith("linux") else "python_on"
+
+
 class LocalCfg(BaseModel):
     device: Literal["NPU", "GPU", "CPU"] = "NPU"
     idle_unload_minutes: int = Field(default=10, ge=0)
@@ -521,7 +530,7 @@ class LocalCfg(BaseModel):
     npu_fallback_device: Literal["GPU", "CPU", "none"] = "GPU"
     load_timeout_s: int = Field(default=900, ge=1)
     ovms_version: str = "2026.4.0"
-    ovms_variant: Literal["python_on", "python_off"] = "python_on"
+    ovms_variant: Literal["python_on", "python_off"] = Field(default_factory=default_ovms_variant)
     extra_args: list[str] = Field(default_factory=list)
 
     @field_validator("device", mode="before")
@@ -580,7 +589,14 @@ class ToolsCfg(BaseModel):
     @field_validator("documents_dir")
     @classmethod
     def _strip_documents_dir(cls, v: str) -> str:
-        return v.strip()
+        v = v.strip()
+        problem = unsafe_documents_dir(v)
+        if problem:
+            _log.warning(
+                "tools.documents_dir %r is %s; using the default Documents folder", v, problem
+            )
+            return ""
+        return v
 
 
 class UiCfg(BaseModel):
@@ -868,11 +884,17 @@ def save_config(cfg: AppConfig, paths: Paths) -> None:
     text = tomli_w.dumps(to_toml_dict(cfg))
     target = paths.config_file
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
+    # Per-process name: two ChatForge processes (a second launch, the doctor) never share
+    # one temp file. It is removed on every failure.
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        _unlink_quiet(tmp)
+        raise ConfigError(f"Could not save {target}: {exc}") from None
     last: OSError | None = None
     for attempt in range(5):
         try:
@@ -881,6 +903,9 @@ def save_config(cfg: AppConfig, paths: Paths) -> None:
         except PermissionError as exc:  # antivirus / indexer briefly holding the target
             last = exc
             time.sleep(0.05 * (attempt + 1))
+        except OSError as exc:
+            last = exc
+            break
     _unlink_quiet(tmp)
     raise ConfigError(f"Could not save {target}: {last}")
 
@@ -888,6 +913,30 @@ def save_config(cfg: AppConfig, paths: Paths) -> None:
 def _unlink_quiet(path: Path) -> None:
     with contextlib.suppress(OSError):
         path.unlink()
+
+
+#: How many ``config.toml.<time>.bad`` backups of broken files are kept.
+BAD_BACKUPS_KEPT = 5
+
+
+def _unused_bad_name(path: Path) -> Path:
+    """``config.toml.<YYYYmmdd-HHMMSS>.bad`` (``-2``, ``-3``... if that exists): a broken
+    file is never overwritten by the next broken file."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    candidate = path.with_name(f"{path.name}.{stamp}.bad")
+    n = 1
+    while candidate.exists():
+        n += 1
+        candidate = path.with_name(f"{path.name}.{stamp}-{n}.bad")
+    return candidate
+
+
+def _prune_backups(path: Path) -> None:
+    """Keep the newest :data:`BAD_BACKUPS_KEPT` ``.bad`` backups of ``path``."""
+    with contextlib.suppress(OSError):
+        backups = sorted(path.parent.glob(f"{path.name}.*.bad"), key=lambda p: p.stat().st_mtime)
+        for old in backups[: max(0, len(backups) - BAD_BACKUPS_KEPT)]:
+            _unlink_quiet(old)
 
 
 def migrate_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -944,7 +993,7 @@ def load_config(paths: Paths, *, recover: bool = False) -> AppConfig:
 
     Unknown keys are logged as one warning and ignored. A file that does not parse or
     validate raises :class:`ConfigError`; with ``recover=True`` it is instead renamed to
-    ``config.toml.bad`` and defaults are written, so an autostarted tray app never dies on a
+    ``config.toml.<time>.bad`` and defaults are written, so an autostarted tray app never dies on a
     typo.
     """
     paths.home.mkdir(parents=True, exist_ok=True)
@@ -965,9 +1014,10 @@ def load_config(paths: Paths, *, recover: bool = False) -> AppConfig:
     except ConfigError as exc:
         if not recover:
             raise
-        bad = path.with_name(path.name + ".bad")
+        bad = _unused_bad_name(path)
         with contextlib.suppress(OSError):
             os.replace(path, bad)
+            _prune_backups(path)
         _log.warning("config.toml was invalid (%s); moved to %s and reset to defaults", exc, bad)
         save_config(validate_config({}), paths)
         return _build({})
@@ -975,6 +1025,68 @@ def load_config(paths: Paths, *, recover: bool = False) -> AppConfig:
     if unknown:
         _log.warning("ignoring unknown keys in config.toml: %s", ", ".join(sorted(unknown)))
     return cfg
+
+
+def _norm_path(value: str | os.PathLike[str]) -> str:
+    return os.path.normcase(os.path.normpath(str(value)))
+
+
+def unsafe_documents_dir(value: str) -> str | None:
+    """Why ``tools.documents_dir`` ``value`` cannot be the folder ``create_document`` writes
+    to, or ``None``: a drive root, the user profile folder itself, or the Windows Startup
+    folder or anything inside it (a file written there runs at the next sign-in). ``~`` and
+    ``%VARS%`` are expanded; an empty value (the default folder) is fine."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    expanded = os.path.expandvars(os.path.expanduser(text))
+    target = _norm_path(Path(expanded).resolve(strict=False))
+    anchor = Path(expanded).resolve(strict=False).anchor
+    if anchor and target == _norm_path(anchor):
+        return "a drive root"
+    with contextlib.suppress(RuntimeError, OSError):
+        if target == _norm_path(Path.home().resolve(strict=False)):
+            return "the user profile folder"
+    startups = []
+    for env, tail in (
+        ("APPDATA", ("Microsoft", "Windows", "Start Menu", "Programs", "Startup")),
+        ("PROGRAMDATA", ("Microsoft", "Windows", "Start Menu", "Programs", "StartUp")),
+    ):
+        base = os.environ.get(env)
+        if base:
+            startups.append(_norm_path(Path(base).joinpath(*tail).resolve(strict=False)))
+    # Linux (XDG autostart): a .desktop file written there runs at the next login.
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    config_home = Path(xdg) if xdg and os.path.isabs(xdg) else Path.home() / ".config"
+    startups.append(_norm_path((config_home / "autostart").resolve(strict=False)))
+    for startup in startups:
+        if target == startup or target.startswith(startup + os.sep):
+            return "inside the Startup folder"
+    return None
+
+
+#: Settings the page can show but not change through the bridge (``update_settings``): a
+#: compromised page must not be able to move where documents are written or switch off the
+#: private-address block of ``fetch_url``. They are edited in config.toml.
+BRIDGE_READONLY_KEYS: tuple[str, ...] = ("tools.documents_dir", "tools.block_private_addresses")
+
+
+def readonly_changes(cfg: AppConfig, patch: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """``(patch without the read-only keys, refused)``. A read-only key set to the value it
+    already has is dropped silently (a page may send a whole section back); one that would
+    change is listed in ``refused`` by dotted name."""
+    expanded = _expand_patch(patch)
+    refused: list[str] = []
+    for dotted in BRIDGE_READONLY_KEYS:
+        section, key = dotted.split(".")
+        node = expanded.get(section)
+        if isinstance(node, dict) and key in node:
+            if node[key] != cfg.get(dotted):
+                refused.append(dotted)
+            del node[key]
+            if not node:
+                del expanded[section]
+    return expanded, refused
 
 
 def _expand_patch(patch: dict[str, Any]) -> dict[str, Any]:

@@ -10,16 +10,19 @@
 // Python pushes events by calling window.__chatforge.emit(evt); handlers registered with on()
 // receive the event object. on('*', fn) receives every event.
 //
-// Inside WebView2 (the real app) the mock is never used: on a cold start the bridge can be
-// injected late, and the popup must not quietly run against fake data. bridge.js keeps
-// waiting and emits {type: 'bridge.unavailable'} once after CONNECT_TIMEOUT_MS so the page
-// can say it is not connected; calls made meanwhile resolve once the bridge arrives.
+// Inside the real app shell the mock is never used: on a cold start the bridge can be
+// injected late, and the popup must not quietly run against fake data. The shell is WebView2
+// (Windows), WebKitGTK (Linux GTK: pywebview registers the `jsBridge` message handler before
+// the page runs, although window.pywebview itself arrives only after the load) or Qt
+// WebEngine, plus any page that already has a window.pywebview. bridge.js keeps waiting
+// and emits {type: 'bridge.unavailable'} once after CONNECT_TIMEOUT_MS so the page can say
+// it is not connected; calls made meanwhile resolve once the bridge arrives.
 
 const handlers = new Map();   // type -> Set<fn>
 let readyPromise = null;
 
 const MOCK_WAIT_MS = 1500;          // plain browser: how long to wait before using the mock
-const CONNECT_TIMEOUT_MS = 15000;   // WebView2: when to report that the bridge is missing
+const CONNECT_TIMEOUT_MS = 15000;   // real shell: when to report that the bridge is missing
 const POLL_MS = 250;
 
 function dispatch(evt) {
@@ -61,8 +64,17 @@ export function emit(evt) { dispatch(evt); }
 
 const hasBridge = () => !!(window.pywebview && window.pywebview.api);
 
-/** True inside WebView2, i.e. the real app shell (a plain browser has no chrome.webview). */
-function inWebView2() { return !!(window.chrome && window.chrome.webview); }
+/** True inside the real app shell: WebView2, WebKitGTK or Qt WebEngine under pywebview
+ *  (a plain browser has none of these, and no window.pywebview). */
+function inAppShell() {
+  const w = window;
+  return !!(
+    (w.chrome && w.chrome.webview) ||                                        // WebView2
+    (w.webkit && w.webkit.messageHandlers && w.webkit.messageHandlers.jsBridge) || // WebKitGTK
+    (w.qt && w.qt.webChannelTransport) ||                                    // Qt WebEngine
+    w.pywebview                                                              // injected, api pending
+  );
+}
 
 function pywebviewReady() {
   return new Promise((resolve) => {
@@ -76,7 +88,7 @@ function pywebviewReady() {
       resolve(v);
     };
     window.addEventListener('pywebviewready', () => finish(true), { once: true });
-    if (inWebView2()) {
+    if (inAppShell()) {
       // The real app: wait for the bridge however long it takes. Poll as well, in case
       // pywebviewready fired before this listener was added.
       timers.push(setInterval(() => { if (hasBridge()) finish(true); }, POLL_MS));

@@ -241,7 +241,7 @@ def test_documents_sentence_with_a_custom_prompt_that_has_its_own_guidance() -> 
     custom = "Pirate. For anything current or local, use tools."
     system = prompts.system_message(None, custom, tools=True)
     out = _with_documents_sentence(system)["content"]
-    assert out.startswith(f"{custom} {DOCUMENTS_SENTENCE}\nToday is ")
+    assert out.startswith(f"{custom}\n{prompts.DATA_SENTENCE} {DOCUMENTS_SENTENCE}\nToday is ")
     assert _with_documents_sentence({"role": "system", "content": "X"})["content"] == (
         f"X\n{DOCUMENTS_SENTENCE}"
     )

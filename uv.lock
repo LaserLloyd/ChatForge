@@ -130,8 +130,8 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pypdf" },
     { name = "pystray" },
+    { name = "python-xlib", marker = "sys_platform == 'linux'" },
     { name = "pywebview" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "structlog" },
     { name = "tomli-w" },
 ]
@@ -142,6 +142,9 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+]
+office = [
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
 
 [package.metadata]
@@ -159,13 +162,14 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4,<2" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
+    { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "pywebview", specifier = ">=6.2,<7" },
-    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=312" },
+    { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'office'", specifier = ">=312" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.9" },
     { name = "structlog", specifier = ">=26.1" },
     { name = "tomli-w", specifier = ">=1.2" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["office", "dev"]
 
 [[package]]
 name = "click"

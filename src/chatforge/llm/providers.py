@@ -6,6 +6,7 @@ seeds come from :func:`chatforge.config.seed_providers` so there is one source o
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, runtime_checkable
@@ -181,7 +182,8 @@ class RemoteProvider:
     async def client_for(
         self, model: str, on_status: StatusCallback | None = None
     ) -> OpenAICompatClient:
-        key = self.resolve_key()
+        # The credential manager can block (a locked vault, a slow backend): not on the loop.
+        key = await asyncio.to_thread(self.resolve_key)
         return OpenAICompatClient(
             resolve_base_url(self.spec),
             key,

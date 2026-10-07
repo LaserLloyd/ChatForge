@@ -43,6 +43,8 @@ const ICON = {
   brain: ['M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 3 4 3 3 0 0 0 5 1V5a2 2 0 0 0-3-1z', 'M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-3 4 3 3 0 0 1-5 1'],
   warn: ['M12 4l10 17H2z', 'M12 10v4', 'M12 17.5v.01'],
   copy: ['M8 8h11v11H8z', 'M5 16V5h11'],
+  edit: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
+  markdown: ['M3 6h18v12H3z', 'M6.5 15V9l2.5 3 2.5-3v6', 'M16 9v6', 'M14 13l2 2 2-2'],
   regen: ['M20 11a8 8 0 0 0-14.3-4.9L4 8', 'M4 3.5V8h4.5', 'M4 13a8 8 0 0 0 14.3 4.9L20 16', 'M20 20.5V16h-4.5'],
   close: ['M6 6l12 12', 'M18 6L6 18'],
   file: RAIL_ICONS['viewer-file'],
@@ -80,6 +82,7 @@ const S = {
   actions: [],            // quick actions in use (get_state.config.quick_actions): {id, label, hint, tools}
   action: null,           // the quick action picked in the composer for the next message
   lastAction: null,       // ...and the one the last message was sent with (for Retry)
+  editing: false,         // drop_last_turn is in flight (Edit / Up arrow)
 };
 
 // =================================================================== helpers ====
@@ -97,6 +100,13 @@ function isConfigured(p) {
   return key.required === false || (!!key.source && key.source !== 'none');
 }
 function shortModel(id) { return String(id || '').split('/').pop(); }
+/** The model's name for the header chip only: build suffixes such as "-Instruct-int4-ov" are
+ *  dropped there (the menu, the title and the data keep the full id). */
+function chipModelName(id) {
+  const name = shortModel(id);
+  const short = name.replace(/(?:-Instruct)?(?:-(?:int[48]|fp16|bf16))?-ov$/i, '');
+  return short || name;
+}
 function maxChars() { return Number(S.limits.max_prompt_chars) || 4000; }
 function showReasoning() { return (S.config.chat && S.config.chat.show_reasoning) !== 'hidden'; }
 
@@ -119,12 +129,44 @@ function announce(text) {
 }
 
 let toastTimer = 0;
-function toast(text) {
-  const n = $('toast');
-  n.textContent = text;
-  n.hidden = false;
+let toastEnd = null;   // takes the toast on screen away
+function dismissToast() {
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { n.hidden = true; }, 2200);
+  const end = toastEnd;
+  toastEnd = null;
+  if (end) end();
+}
+
+/** A short message above the composer: the bundle's UIComponents.toast when it is loaded,
+ *  else the page's own #toast. `action` ({label, fn}) adds a button to it; `timeout` is how
+ *  long it stays. Only one toast at a time. */
+function toast(text, { action = null, timeout = 2200 } = {}) {
+  dismissToast();
+  const UI = window.UIComponents;
+  let node;
+  if (UI && typeof UI.toast === 'function') {
+    node = UI.toast(text, { timeout: 0 });   // lifetime is ours, so a newer toast can replace it
+    toastEnd = () => node.remove();
+  } else {
+    node = $('toast');
+    node.textContent = text;
+    node.hidden = false;
+    toastEnd = () => { node.hidden = true; node.replaceChildren(); };
+  }
+  if (action) {
+    const b = el('button', { class: 'toast-act', type: 'button', text: action.label });
+    b.addEventListener('click', () => { dismissToast(); action.fn(); });
+    node.append(b);
+  }
+  toastTimer = setTimeout(dismissToast, timeout);
+}
+
+/** The first sentence of `text`, for the screen-reader announcement of a finished reply. */
+function firstSentence(text, max = 160) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  const m = /^(.+?[.!?])(?:\s|$)/.exec(flat);
+  const s = m ? m[1] : flat;
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
 /** The first string value of a tool call's arguments, for the chip label. */
@@ -250,7 +292,19 @@ function userRow(text, ts, files = [], { cut = false, action = null } = {}) {
     kids.push(el('div', { class: 'msg-files', role: 'list', 'aria-label': 'Attached files' }, files.map((f) => fileChip(f))));
   }
   if (text || !files.length) kids.push(el('div', { class: 'bubble', dir: 'auto', text }));
-  kids.push(el('div', { class: 'msg-time', text: clockTime(ts) }));
+  // Copy on every message of yours, Edit on the last one (syncRegenerate shows it); both
+  // appear on hover or focus, on the line of the time.
+  const edit = el('button', { class: 'msg-act-btn act-edit', type: 'button', hidden: '', title: 'Edit and send again (Up arrow in an empty box)' }, [
+    railIcon(ICON.edit), el('span', { text: 'Edit' }),
+  ]);
+  edit.addEventListener('click', editLastTurn);
+  kids.push(el('div', { class: 'msg-foot' }, [
+    el('div', { class: 'msg-actions user-actions' }, [
+      text ? copyButton(() => copyPlain(text), { title: 'Copy your message' }) : null,
+      edit,
+    ]),
+    el('div', { class: 'msg-time', text: clockTime(ts) }),
+  ]));
   const row = el('div', { class: 'msg user', dataset: ts != null ? { ts: String(ts) } : null }, [el('div', { class: 'msg-col' }, kids)]);
   if (cut) setCutNote(row, true);
   return row;
@@ -494,30 +548,81 @@ function paintThinkLabel(turn, streaming) {
   turn.think.classList.toggle('is-live', streaming);
 }
 
+const replies = new WeakMap();   // assistant row -> its turn (the text and DOM Copy reads)
+
 function finishMeta(turn, { ts, model, tokPerS, note } = {}) {
   const bits = [clockTime(ts)];
   if (model) bits.push(shortModel(model));
   if (tokPerS) bits.push(`${Number(tokPerS).toFixed(1)} tok/s`);
   if (note) bits.push(note);
+  replies.set(turn.node, turn);
   turn.col.append(el('div', { class: 'msg-time', text: bits.join(' · ') }));
   turn.col.append(el('div', { class: 'msg-actions' }, [
-    turn.content ? copyButton(() => turn.content) : null,
+    turn.content ? copyButton(() => copyReply(turn), { title: 'Copy the reply', cls: 'act-copy-reply' }) : null,
+    turn.content ? copyButton(() => copyReply(turn, { markdown: true }), {
+      title: 'Copy as Markdown (plain text with the formatting marks)', label: 'Copy as Markdown', icon: ICON.markdown, cls: 'act-copy-md' }) : null,
     regenerateButton(),
   ]));
   syncRegenerate();
 }
 
-function copyButton(getText) {
-  const b = el('button', { class: 'msg-act-btn', type: 'button', title: 'Copy the reply' }, [
-    railIcon(ICON.copy), el('span', { text: t('msg.copy') }),
+/** The rendered reply as HTML for the clipboard: the .ui-markdown DOM without the code
+ *  blocks' Copy/Wrap buttons, tool chips and table-resize handles. */
+function replyHtml(turn) {
+  if (!turn.md) return '';
+  const copy = turn.md.cloneNode(true);
+  for (const n of copy.querySelectorAll('button, .code-block-actions, .copy-btn, .tool-chip, .md-th-resize, .stream-cursor')) n.remove();
+  return copy.innerHTML;
+}
+
+/** Put `text` (and, when given, `html`) on the clipboard: both formats in one ClipboardItem
+ *  where the browser has it, else plain text. Rejects when there is no clipboard. */
+async function writeClipboard(text, html = '') {
+  const clip = window.navigator && window.navigator.clipboard;
+  if (!clip) throw new Error('no clipboard');
+  if (html && typeof clip.write === 'function' && typeof window.ClipboardItem === 'function') {
+    try {
+      await clip.write([new window.ClipboardItem({
+        'text/html': new window.Blob([html], { type: 'text/html' }),
+        'text/plain': new window.Blob([text], { type: 'text/plain' }),
+      })]);
+      return;
+    } catch { /* a refused rich write falls back to plain text */ }
+  }
+  await clip.writeText(text);
+}
+
+async function copyPlain(text) {
+  try { await writeClipboard(String(text || '')); return true; } catch { toast('Copy is not available here.'); return false; }
+}
+
+/** Copy a reply: formatted (HTML plus Markdown text) by default, Markdown only on request. */
+async function copyReply(turn, { markdown = false } = {}) {
+  const text = turn.content || '';
+  try { await writeClipboard(text, markdown ? '' : replyHtml(turn)); return true; } catch { toast('Copy is not available here.'); return false; }
+}
+
+/** Focus goes to the message box, or to Stop while a reply is running, never to the body. */
+function focusComposer() {
+  const stop = $('stop');
+  const target = S.busy && !stop.classList.contains('hidden') && !stop.disabled ? stop : $('input');
+  target.focus();
+}
+
+/** A small action under a message. `copy` resolves true when it copied. */
+function copyButton(copy, { title = 'Copy', label = t('msg.copy'), icon = ICON.copy, cls = '' } = {}) {
+  const b = el('button', { class: `msg-act-btn ${cls}`.trim(), type: 'button', title }, [
+    railIcon(icon), el('span', { text: label }),
   ]);
   b.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(getText() || '');
-      const label = b.querySelector('span');
-      label.textContent = t('msg.copied'); b.classList.add('ok');
-      setTimeout(() => { label.textContent = t('msg.copy'); b.classList.remove('ok'); }, 1200);
-    } catch { toast('Copy is not available here.'); }
+    const done = await copy();
+    if (done) {
+      const text = b.querySelector('span');
+      text.textContent = t('msg.copied'); b.classList.add('ok');
+      setTimeout(() => { text.textContent = label; b.classList.remove('ok'); }, 1200);
+      announce('Copied');
+    }
+    focusComposer();
   });
   return b;
 }
@@ -530,13 +635,33 @@ function regenerateButton() {
   return b;
 }
 
-/** Regenerate is offered on the latest reply only (the last row, so not under an error or a
- *  key card), and not while a reply is running. */
+/** Row-level actions that depend on which row is last: Regenerate on the latest reply only
+ *  (the last row, so not under an error or a key card) and not while a reply is running;
+ *  Edit on the last message of yours; the latest finished reply is a Tab stop and its Copy
+ *  title names the shortcut. */
 function syncRegenerate() {
   const box = messagesBox();
   const rows = [...box.querySelectorAll('.msg')].filter((r) => !r.hidden);
   const last = rows[rows.length - 1] || null;
+  const lastUser = [...rows].reverse().find((r) => r.classList.contains('user')) || null;
+  const lastReply = [...rows].reverse().find((r) => r.classList.contains('assistant') && !r.classList.contains('streaming')) || null;
   for (const b of box.querySelectorAll('.act-regen')) b.hidden = S.busy || !last || !last.contains(b);
+  for (const b of box.querySelectorAll('.act-edit')) b.hidden = S.busy || S.editing || !lastUser || !lastUser.contains(b);
+  for (const r of box.querySelectorAll('.msg.assistant')) {
+    const latest = r === lastReply;
+    if (latest) { r.tabIndex = 0; r.setAttribute('role', 'article'); r.setAttribute('aria-label', 'Latest reply'); }
+    else { r.removeAttribute('tabindex'); r.removeAttribute('role'); r.removeAttribute('aria-label'); }
+    const copy = r.querySelector('.act-copy-reply');
+    if (copy) copy.title = latest ? 'Copy the reply (Ctrl+Shift+C)' : 'Copy the reply';
+  }
+}
+
+/** Every link says where it goes: its address in the tooltip (unless markdown.js already gave
+ *  it a note, such as a retargeted address). */
+function titleLinks(root) {
+  for (const a of root.querySelectorAll('a[href]')) {
+    if (!a.getAttribute('title')) a.setAttribute('title', a.getAttribute('href'));
+  }
 }
 
 /** A finished assistant message from the conversation snapshot. */
@@ -555,6 +680,7 @@ function assistantRowFromData(m) {
     turn.content = m.content;
     turn.md.innerHTML = renderMarkdown(m.content, MD_OPTS);
     enhanceContent(turn.md, { noLocal: true });
+    titleLinks(turn.md);
   } else if (!m.reasoning && !(m.tools || []).length && !(m.documents || []).length && !m.stopped) {
     ensureBubble(turn);
     turn.md.append(el('span', { class: 'muted', text: EMPTY_REPLY }));
@@ -640,6 +766,7 @@ function finalizeTurn(turn, meta) {
   if (turn.md) {
     turn.md.innerHTML = renderMarkdown(turn.content, MD_OPTS);
     enhanceContent(turn.md, { noLocal: true });   // code highlight, sortable tables, link chrome
+    titleLinks(turn.md);
   }
   if (turn.cursor) { turn.cursor.remove(); turn.cursor = null; }
   turn.node.classList.remove('streaming');
@@ -669,9 +796,36 @@ function errorRow(err) {
   } else if (err.action === 'retry') {
     btn('Retry', () => { row.remove(); retry(); });
   }
-  if (actions.childElementCount) bubble.append(actions);
+  // What went wrong, for the logs and for a bug report: quieter than Retry.
+  const quiet = (label, title, fn) => {
+    const b = el('button', { class: 'ui-btn ui-btn--sm ui-btn--ghost', type: 'button', title, text: label });
+    b.addEventListener('click', fn);
+    actions.append(b);
+  };
+  quiet('Open logs', 'Open the folder with the log files', async () => {
+    const r = await api.call('open_logs_folder');
+    if (r && r.ok === false) toast((r.error && r.error.message) || 'The logs folder could not be opened.');
+  });
+  quiet('Copy details', 'Copy the error, model and time', async () => {
+    const done = await copyPlain(errorDetails(err));
+    if (done) toast('Details copied');
+  });
+  bubble.append(actions);
   const row = el('div', { class: 'msg error' }, [el('div', { class: 'msg-col' }, [bubble])]);
   return row;
+}
+
+/** The error as plain text for a bug report: what it said, which model, when. */
+function errorDetails(err) {
+  const p = selectedProvider();
+  return [
+    'ChatForge error',
+    err.message || 'Something went wrong.',
+    err.hint || null,
+    err.code ? `Code: ${err.code}` : null,
+    `Model: ${p ? p.display_name : (S.selected.provider || 'unknown')} / ${S.selected.model || 'unknown'}`,
+    `Time: ${new Date().toISOString()}`,
+  ].filter(Boolean).join('\n');
 }
 
 function showError(err) {
@@ -754,8 +908,11 @@ function renderFiles() {
   const list = $('attach-list');
   const blind = !canSeeImages();
   S.filesBlind = blind;
+  const grew = S.files.length > list.childElementCount;
   list.replaceChildren(...S.files.map((f) => fileChip(f, { onRemove: () => removeFile(f.key), blind })));
   list.hidden = !S.files.length;
+  // Past three rows the list scrolls: a newly added chip is brought into view.
+  if (grew) list.scrollTop = list.scrollHeight;
   // A picture the chosen model cannot see: said once over the chips (each also warns).
   const note = $('attach-note');
   const warn = blind && S.files.some((f) => isImage(f) && f.state === 'ready') ? NO_VISION : '';
@@ -1002,7 +1159,7 @@ function reflectComposer() {
   stop.disabled = S.stopping;
   const label = S.stopping ? 'Stopping…' : 'Stop';
   stop.setAttribute('aria-label', label);
-  stop.title = S.stopping ? 'Stopping…' : 'Stop generating';
+  stop.title = S.stopping ? 'Stopping…' : 'Stop generating (Esc)';
   messagesBox().setAttribute('aria-busy', S.busy ? 'true' : 'false');
   updateSendEnabled();
 }
@@ -1020,6 +1177,9 @@ function autosize() {
     counter.textContent = `${n.toLocaleString()} / ${limit.toLocaleString()}`;
     counter.dataset.over = n > limit ? 'true' : 'false';
   }
+  const over = $('char-over');
+  over.hidden = n <= limit;
+  if (!over.hidden) over.textContent = `${(n - limit).toLocaleString()} characters over the limit`;
   updateSendEnabled();
 }
 
@@ -1033,6 +1193,7 @@ async function send(text, { showUser = true, files = [], action = null } = {}) {
   if (text.length > maxChars()) { toast(`Message is longer than ${maxChars().toLocaleString()} characters.`); return; }
   S.busy = true; S.reqId = null; S.stopping = false; S.lastText = text; S.lastFiles = files; S.retryRegen = false;
   S.lastAction = action;
+  dismissToast();   // "Chat cleared / Undo" is over once something new is sent
   S.ctxBefore = dividerAnchor();
   const mine = ++S.sendSeq;
   if (showUser) { S.lastUserEl = userRow(text, undefined, files, { action }); addRow(S.lastUserEl); scrollToBottom(true); }   // your own message always follows you down
@@ -1063,6 +1224,7 @@ async function regenerate() {
   const mine = ++S.sendSeq;
   startTurn();
   reflectComposer();
+  focusComposer();   // the Regenerate button just went away: the focus goes to Stop
   const r = await api.call('regenerate');
   adoptRequest(r, mine, 'Could not regenerate the reply.');
 }
@@ -1106,7 +1268,12 @@ function retry() {
   if (S.retryRegen) { regenerate(); return; }
   // The files' ids are still valid: the backend forgets them only when a reply finishes
   // or is stopped.
-  if (S.lastText || S.lastFiles.length) send(S.lastText, { showUser: false, files: S.lastFiles, action: S.lastAction });
+  if (S.lastText || S.lastFiles.length) {
+    const sent = send(S.lastText, { showUser: false, files: S.lastFiles, action: S.lastAction });
+    focusComposer();   // the Retry button was removed with its row: the focus goes to Stop
+    return sent;
+  }
+  focusComposer();
 }
 
 function dropTurn() {
@@ -1165,6 +1332,79 @@ async function newChat() {
 function openSettings() {
   S.settingsOpeningUntil = Date.now() + 1500;   // do not hide-on-blur while settings opens
   api.call('open_settings');
+}
+
+/** What the popup remembers about the conversation on screen is no longer true (it was
+ *  cleared, restored or cut back): forget the last request. */
+function forgetRequest() {
+  S.lastText = ''; S.lastFiles = []; S.lastUserEl = null; S.retryRegen = false; S.regen = null; S.lastAction = null;
+}
+
+/** Clear chat (the button and Ctrl+N). A chat that had messages can be brought back for a
+ *  few seconds: the bridge keeps it until something is sent. */
+async function clearChat() {
+  const had = !!messagesBox().querySelector('.msg.user, .msg.assistant');
+  dismissToast();   // an older Undo is for an older chat
+  await newChat();
+  if (had) toast('Chat cleared', { timeout: 6000, action: { label: 'Undo', fn: undoClear } });
+}
+
+async function undoClear() {
+  if (S.busy) return;
+  const r = await api.call('undo_clear');
+  if (!r || !r.ok) { toast((r && r.error && r.error.message) || 'There is nothing to bring back.'); return; }
+  closeKeyCard();
+  forgetRequest();
+  renderConversation(r.conversation);
+  $('input').focus();
+  announce('Chat restored');
+}
+
+function lastUserRow() {
+  return [...messagesBox().querySelectorAll('.msg.user')].filter((r) => !r.hidden).pop() || null;
+}
+
+/** Edit and resend: take your last message (and everything after it) out of the
+ *  conversation and put it back in the composer, with its quick action. Attachments come
+ *  back as chips when the bridge still holds them; otherwise you add them again. */
+async function editLastTurn() {
+  if (S.busy || S.editing || !lastUserRow()) return;
+  const input = $('input');
+  if (input.value.trim()) { toast('Send or clear what you typed first, then edit.'); input.focus(); return; }
+  S.editing = true;
+  syncRegenerate();
+  let r;
+  try { r = await api.call('drop_last_turn'); } finally { S.editing = false; }
+  if (!r || !r.ok) {
+    syncRegenerate();
+    toast((r && r.error && r.error.message) || 'That message could not be taken back.');
+    focusComposer();
+    return;
+  }
+  const removed = r.removed || {};
+  closeKeyCard();
+  forgetRequest();
+  renderConversation(r.conversation);
+  input.value = String(removed.content || '');
+  autosize();
+  const id = removed.action && typeof removed.action === 'object' ? removed.action.id : removed.action;
+  if (id) {
+    const known = S.actions.find((a) => a.id === id);
+    const label = removed.action && removed.action.label;
+    setComposerAction(known || { id, label: label || id, hint: '' }, { focus: false });
+  }
+  const files = Array.isArray(removed.attachments) ? removed.attachments : [];
+  if (files.length) {
+    if (files.every((f) => f && f.id)) {
+      S.files = files.map((f) => ({ ...f, key: ++fileKey, state: 'ready' }));
+      renderFiles();
+    } else {
+      toast('Attachments were removed, add them again');
+    }
+  }
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  announce('Message ready to edit');
 }
 
 // ============================================================== bridge events ====
@@ -1277,7 +1517,9 @@ on('chat.done', (e) => {
   });
   if (empty) turn.md.replaceChildren(el('span', { class: 'muted', text: EMPTY_REPLY }));
   dropOldReply();
-  announce((turn.content || 'Reply finished').slice(0, 300));
+  // Screen readers: that it is ready, and how it starts. (The live region is not the reply
+  // itself, which is read from the row: the latest reply is a Tab stop.)
+  announce(turn.content ? `Reply ready. ${firstSentence(turn.md ? turn.md.textContent : turn.content)}` : 'Reply ready');
   endRequest();
 });
 
@@ -1355,6 +1597,9 @@ on('settings.changed', (e) => {
 
 on('popup.shown', () => {
   cancelResize();   // a drag whose release came while the popup was away
+  // A menu left open when the popup was put away would swallow the first keys.
+  closeMenu({ focusChip: false });
+  closeQuickMenu({ focusButton: false });
   refreshProviders();
   $('input').focus();
   if (isNearBottom(400)) scrollToBottom(true);
@@ -1409,16 +1654,40 @@ function renderChip() {
   const p = selectedProvider();
   const name = p ? p.display_name : (S.selected.provider || 'No provider');
   const model = shortModel(S.selected.model);
-  const label = $('chip-label');
-  label.replaceChildren(
-    el('span', { class: 'chip-provider', text: name }),
-    model ? el('span', { class: 'chip-sep', 'aria-hidden': 'true', text: '·' }) : null,
-    model ? el('span', { class: 'chip-model', text: model }) : null,
-  );
+  // The model's name alone: the provider is in the title, and in the menu.
+  $('chip-label').replaceChildren(el('span', { class: 'chip-model', text: model ? chipModelName(S.selected.model) : name }));
   const d = dotState();
   $('status-dot').dataset.state = d.state;
-  $('model-chip').title = `${name}${model ? ` · ${model}` : ''} (${d.text}). Choose model`;
   $('model-chip').setAttribute('aria-label', `Model: ${name}${model ? `, ${model}` : ''}, ${d.text}. Choose model`);
+  updateChipTitle();
+}
+
+/** The chip's tooltip: provider, full model id, state, and what the status line leaves out
+ *  while it is calm (when the idle model unloads, which device it runs on). */
+function updateChipTitle() {
+  const p = selectedProvider();
+  const name = p ? p.display_name : (S.selected.provider || 'No provider');
+  const model = shortModel(S.selected.model);
+  const info = calmStatus();
+  const parts = [`${name}${model ? ` · ${model}` : ''} (${dotState().text})`];
+  if (info) parts.push(info);
+  parts.push('Choose model (Ctrl+M)');
+  $('model-chip').title = parts.join('. ');
+}
+
+/** What a ready local model has to say that is not worth a row: "Unloads in 9 min", "Runs on GPU". */
+function calmStatus() {
+  const p = selectedProvider();
+  const r = S.runtime;
+  if (!isLocalProvider(p) || r.state !== 'ready') return '';
+  const bits = [];
+  if (r.unload_at && r.idle_timeout_s > 0) {
+    const left = r.unload_at - Date.now() / 1000;
+    bits.push(left <= 0 ? 'Unloading soon' : (left >= 90 ? `Unloads in ${Math.ceil(left / 60)} min` : `Unloads in ${Math.ceil(left)} s`));
+  }
+  const fb = r.device_fallback;
+  if (fb && fb.to) bits.push(`Runs on ${fb.to}${fb.reason ? ` instead of ${fb.from || 'the NPU'}: ${fb.reason}` : ''}`);
+  return bits.join('. ');
 }
 
 function statusInfo() {
@@ -1446,12 +1715,14 @@ function statusInfo() {
     }
     case 'unloading': return { text: 'Unloading the model…' };
     case 'ready': {
+      // Calm while ready: the row only appears for the last minute before the idle unload.
+      // The full countdown and the device are in the model chip's title.
       if (r.unload_at && r.idle_timeout_s > 0) {
         const left = r.unload_at - Date.now() / 1000;
         if (left <= 0) return { text: `Unloading soon${onOther}`, title: fbTitle };
-        return { text: (left >= 90 ? `Unloads in ${Math.ceil(left / 60)} min` : `Unloads in ${Math.ceil(left)} s`) + onOther, title: fbTitle };
+        if (left < 60) return { text: `Unloads in ${Math.ceil(left)} s${onOther}`, title: fbTitle };
       }
-      return onOther ? { text: `Running${onOther}`, title: fbTitle } : null;
+      return null;
     }
     case 'error':
       return { text: `Model failed to load${r.error ? `: ${r.error}` : ''}`, tone: 'bad',
@@ -1477,7 +1748,7 @@ function renderStatus() {
   bar.hidden = info.pct == null;
   if (info.pct != null) $('status-fill').style.width = `${info.pct.toFixed(1)}%`;
 }
-setInterval(() => { if (S.runtime.state === 'ready') renderStatus(); }, 1000);
+setInterval(() => { if (S.runtime.state === 'ready') { renderStatus(); updateChipTitle(); } }, 1000);
 
 /** The empty chat (start, and after Clear chat): who answers, then the quick actions. */
 function renderEmpty() {
@@ -1605,12 +1876,16 @@ function buildQuickMenu() {
   });
   const edit = el('button', { class: 'qm-item qm-edit', type: 'button', role: 'menuitem', tabindex: '-1', text: 'Edit quick actions…' });
   edit.addEventListener('click', () => { closeQuickMenu({ focusButton: false }); openSettings(); });
-  quickMenu().replaceChildren(
+  // The list scrolls under a fade; "Edit quick actions…" stays pinned below it.
+  const scroll = el('div', { class: 'qm-scroll' }, [
     el('div', { class: 'qm-head', 'aria-hidden': 'true', text: 'Quick actions' }),
     ...(items.length ? items : [el('div', { class: 'qm-empty', text: 'None yet: add some in Settings.' })]),
-    el('div', { class: 'qm-sep', role: 'separator' }),
-    edit,
-  );
+  ]);
+  const body = el('div', { class: 'qm-body' }, [scroll, el('div', { class: 'qm-fade', 'aria-hidden': 'true' })]);
+  const more = () => { body.dataset.more = String(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 2); };
+  scroll.addEventListener('scroll', more, { passive: true });
+  quickMenu().replaceChildren(body, el('div', { class: 'qm-foot' }, [el('div', { class: 'qm-sep', role: 'separator' }), edit]));
+  more();
 }
 
 function openQuickMenu() {
@@ -1620,6 +1895,11 @@ function openQuickMenu() {
   $('quick').setAttribute('aria-expanded', 'true');
   const items = quickMenuItems();
   (items.find((b) => b.classList.contains('is-current')) || items[0])?.focus();
+  const body = quickMenu().querySelector('.qm-body');
+  if (body) {
+    const scroll = body.querySelector('.qm-scroll');
+    body.dataset.more = String(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 2);
+  }
 }
 
 function closeQuickMenu({ focusButton = true } = {}) {
@@ -1665,7 +1945,7 @@ function wireQuickActions() {
 // =================================================================== model menu ====
 
 function menuItems() {
-  return [...$('model-menu').querySelectorAll('[role="option"], [role="menuitem"]')];
+  return [...$('model-menu').querySelectorAll('[role="menuitemradio"], [role="menuitem"]')].filter((b) => !b.hidden);
 }
 
 function offeredInMenu(p) { return isConfigured(p) || p.id === S.selected.provider; }
@@ -1684,7 +1964,8 @@ function recentModels() {
     if (!p || !r.model || !offeredInMenu(p)) continue;
     const listed = menuModels(p);
     const current = S.selected.provider === p.id && S.selected.model === r.model;
-    if ((isLocalProvider(p) || listed.length) && !listed.includes(r.model) && !current) continue;
+    if (current) continue;   // the model in use is marked in its own group
+    if ((isLocalProvider(p) || listed.length) && !listed.includes(r.model)) continue;
     out.push({ p, m: r.model });
   }
   return out;
@@ -1692,9 +1973,9 @@ function recentModels() {
 
 function menuItem(p, m, { withProvider = false } = {}) {
   const sel = S.selected.provider === p.id && S.selected.model === m;
-  const b = el('button', { class: 'mm-item', type: 'button', role: 'option', 'aria-selected': String(sel), tabindex: '-1',
+  const b = el('button', { class: 'mm-item', type: 'button', role: 'menuitemradio', 'aria-checked': String(sel), tabindex: '-1',
     dataset: { provider: p.id, model: m } }, [
-    el('span', { class: 'mm-check', 'aria-hidden': 'true', text: sel ? '✓' : '' }),
+    el('span', { class: 'mm-check', 'aria-hidden': 'true' }),   // the check mark is drawn by CSS from aria-checked
     el('span', { class: 'mm-name', text: shortModel(m) }),
     // A model that sees pictures says so (the composer's warning points here).
     p.vision && p.vision[m] ? el('span', { class: 'mm-vision', role: 'img', 'aria-label': 'sees pictures', title: 'Sees pictures' }, [railIcon(ICON.image)]) : null,
@@ -1707,8 +1988,9 @@ function menuItem(p, m, { withProvider = false } = {}) {
 function buildMenu() {
   const menu = $('model-menu');
   menu.replaceChildren();
+  // Recently used is worth a section from two other models on.
   const recent = recentModels();
-  if (recent.length) {
+  if (recent.length >= 2) {
     const group = el('div', { class: 'mm-group mm-recent', role: 'group', 'aria-label': t('menu.recent') }, [
       el('div', { class: 'mm-head', text: t('menu.recent') }),
     ]);
@@ -1726,6 +2008,9 @@ function buildMenu() {
     for (const m of models) group.append(menuItem(p, m));
     menu.append(group);
   }
+  // A long list gets a filter box on top (typing narrows it, ArrowDown moves into it).
+  const total = S.providers.filter(offeredInMenu).reduce((n, q) => n + menuModels(q).length, 0);
+  if (total > MENU_FILTER_AFTER) menu.prepend(menuFilter());
   const p = selectedProvider();
   if (isLocalProvider(p)) {
     const loaded = S.runtime.state === 'ready';
@@ -1741,14 +2026,35 @@ function buildMenu() {
 }
 
 function openMenu() {
+  if (S.menuOpen) return;
+  closeQuickMenu({ focusButton: false });
   buildMenu();
   const menu = $('model-menu');
   menu.hidden = false;
   S.menuOpen = true;
   $('model-chip').setAttribute('aria-expanded', 'true');
   const items = menuItems();
-  const cur = items.find((b) => b.getAttribute('aria-selected') === 'true') || items[0];
+  const cur = items.find((b) => b.getAttribute('aria-checked') === 'true') || items[0];
   if (cur) cur.focus();
+}
+
+const MENU_FILTER_AFTER = 8;
+
+/** The filter box of a long model menu: hides the items (and groups) that do not match. */
+function menuFilter() {
+  const box = el('input', { class: 'mm-filter ui-input', type: 'search', placeholder: 'Filter models', 'aria-label': 'Filter models',
+    autocomplete: 'off', spellcheck: 'false' });
+  box.addEventListener('input', () => {
+    const q = box.value.trim().toLowerCase();
+    const menu = $('model-menu');
+    for (const b of menu.querySelectorAll('.mm-item[data-model]')) {
+      b.hidden = !!q && !`${b.dataset.model} ${b.dataset.provider}`.toLowerCase().includes(q);
+    }
+    for (const g of menu.querySelectorAll('.mm-group')) {
+      g.hidden = !!q && ![...g.querySelectorAll('.mm-item[data-model]')].some((b) => !b.hidden);
+    }
+  });
+  return box;
 }
 
 function closeMenu({ focusChip = true } = {}) {
@@ -1777,7 +2083,10 @@ async function chooseModel(providerId, modelId) {
 
 function onMenuKey(e) {
   if (!S.menuOpen) return;
-  const items = menuItems().filter((b) => !b.disabled);
+  const filter = e.target.closest ? e.target.closest('.mm-filter') : null;
+  if (filter && e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Tab' && e.key !== 'Escape') return;   // typing
+  const box = $('model-menu').querySelector('.mm-filter');
+  const items = [...(box ? [box] : []), ...menuItems().filter((b) => !b.disabled)];
   const i = items.indexOf(document.activeElement);
   if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
@@ -1795,15 +2104,21 @@ function wire() {
     // Enter sends; Shift+Enter adds a newline; never send mid-IME-composition.
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      if (!$('send').disabled) doSend();
+      if (S.busy) toast('Still replying. Press Esc to stop.', { timeout: 1800 });
+      else if (!$('send').disabled) doSend();
+    } else if (e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !e.isComposing
+      && !input.value && !S.busy) {
+      // Up in an empty box brings back your last message to edit.
+      if (lastUserRow()) { e.preventDefault(); editLastTurn(); }
     }
   });
+  input.addEventListener('paste', onTextPaste);
   $('send').addEventListener('click', doSend);
   $('stop').addEventListener('click', stopGeneration);
   wireAttachments();
   wireQuickActions();
   wireResize();
-  $('btn-new').addEventListener('click', newChat);
+  $('btn-new').addEventListener('click', clearChat);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-close').addEventListener('click', () => api.call('hide_popup'));
   // The pin is ui.sticky (Settings > General has the same box), saved either way.
@@ -1826,21 +2141,20 @@ function wire() {
     if (S.menuOpen && !e.target.closest('.model-wrap')) closeMenu({ focusChip: false });
   });
 
-  // Links in replies: never navigate the popup; http(s) goes to the default browser.
-  messagesBox().addEventListener('click', (e) => {
+  // Links in replies: never navigate the popup; http(s) and mailto: go to the default app.
+  messagesBox().addEventListener('click', async (e) => {
     const a = e.target.closest('a[href]');
     if (!a) return;
     e.preventDefault();
     const href = a.href;
-    if (/^https?:\/\//i.test(href)) api.call('open_external', href);
+    if (!/^(?:https?:\/\/|mailto:)/i.test(href)) { toast('That link type is not supported'); return; }
+    const r = await api.call('open_external', href);
+    if (r && r.ok) toast(/^mailto:/i.test(href) ? 'Opened in your email app' : 'Opened in your browser');
+    else if (r && r.error && r.error.code === 'bad_request') toast('That link type is not supported');
+    else toast((r && r.error && r.error.message) || 'The link could not be opened.');
   });
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (S.menuOpen) { e.preventDefault(); closeMenu(); return; }
-    e.preventDefault();
-    api.call('hide_popup');
-  });
+  document.addEventListener('keydown', onDocumentKey);
 
   // Not sticky: hide on blur, debounced. Never while settings is opening, nor while the
   // file dialog is open: it takes the focus, and hide_popup is not held back by the host's
@@ -1855,6 +2169,68 @@ function wire() {
     }, 150);
   });
   window.addEventListener('focus', () => clearTimeout(blurTimer));
+}
+
+/** Shortcuts on the whole popup. Esc: close a menu, else stop a running reply, else hide. */
+function onDocumentKey(e) {
+  if (e.isComposing) return;
+  const k = e.key;
+  if (k === 'Escape') {
+    if (S.menuOpen) { e.preventDefault(); closeMenu(); return; }
+    e.preventDefault();
+    if (S.busy && !S.stopping) { stopGeneration(); return; }   // the second Esc hides
+    api.call('hide_popup');
+    return;
+  }
+  const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+  const lower = typeof k === 'string' ? k.toLowerCase() : '';
+  if (mod && !e.shiftKey && lower === 'n') { e.preventDefault(); clearChat(); }
+  else if (mod && !e.shiftKey && lower === 'l') { e.preventDefault(); $('input').focus(); }
+  else if (mod && !e.shiftKey && k === ',') { e.preventDefault(); openSettings(); }
+  else if (mod && !e.shiftKey && lower === 'm') { e.preventDefault(); if (!S.menuOpen) openMenu(); }
+  else if (mod && e.shiftKey && lower === 'c') { e.preventDefault(); copyLastReply(); }
+  else if (!mod && !e.shiftKey && k === '/' && document.activeElement !== $('input')
+    && !(e.target && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))) {
+    e.preventDefault();
+    $('input').focus();
+  }
+}
+
+/** Ctrl+Shift+C: the latest finished reply, formatted. */
+async function copyLastReply() {
+  const row = [...messagesBox().querySelectorAll('.msg.assistant')].filter((r) => !r.hidden && replies.has(r)).pop();
+  const turn = row && replies.get(row);
+  if (!turn || !turn.content) { toast('There is no reply to copy yet.'); return; }
+  if (await copyReply(turn)) toast('Reply copied');
+}
+
+/** A paste that takes the box past the limit is kept (the text is in the box, over the
+ *  limit, nothing is cut) and offers to attach the pasted part as a text file instead. */
+function onTextPaste(e) {
+  const cd = e.clipboardData;
+  const pasted = cd ? cd.getData('text/plain') : '';
+  if (!pasted) return;
+  const input = $('input');
+  const before = input.value;
+  const start = input.selectionStart ?? before.length;
+  const end = input.selectionEnd ?? before.length;
+  if (before.length - (end - start) + pasted.length <= maxChars()) return;
+  const after = before.slice(0, start) + pasted + before.slice(end);
+  toast(`That paste is over the ${maxChars().toLocaleString()} character limit`, {
+    timeout: 12000,
+    action: { label: 'Attach as text', fn: () => attachPastedText(pasted, before, after) },
+  });
+}
+
+/** Move text pasted into the box into a pasted-text.txt attachment. `before` is the box as it
+ *  was, `after` the box with the paste in it: if it has not changed since, it goes back. */
+function attachPastedText(pasted, before, after) {
+  const input = $('input');
+  if (input.value === after) input.value = before;
+  else if (input.value.includes(pasted)) input.value = input.value.replace(pasted, '');
+  autosize();
+  attachLocalFiles([new window.File([pasted], 'pasted-text.txt', { type: 'text/plain' })]);
+  input.focus();
 }
 
 function doSend() {

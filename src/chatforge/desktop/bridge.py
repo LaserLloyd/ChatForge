@@ -29,16 +29,18 @@ import time
 import webbrowser
 from collections.abc import Callable, Coroutine
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from chatforge import attachments, autostart, images, secrets
+from chatforge import attachments, autostart, doctor, images, secrets
 from chatforge.chat import actions as quick_actions
 from chatforge.config import (
     RECENT_MODELS_KEPT,
     AppConfig,
     ProviderSpec,
     UiCfg,
+    readonly_changes,
     seed_providers,
     update_config,
 )
@@ -62,6 +64,8 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "save_document",
     "stop_generation",
     "new_chat",
+    "drop_last_turn",
+    "undo_clear",
     "select_model",
     "load_model",
     "unload_model",
@@ -95,6 +99,8 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "runtime_status",
     "get_logs",
     "open_logs_folder",
+    "open_config_folder",
+    "diagnostics",
     "get_autostart",
     "set_autostart",
     "set_hotkey",
@@ -253,6 +259,21 @@ def runtime_install_view(progress: dict[str, Any]) -> dict[str, Any]:
 def format_log_line(record: dict[str, Any]) -> str:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(record.get("ts") or 0)))
     return f"{ts} {str(record.get('level', 'INFO')):<7} {record.get('logger', '')}: {record.get('message', '')}"
+
+
+#: ``open_external`` opens only these schemes.
+_EXTERNAL_SCHEMES = ("http://", "https://", "mailto:")
+
+
+def key_destination(spec: ProviderSpec) -> tuple[str, int | None, str]:
+    """Where a provider's API key goes: ``(host, port, api_key_env)``. A stored key belongs
+    to this triple, so when it changes the key is dropped (``Api._drop_rebound_keys``)."""
+    try:
+        parts = urlsplit(spec.base_url or "")
+        host, port = (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        host, port = (spec.base_url or "").lower(), None
+    return host, port, spec.api_key_env or ""
 
 
 # --------------------------------------------------------------------------- #
@@ -509,12 +530,16 @@ class Api:
     # --- state and chat (popup) --------------------------------------------------------
 
     def get_state(self) -> dict[str, Any]:
+        """``{config, providers, selected, recommended_model, runtime, conversation, limits,
+        theme}``; ``recommended_model`` is the catalog's recommended model id or ``null``."""
+
         def impl() -> dict[str, Any]:
             cfg = self._cfg
             return ok(
                 config=ui_config(cfg),
                 providers=self._provider_views(),
                 selected={"provider": cfg.chat.provider, "model": cfg.chat.model},
+                recommended_model=self._recommended_model(),
                 runtime=self._runtime_status(),
                 conversation=self._conversation(),
                 limits={"max_prompt_chars": cfg.chat.max_prompt_chars},
@@ -522,6 +547,12 @@ class Api:
             )
 
         return self._guard(impl, "get_state")
+
+    def _recommended_model(self) -> str | None:
+        """The catalog's recommended model id (badge "recommended"), or ``None``."""
+        catalog = self._s.catalog
+        entry = catalog.recommended() if catalog is not None else None
+        return entry.id if entry is not None else None
 
     def send_message(
         self,
@@ -888,6 +919,52 @@ class Api:
 
         return self._guard(impl, "new_chat")
 
+    def drop_last_turn(self) -> dict[str, Any]:
+        """Remove the latest user message and everything after it (the reply, tool results)
+        from the conversation and save (Edit / Delete last message).
+        ``{ok, removed: {content, attachments, action}, conversation}``: ``content`` is the
+        text as typed (for a quick action, what the user typed), ``attachments`` the files'
+        views (``name, kind, chars, truncated``, a picture also ``width, height, thumb``;
+        metadata only, the page cannot attach them again), ``action`` ``{id, label}`` or
+        ``null``. Pictures only that turn used are deleted, as New chat does. ``busy`` while
+        a reply is being written, ``empty`` when there is no user message."""
+
+        def impl() -> dict[str, Any]:
+            engine = self._s.engine
+            if engine is None or self._s.loop is None:
+                return fail(
+                    "server",
+                    "The chat engine is not available.",
+                    "See Settings → Logs.",
+                    "open_settings",
+                )
+            try:
+                removed = self._s.loop.call(engine.drop_last_turn)
+            except AppError as exc:
+                return fail(exc.code or "server", exc.message, exc.hint or "", exc.action)
+            return ok(removed=removed, conversation=self._conversation())
+
+        return self._guard(impl, "drop_last_turn")
+
+    def undo_clear(self) -> dict[str, Any]:
+        """Undo the last Clear chat while no message has been sent since: the cleared
+        conversation comes back and is saved. ``{ok, conversation}``, or
+        ``nothing_to_undo``."""
+
+        def impl() -> dict[str, Any]:
+            engine = self._s.engine
+            if engine is None or self._s.loop is None:
+                return fail("nothing_to_undo", "There is no cleared chat to restore.")
+            if not self._s.loop.call(engine.restore_cleared):
+                return fail(
+                    "nothing_to_undo",
+                    "There is no cleared chat to restore.",
+                    "Only the last Clear chat can be undone, and not after a new message.",
+                )
+            return ok(conversation=self._conversation())
+
+        return self._guard(impl, "undo_clear")
+
     def select_model(self, provider_id: str, model_id: str | None = None) -> dict[str, Any]:
         def impl() -> dict[str, Any]:
             spec = self._spec(str(provider_id))
@@ -1050,11 +1127,16 @@ class Api:
         return self._guard(impl, "open_settings")
 
     def open_external(self, url: str) -> dict[str, Any]:
+        """Open an ``http(s)://`` or ``mailto:`` link in the default app; nothing else."""
+
         def impl() -> dict[str, Any]:
             target = str(url or "").strip()
-            if not target.lower().startswith(("http://", "https://")):
-                return fail("bad_request", "Only http(s) links can be opened.")
-            if any(ch in target for ch in "\r\n\x00") or len(target) > 4096:
+            lowered = target.lower()
+            if not lowered.startswith(_EXTERNAL_SCHEMES):
+                return fail("bad_request", "Only http(s) and mailto links can be opened.")
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in target) or len(target) > 4096:
+                return fail("bad_request", "That link cannot be opened.")
+            if lowered.startswith("mailto:") and not target[len("mailto:") :].strip():
                 return fail("bad_request", "That link cannot be opened.")
             threading.Thread(
                 target=webbrowser.open, args=(target,), name="chatforge-open-url", daemon=True
@@ -1150,7 +1232,7 @@ class Api:
         results: dict[str, Any] = {}
         changed = False
         for spec in specs:
-            key, _source = secrets.get_api_key(spec.id, spec.api_key_env)
+            key, _source = await asyncio.to_thread(secrets.get_api_key, spec.id, spec.api_key_env)
             if provider_id is None and not mr.is_configured(spec, key):
                 continue  # "refresh all" skips providers without a key
             fetched = await mr.fetch_models(spec, key)
@@ -1212,20 +1294,97 @@ class Api:
         return self._guard(lambda: self._settings_reply(self._cfg, [], {}), "get_settings")
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Apply a config patch. ``tools.documents_dir`` and ``tools.block_private_addresses``
+        are config.toml-only: a patch that would change them is refused (the same value is
+        ignored). A provider whose ``base_url`` host or ``api_key_env`` changes, or that is
+        removed, loses its stored API key: ``key_removed`` is true and ``keys_removed`` lists
+        the provider ids, so the page can ask for the key again."""
+
         def impl() -> dict[str, Any]:
             if not isinstance(patch, dict):
                 return fail("bad_request", "The settings patch must be an object.")
             try:
-                new_cfg, restart = self._apply_patch(patch)
+                kept, refused = readonly_changes(self._cfg, patch)
+                if refused:
+                    raise ConfigError(
+                        f"{refused[0]} can only be changed in config.toml.",
+                        code="bad_request",
+                        hint="Edit the file (Settings → Open config folder).",
+                        details={"errors": {k: "config.toml only" for k in refused}},
+                    )
+                self._check_key_env(kept.get("providers"))
+                before = self._cfg.providers
+                new_cfg, restart = self._apply_patch(kept)
             except ConfigError as exc:
                 errors = dict(exc.details.get("errors") or {"config": exc.message})
                 reply = self._settings_reply(self._cfg, [], errors)
                 reply["error"] = exc.to_payload()
                 return reply
+            removed = self._drop_rebound_keys(before, new_cfg.providers)
             self._emit({"type": "settings.changed", "config": ui_config(new_cfg)})
-            return self._settings_reply(new_cfg, restart, {})
+            reply = self._settings_reply(new_cfg, restart, {})
+            reply.update(key_removed=bool(removed), keys_removed=removed)
+            return reply
 
         return self._guard(impl, "update_settings")
+
+    def _check_key_env(self, providers_patch: Any) -> None:
+        """Only built-in providers may read their key from an environment variable
+        (``api_key_env``); a custom provider keeps its key in the credential manager, where
+        it is bound to that provider. An unchanged value is accepted. Raises ``ConfigError``
+        (``bad_request``)."""
+        if not isinstance(providers_patch, dict):
+            return
+        for pid, data in providers_patch.items():
+            env = data.get("api_key_env") if isinstance(data, dict) else None
+            if not env:
+                continue
+            existing = self._cfg.providers.get(pid)
+            if pid in SEED_IDS or (existing is not None and existing.builtin):
+                continue
+            if existing is not None and existing.api_key_env == env:
+                continue
+            raise ConfigError(
+                "A custom provider's API key is saved in the credential manager, "
+                "not read from an environment variable.",
+                code="bad_request",
+                hint="Clear the environment variable name and save the key instead.",
+                details={"errors": {f"providers.{pid}.api_key_env": "not allowed here"}},
+            )
+
+    def _drop_rebound_keys(
+        self, before: dict[str, ProviderSpec], after: dict[str, ProviderSpec]
+    ) -> list[str]:
+        """Delete the saved API key of every provider that was removed, or whose key
+        destination (``key_destination``: base URL host and port, ``api_key_env``) changed
+        from ``before`` to ``after``: a key must not follow a provider to a new place.
+        Returns the ids that had a saved key."""
+        removed: list[str] = []
+        for pid, old in before.items():
+            if old.kind == "ovms":
+                continue
+            new = after.get(pid)
+            if new is not None and key_destination(new) == key_destination(old):
+                continue
+            try:
+                if secrets.delete_api_key(pid):
+                    removed.append(pid)
+            except Exception as exc:  # noqa: BLE001 - reported as a log line, not a failure
+                _log.warning("could not remove the key of %s: %s", pid, type(exc).__name__)
+        for pid in removed:
+            if pid in after:
+                status = self._key_status(after[pid])
+                self._emit(
+                    {
+                        "type": "key.status",
+                        "provider_id": pid,
+                        "source": status["source"],
+                        "env_name": status["env_name"],
+                    }
+                )
+        if removed:
+            _log.info("saved key removed for %s: its destination changed", ", ".join(removed))
+        return removed
 
     def list_providers(self) -> dict[str, Any]:
         return self._guard(lambda: ok(providers=self._provider_views()), "list_providers")
@@ -1240,18 +1399,25 @@ class Api:
             parsed = ProviderSpec.model_validate(data)
             if parsed.id == LOCAL_ID and parsed.kind != "ovms":
                 return fail("bad_request", "The local provider cannot be replaced.")
+            self._check_key_env({parsed.id: {"api_key_env": parsed.api_key_env}})
             providers = self._s.providers
             before = self._cfg.providers
             if providers is not None:
                 parsed = providers.upsert(parsed)
             try:
-                self._apply_patch({"providers": {parsed.id: parsed.model_dump(mode="json")}})
+                new_cfg, _restart = self._apply_patch(
+                    {"providers": {parsed.id: parsed.model_dump(mode="json")}}
+                )
             except Exception:
                 if providers is not None:
                     with contextlib.suppress(Exception):
                         providers.replace_all(before)
                 raise
-            return ok(provider=self._provider_view(self._spec(parsed.id)))
+            removed = self._drop_rebound_keys(before, new_cfg.providers)
+            return ok(
+                provider=self._provider_view(self._spec(parsed.id)),
+                key_removed=bool(removed),
+            )
 
         return self._guard(impl, "upsert_provider")
 
@@ -1478,12 +1644,41 @@ class Api:
 
         return self._guard(impl, "open_logs_folder")
 
+    def open_config_folder(self) -> dict[str, Any]:
+        """Show the folder that holds ``config.toml`` in Explorer."""
+
+        def impl() -> dict[str, Any]:
+            from chatforge.desktop import win32util
+
+            folder = self._s.paths.config_file.parent
+            folder.mkdir(parents=True, exist_ok=True)
+            win32util.open_path(folder)
+            return ok()
+
+        return self._guard(impl, "open_config_folder")
+
+    def diagnostics(self) -> dict[str, Any]:
+        """``{ok, text}``: a redacted plain-text report for a bug report (versions, runtime
+        state, active provider and model ids, config.toml and the last log lines, with no
+        API key and no URL credentials; see ``doctor.diagnostics_report``)."""
+
+        def impl() -> dict[str, Any]:
+            lines = [
+                format_log_line(r) for r in RING_BUFFER.tail(doctor.DIAGNOSTIC_LOG_LINES, "INFO")
+            ]
+            text = doctor.diagnostics_report(
+                self._s.paths, self._cfg, self._runtime_status(), lines
+            )
+            return ok(text=text)
+
+        return self._guard(impl, "diagnostics")
+
     def get_autostart(self) -> dict[str, Any]:
         def impl() -> dict[str, Any]:
             st = autostart.status()
             return ok(
                 enabled=st.enabled,
-                mode=st.mode,  # "task-scheduler" | "startup-folder"
+                mode=st.mode,  # "task-scheduler" | "startup-folder" | "xdg-autostart"
                 mechanism=st.mechanism,
                 path=str(st.path) if st.path else None,
                 detail=st.detail,

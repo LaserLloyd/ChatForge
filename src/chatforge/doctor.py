@@ -10,6 +10,8 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import os
+import platform
+import re
 import socket
 import subprocess
 import sys
@@ -33,6 +35,9 @@ DISK_FAIL_BYTES = 2 * 1024**3
 NPU_DEVICE_NAME = "AI Boost"
 MINIMAX_PROVIDER = "minimax"
 MINIMAX_ENV = "MINIMAX_API_KEY"
+COPILOT_KEY = "Copilot"  # hotkey.COPILOT, without importing the Windows module at load
+#: The Intel NPU's device node with the Linux driver (``intel_vpu``).
+LINUX_NPU_NODES = "/dev/accel/accel*"
 DOCTOR_HOTKEY_ID = 0xA1C8  # distinct from the app's HOTKEY_ID
 ERROR_HOTKEY_ALREADY_REGISTERED = 1409
 
@@ -100,6 +105,69 @@ def check_npu(device_names: list[str] | None) -> Check:
     if matches:
         return Check("NPU device", "pass", matches[0])
     return Check("NPU device", "fail", f"no '{NPU_DEVICE_NAME}' device; check the Intel NPU driver")
+
+
+def check_display(environ: Any = None) -> Check:
+    """Linux: a display to open windows on. Wayland needs XWayland (``DISPLAY`` too): the
+    popup is placed at a screen position and the hotkey is an X11 grab."""
+    env = os.environ if environ is None else environ
+    x11, wayland = env.get("DISPLAY"), env.get("WAYLAND_DISPLAY")
+    if x11 and wayland:
+        return Check("Display", "pass", f"Wayland ({wayland}) with XWayland ({x11}); using X11")
+    if x11:
+        return Check("Display", "pass", f"X11 ({x11})")
+    if wayland:
+        return Check(
+            "Display",
+            "warn",
+            f"Wayland ({wayland}) without XWayland (DISPLAY unset): the popup cannot be "
+            "placed and there is no hotkey; install XWayland",
+        )
+    return Check("Display", "fail", "no DISPLAY or WAYLAND_DISPLAY: not in a desktop session")
+
+
+def check_webview_toolkit(gtk: str | None, qt: str | None) -> Check:
+    """Linux: which toolkit pywebview can use. ``gtk``/``qt`` are a description when that
+    toolkit imports, ``None`` when not."""
+    if gtk:
+        return Check("Web view (pywebview)", "pass", f"GTK: {gtk}")
+    if qt:
+        return Check("Web view (pywebview)", "pass", f"Qt: {qt}")
+    return Check(
+        "Web view (pywebview)",
+        "fail",
+        "neither GTK + WebKit2GTK nor Qt WebEngine imports; install python3-gi, "
+        "gir1.2-gtk-3.0, gir1.2-webkit2-4.1 and create the venv with --system-site-packages "
+        "(docs/SETUP-LINUX.md)",
+    )
+
+
+def check_tray_host(environ: Any = None) -> Check:
+    """Linux: whether a tray icon will have somewhere to appear (a hint, not a probe)."""
+    env = os.environ if environ is None else environ
+    backend = env.get("PYSTRAY_BACKEND") or ("xorg" if env.get("DISPLAY") else "")
+    desktop = env.get("XDG_CURRENT_DESKTOP", "")
+    if not backend:
+        return Check("Tray host", "warn", "no display for the tray icon")
+    if "gnome" in desktop.lower() and "unity" not in desktop.lower():
+        return Check(
+            "Tray host",
+            "warn",
+            f"pystray backend {backend} on {desktop}: GNOME shows no tray icons without the "
+            "AppIndicator and KStatusNotifierItem extension; ChatForge still runs, open it "
+            "with the hotkey or `chatforge --show`",
+        )
+    return Check("Tray host", "pass", f"pystray backend {backend} ({desktop or 'desktop unknown'})")
+
+
+def check_npu_linux(nodes: list[str]) -> Check:
+    if nodes:
+        return Check("NPU device", "pass", nodes[0])
+    return Check(
+        "NPU device",
+        "warn",
+        f"no {LINUX_NPU_NODES} node (Intel NPU driver not loaded): local models run on the CPU",
+    )
 
 
 def check_ovms(status: dict[str, Any]) -> Check:
@@ -224,9 +292,22 @@ def check_minimax_key(env_present: bool, keyring_present: bool) -> Check:
 
 
 def check_hotkey(spec: str, outcome: str, app_running: bool) -> Check:
-    """``outcome`` is ``"ok"``, ``"in_use"``, ``"invalid:<msg>"`` or ``"error:<msg>"``."""
+    """``outcome`` is ``"ok"``, ``"ok:<how>"`` (``X11 grab``, ``X11 grab via XWayland``),
+    ``"in_use"``, ``"invalid:<msg>"`` or ``"error:<msg>"``."""
+    if outcome == "ok" and spec == COPILOT_KEY:
+        return Check("Hotkey", "pass", "Copilot key: the keyboard hook can be installed")
     if outcome == "ok":
         return Check("Hotkey", "pass", f"{spec} is free")
+    if outcome.startswith("ok:"):
+        how = outcome[3:]
+        if "XWayland" in how:
+            return Check(
+                "Hotkey",
+                "warn",
+                f"{spec} can be grabbed ({how}), but only while an X11 window has the focus; "
+                "also bind a desktop shortcut to `chatforge --show`",
+            )
+        return Check("Hotkey", "pass", f"{spec} is free ({how})")
     if outcome == "in_use":
         if app_running:
             return Check("Hotkey", "pass", f"{spec} is held by the running ChatForge instance")
@@ -278,17 +359,24 @@ def check_disk(free: int | None, path: Path) -> Check:
     return Check("Free disk", "pass", text)
 
 
-def check_app_running(running: bool, port: int, ovms_pids: list[int]) -> Check:
+def check_app_running(
+    running: bool, port: int, ovms_pids: list[int], *, windows: bool | None = None
+) -> Check:
+    win = os.name == "nt" if windows is None else windows
+    name = "ovms.exe" if win else "ovms"
     if running:
         detail = f"yes (single-instance port {port} in use)"
         if ovms_pids:
-            detail += f"; ovms.exe pids {ovms_pids} (model loaded)"
+            detail += f"; {name} pids {ovms_pids} (model loaded)"
         return Check("App running", "pass", detail)
     if ovms_pids:
+        how = (
+            "end them in Task Manager"
+            if win
+            else f"kill them (kill {' '.join(map(str, ovms_pids))})"
+        )
         return Check(
-            "App running",
-            "warn",
-            f"no, but stray ovms.exe pids {ovms_pids} are alive; end them in Task Manager",
+            "App running", "warn", f"no, but stray {name} pids {ovms_pids} are alive; {how}"
         )
     return Check("App running", "pass", "no")
 
@@ -369,10 +457,87 @@ def list_npu_devices(timeout_s: float = 20.0) -> list[str] | None:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
-def probe_hotkey(spec: str) -> str:
-    """Try ``RegisterHotKey`` then unregister. See :func:`check_hotkey` for outcomes."""
+def list_npu_nodes() -> list[str]:
+    """Linux: the ``/dev/accel/accel*`` nodes the Intel NPU driver creates."""
+    import glob
+
+    return sorted(glob.glob(LINUX_NPU_NODES))
+
+
+def probe_toolkits() -> tuple[str | None, str | None]:
+    """``(gtk, qt)``: a description of each toolkit pywebview could use here, else ``None``."""
+    gtk: str | None = None
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        for webkit in ("4.1", "4.0"):
+            try:
+                gi.require_version("WebKit2", webkit)
+            except ValueError:
+                continue
+            gtk = f"GTK 3 + WebKit2 {webkit}"
+            break
+    except Exception:  # noqa: BLE001 - no PyGObject, or no typelib
+        gtk = None
+    qt: str | None = None
+    try:
+        import qtpy
+        from qtpy import QtWebEngineWidgets  # noqa: F401
+
+        qt = f"{qtpy.API_NAME} {qtpy.QT_VERSION}"
+    except Exception:  # noqa: BLE001
+        qt = None
+    return gtk, qt
+
+
+def _probe_copilot() -> str:
+    """Install and remove a throwaway ``WH_KEYBOARD_LL`` hook (Windows)."""
+    from chatforge.desktop import hotkey
+
     if os.name != "nt":
-        return "error:hotkeys are Windows-only"
+        return f"error:{hotkey.COPILOT_WINDOWS_ONLY}"
+    user32 = ctypes.windll.user32
+    hotkey._configure_user32(user32)  # noqa: SLF001 - the same argtypes the app's hook uses
+    probe = hotkey._CopilotHook(user32, lambda: None)  # noqa: SLF001
+    code = probe.install()
+    if code is not None:
+        return f"error:{hotkey.describe_error(hotkey.COPILOT, code)}"
+    probe.remove()
+    return "ok"
+
+
+def _probe_x11(spec: str) -> str:
+    """Grab and release the key on the X server, through the app's own grabber."""
+    from chatforge.desktop.hotkey import NO_X11_DISPLAY, HotkeyThread
+
+    if not os.environ.get("DISPLAY"):
+        return f"error:{NO_X11_DISPLAY}"
+    thread = HotkeyThread(lambda: None)
+    try:
+        error = thread.start(spec)
+    finally:
+        thread.stop()
+    if error is None:
+        via = " via XWayland" if os.environ.get("WAYLAND_DISPLAY") else ""
+        return f"ok:X11 grab{via}"
+    return "in_use" if "in use" in error else f"error:{error}"
+
+
+def probe_hotkey(spec: str) -> str:
+    """Try the platform's hotkey registration, then release it. See :func:`check_hotkey`
+    for outcomes: ``RegisterHotKey`` on Windows, a keyboard hook for the Copilot key, an
+    ``XGrabKey`` on Linux."""
+    from chatforge.config import parse_hotkey
+
+    try:
+        _mods, key = parse_hotkey(spec)
+    except ValueError as exc:
+        return f"invalid:{exc}"
+    if key == COPILOT_KEY:
+        return _probe_copilot()
+    if os.name != "nt":
+        return _probe_x11(spec)
     try:
         from chatforge.desktop.hotkey import MOD_NOREPEAT, to_win32
 
@@ -567,17 +732,29 @@ def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
         keyring_present = secrets._keyring_get(MINIMAX_PROVIDER) is not None  # noqa: SLF001
         return check_minimax_key(env_present, keyring_present)
 
+    if os.name == "nt":
+        platform_rows = [
+            _safe("WebView2 runtime", lambda: check_webview2(read_webview2_version())),
+            _safe(
+                "VC++ x64 runtime",
+                lambda: check_vcredist(
+                    ovms_install.vcredist_present(), ovms_install.vcredist_version()
+                ),
+            ),
+            _safe("NPU device", lambda: check_npu(list_npu_devices())),
+        ]
+    else:  # vcredist is None off Windows: not applicable, so no WebView2/VC++/PnP rows
+        platform_rows = [
+            _safe("Display", check_display),
+            _safe("Web view (pywebview)", lambda: check_webview_toolkit(*probe_toolkits())),
+            _safe("Tray host", check_tray_host),
+            _safe("NPU device", lambda: check_npu_linux(list_npu_nodes())),
+        ]
+
     return [
         _safe("Python", check_python),
         config_check,
-        _safe("WebView2 runtime", lambda: check_webview2(read_webview2_version())),
-        _safe(
-            "VC++ x64 runtime",
-            lambda: check_vcredist(
-                ovms_install.vcredist_present(), ovms_install.vcredist_version()
-            ),
-        ),
-        _safe("NPU device", lambda: check_npu(list_npu_devices())),
+        *platform_rows,
         _safe("OVMS runtime", lambda: check_ovms(ovms_install.runtime_status(paths, cfg.local))),
         *local_model_checks(paths, cfg),
         _safe("Keyring backend", lambda: check_keyring(*keyring_backend_status())),
@@ -587,9 +764,95 @@ def run_checks(paths: Any = None, cfg: Any = None) -> list[Check]:
         _safe("Free disk", lambda: check_disk(free_bytes(paths.home), paths.home)),
         _safe(
             "App running",
-            lambda: check_app_running(running, SINGLE_INSTANCE_PORT, find_processes("ovms.exe")),
+            lambda: check_app_running(running, SINGLE_INSTANCE_PORT, find_processes("ovms")),
         ),
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Diagnostics: the redacted report the Settings page offers for bug reports
+# --------------------------------------------------------------------------- #
+
+DIAGNOSTIC_LOG_LINES = 50
+_REDACTED = "***REDACTED***"
+#: A config line whose name says it holds a secret. ``*_env`` names (``api_key_env``) are
+#: environment variable *names*, which help a bug report and are not secrets.
+_SECRET_LINE_RE = re.compile(
+    r"(?im)^(?P<head>\s*[\w.\"'-]*(?:key|token|secret|password|passwd|authorization|cookie"
+    r"|credential)[\w.\"'-]*\s*=\s*)(?P<value>.*)$"
+)
+_URL_CREDS_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@\"']+@")
+_URL_QUERY_RE = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s\"'?#]+)\?[^\s\"']*")
+#: A long unbroken run of key-looking characters (``sk-...``, a pasted token).
+_TOKEN_RE = re.compile(r"\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{32,}\b")
+
+
+def redact_text(text: str) -> str:
+    """``text`` with registered secrets, bearer tokens, URL credentials and query strings,
+    and key-like runs removed (the log scrubber plus the config-specific rules)."""
+    from chatforge.logging_setup import _scrub_text  # noqa: PLC2701 - same package
+
+    text = _scrub_text(text)
+    text = _URL_CREDS_RE.sub(rf"\1{_REDACTED}@", text)
+    text = _URL_QUERY_RE.sub(r"\1?" + _REDACTED, text)
+    return _TOKEN_RE.sub(_REDACTED, text)
+
+
+def redact_config_text(text: str) -> str:
+    """config.toml contents with the value of every key-like setting replaced."""
+
+    def line(match: re.Match[str]) -> str:
+        head = match.group("head")
+        name = head.split("=")[0].strip().strip("\"'").lower()
+        if name.endswith(("_env", "tokens")):
+            return match.group(0)
+        return f"{head}{_REDACTED}"
+
+    return redact_text(_SECRET_LINE_RE.sub(line, text))
+
+
+def _active_ids(cfg: Any) -> list[str]:
+    chat = cfg.chat
+    lines = [f"active provider: {chat.provider}", f"active model: {chat.model}"]
+    fallback = getattr(chat, "fallback_provider", "")
+    if fallback:
+        lines.append(f"fallback: {fallback} / {getattr(chat, 'fallback_model', '')}")
+    return lines
+
+
+def diagnostics_report(
+    paths: Any,
+    cfg: Any,
+    runtime: dict[str, Any] | None = None,
+    log_lines: Iterable[str] = (),
+) -> str:
+    """A plain-text report to paste into a bug report: versions, the runtime state, the
+    active provider and model ids, config.toml and the last log lines, all redacted
+    (no API key, no URL credentials). ``log_lines`` are formatted log lines; at most the
+    last :data:`DIAGNOSTIC_LOG_LINES` are used."""
+    from chatforge import __version__
+
+    out = [
+        "ChatForge diagnostics",
+        f"app version: {__version__}",
+        f"python: {platform.python_version()} ({platform.python_implementation()})",
+        f"os: {platform.platform()}",
+        "",
+        "[runtime]",
+    ]
+    for key in ("state", "model_id", "device", "error"):
+        if runtime and runtime.get(key) is not None:
+            out.append(f"{key}: {redact_text(str(runtime[key]))}")
+    out += ["", "[chat]", *_active_ids(cfg), "", "[config.toml]"]
+    try:
+        raw = Path(paths.config_file).read_text(encoding="utf-8")
+        out.append(redact_config_text(raw).rstrip() or "(empty)")
+    except OSError:
+        out.append("(no config.toml)")
+    out += ["", f"[last {DIAGNOSTIC_LOG_LINES} log lines]"]
+    lines = [str(x) for x in log_lines][-DIAGNOSTIC_LOG_LINES:]
+    out.extend(redact_text(line) for line in lines or ["(none)"])
+    return "\n".join(out) + "\n"
 
 
 def main() -> int:

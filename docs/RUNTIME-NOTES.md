@@ -29,7 +29,7 @@ This is a record of the Phase A measurements. The recommendations in it have sin
 
 | Item | Value |
 |---|---|
-| Asset | `ovms_windows_2026.4.0_python_on.zip` from `https://github.com/openvinotoolkit/model_server/releases/download/v2026.4.0/` |
+| Asset | [`ovms_windows_2026.4.0_python_on.zip`](https://github.com/openvinotoolkit/model_server/releases/download/v2026.4.0/ovms_windows_2026.4.0_python_on.zip) from the [v2026.4.0 release](https://github.com/openvinotoolkit/model_server/releases/tag/v2026.4.0) |
 | Size | 138,798,816 bytes |
 | **SHA-256** (Get-FileHash, matches the release `.sha256`) | `5a022e44e794e6a9cb0f1c6c40822167dac53a36daf9af123c9411974cef1914` |
 | `python_off` (not downloaded) | 117,195,695 bytes. SHA-256 from the release `.sha256`: `46d03114c97abfe05f2c5a8fde772c655aeef541ee254c23f402f81a616474e3` |
@@ -264,3 +264,36 @@ The catalog entry should use `tool_parser = "hermes3"` and no `reasoning_parser`
 - `%LOCALAPPDATA%\ChatForge\models\OpenVINO\Qwen2.5-1.5B-Instruct-int4-ov\` (new) and `…\Qwen3-4B-int4-ov\` (kept, unusable on the NPU)
 - `%LOCALAPPDATA%\ChatForge\cache\ov\OpenVINO--Qwen2.5-1.5B-Instruct-int4-ov\NPU-4096\` (warm, with `.chatforge-compiled.json`, first compile 44.53 s)
 - `%LOCALAPPDATA%\ChatForge\state.json`: the `compiled` and `launch` keys
+
+## Linux (read from the code, not measured)
+
+Everything above was measured on Windows with the NPU. The Linux port of the runtime was written
+headless and has not run a model on a real Linux desktop, so this section records what
+`src/chatforge/runtime/` pins and does, not measurements.
+
+- **Archives.** `ovms_install.py` pins, besides the two Windows zips in `ASSETS`, four 2026.4.0
+  `.tar.gz` archives from the same v2026.4.0 release, each with its size and SHA-256:
+  `ovms_ubuntu22_2026.4.0_python_on.tar.gz` (192,806,746 bytes),
+  `ovms_ubuntu22_2026.4.0_python_off.tar.gz` (176,488,078),
+  `ovms_ubuntu24_2026.4.0_python_on.tar.gz` (196,991,877) and
+  `ovms_ubuntu24_2026.4.0_python_off.tar.gz` (180,278,899). The digests are the release's
+  companion `.sha256` files; the Ubuntu 24 archives were also hashed after download.
+- **Which one.** `host_platform()` reads `/etc/os-release`: Ubuntu 22.04 gets `ubuntu22`, Ubuntu
+  24.04 gets `ubuntu24`, and any other distro or version gets the `ubuntu24` archive with a log
+  line saying so. `python_on` stays the default.
+- **Layout.** `ovms/bin/ovms` (the same program as `ovms.exe`) and shared libraries in
+  `ovms/lib`; the Python-node module is `ovms/lib/python/pyovms.so`, which is how `python_on` is
+  detected. The archives hold absolute symlinks into the build image (`/ovms/lib/...`); the
+  extractor rewrites them to relative links and refuses any other absolute target.
+- **No bundled Python.** Unlike the Windows `python_on`, the Linux one uses the system `python3`
+  and needs `Jinja2` and `MarkupSafe` there (and `numpy` for Python nodes).
+- **Environment.** The Linux archives contain no `setupvars.sh`, so `ovms_supervisor.ovms_env`
+  mirrors what the release documents for bare-metal Ubuntu: `LD_LIBRARY_PATH` gets `ovms/lib`,
+  `PATH` gets `ovms/bin`, `PYTHONPATH` is `ovms/lib/python` when that exists, and `PYTHONHOME`
+  is left alone.
+- **Lifetime.** There is no job object; the child is started in its own session and asks the
+  kernel for a parent-death `SIGTERM` (`prctl`), so it goes with the app even if the app is
+  killed.
+- **NPU.** It needs Intel's Linux NPU driver; its device node is `/dev/accel/accel0`, and
+  `ovms_supervisor.npu_unavailable_on_host` tests for it. Without it the local model runs on
+  the CPU. The NPU numbers in this file do not apply to Linux until measured there.

@@ -42,11 +42,17 @@ async def get_json(
             httpx.AsyncClient(
                 transport=transport,
                 timeout=httpx.Timeout(timeout_s),
-                follow_redirects=True,
+                follow_redirects=False,
                 headers=headers,
             ) as http,
             http.stream("GET", url, params=params) as resp,
         ):
+            if 300 <= resp.status_code < 400:
+                raise ApiError(
+                    f"the service redirected the request (HTTP {resp.status_code}), "
+                    "which is not followed",
+                    resp.status_code,
+                )
             if resp.status_code >= 400:
                 raise ApiError(f"the service answered HTTP {resp.status_code}", resp.status_code)
             async for chunk in resp.aiter_bytes():

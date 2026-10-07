@@ -205,6 +205,26 @@ async def test_pictures_no_message_needs_are_removed(tmp_path) -> None:
         h.engine.conversation.trim(2)
         await send_with(h, "third", [])
         assert stored(h) == [second.image.file]
-    # New chat: nothing refers to the last one any more.
-    h.engine.new_chat()
-    assert stored(h) == []
+        # New chat keeps the pictures for Undo; the next message's cleanup removes them.
+        h.engine.new_chat()
+        assert stored(h) == [second.image.file]
+        assert h.engine.restore_cleared()
+        assert stored(h) == [second.image.file]
+        h.engine.new_chat()
+        await send_with(h, "after", [])
+        assert stored(h) == []
+
+
+async def test_drop_last_turn_removes_the_pictures_only_that_turn_used(tmp_path) -> None:
+    first, second = photo("a.png", (10, 200, 10)), photo("b.png", (10, 10, 200))
+    replies = [sse(text_chunks("ok", 1)) for _ in range(2)]
+    with fake_openai_server(*replies) as srv:
+        h = harness(tmp_path, srv.base_url, vision=True)
+        await send_with(h, "first", [first])
+        await send_with(h, "second", [second])
+    assert stored(h) == sorted([first.image.file, second.image.file])
+    removed = h.engine.drop_last_turn()
+    assert removed["content"] == "second"
+    assert [a["name"] for a in removed["attachments"]] == ["b.png"]
+    assert removed["attachments"][0]["kind"] == "image" and "thumb" in removed["attachments"][0]
+    assert stored(h) == [first.image.file]

@@ -69,7 +69,7 @@ def test_defaults_match_plan(paths):
     assert cfg.local.device == "NPU"
     assert cfg.local.idle_unload_minutes == 10
     assert cfg.local.max_prompt_len == 4096
-    assert cfg.local.ovms_variant == "python_on"
+    assert cfg.local.ovms_variant == config_mod.default_ovms_variant()
     assert cfg.local.ovms_version == "2026.4.0"
     assert cfg.local.extra_args == []
     assert cfg.tools.enabled == [
@@ -370,8 +370,94 @@ def test_invalid_toml_raises_and_recover_resets(paths):
         load_config(paths)
     cfg = load_config(paths, recover=True)
     assert cfg.local.device == "NPU"
-    assert paths.config_file.with_name("config.toml.bad").is_file()
+    backups = list(paths.home.glob("config.toml.*.bad"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "this is = = not toml"
     assert load_config(paths) == cfg
+
+
+def test_recovery_never_overwrites_an_earlier_backup(paths):
+    paths.home.mkdir(parents=True, exist_ok=True)
+    for text in ("first = = broken", "second = = broken", "third = = broken"):
+        paths.config_file.write_text(text, encoding="utf-8")
+        load_config(paths, recover=True)
+    saved = sorted(p.read_text(encoding="utf-8") for p in paths.home.glob("config.toml.*.bad"))
+    assert saved == ["first = = broken", "second = = broken", "third = = broken"]
+
+
+def test_only_the_newest_backups_are_kept(paths):
+    paths.home.mkdir(parents=True, exist_ok=True)
+    for i in range(config_mod.BAD_BACKUPS_KEPT + 3):
+        paths.config_file.write_text(f"bad{i} = =", encoding="utf-8")
+        load_config(paths, recover=True)
+    assert len(list(paths.home.glob("config.toml.*.bad"))) == config_mod.BAD_BACKUPS_KEPT
+
+
+def test_save_uses_a_per_process_temp_name_and_removes_it_on_error(paths, monkeypatch):
+    import os
+
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        seen.append(os.path.basename(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+    save_config(validate_config({}), paths)
+    assert seen == [f"config.toml.{os.getpid()}.tmp"]
+
+    def broken_fsync(fd):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "fsync", broken_fsync)
+    with pytest.raises(ConfigError):
+        save_config(validate_config({}), paths)
+    assert not list(paths.home.glob("*.tmp"))
+
+    monkeypatch.setattr(os, "fsync", lambda fd: None)
+
+    def deny(src, dst):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(os, "replace", deny)
+    with pytest.raises(ConfigError):
+        save_config(validate_config({}), paths)
+    assert not list(paths.home.glob("*.tmp"))
+
+
+# --- documents_dir and the bridge-readonly keys -----------------------------
+
+
+def test_documents_dir_refuses_roots_profile_and_startup(tmp_path, monkeypatch, caplog):
+    home = tmp_path / "profile"
+    appdata = home / "AppData" / "Roaming"
+    startup = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("APPDATA", str(appdata))
+    for bad in ("/", str(home), "~", str(startup), str(startup / "sub")):
+        with caplog.at_level(logging.WARNING, logger="chatforge.config"):
+            cfg = validate_config({"tools": {"documents_dir": bad}})
+        assert cfg.tools.documents_dir == "", bad
+    assert "using the default Documents folder" in caplog.text
+    fine = str(home / "Documents" / "ChatForge")
+    assert validate_config({"tools": {"documents_dir": fine}}).tools.documents_dir == fine
+    assert validate_config({"tools": {"documents_dir": ""}}).tools.documents_dir == ""
+
+
+def test_readonly_changes_drops_same_values_and_reports_changes():
+    cfg = validate_config({"tools": {"documents_dir": "/data/docs"}})
+    patch = {"tools": {"documents_dir": "/data/docs", "location": "Oslo"}}
+    kept, refused = config_mod.readonly_changes(cfg, patch)
+    assert kept == {"tools": {"location": "Oslo"}} and refused == []
+    kept, refused = config_mod.readonly_changes(
+        cfg, {"tools.block_private_addresses": False, "tools.documents_dir": "/etc"}
+    )
+    assert kept == {} and sorted(refused) == [
+        "tools.block_private_addresses",
+        "tools.documents_dir",
+    ]
 
 
 def test_boundary_values_accepted():
@@ -468,7 +554,17 @@ def test_show_on_reply_is_saved_without_a_restart(paths):
         ({"local": {"device": "GPU"}}, ["local.device"]),
         ({"local": {"max_prompt_len": 2048}}, ["local.max_prompt_len"]),
         ({"local": {"extra_args": ["--x"]}}, ["local.extra_args"]),
-        ({"local": {"ovms_variant": "python_off"}}, ["local.ovms_variant"]),
+        (
+            # the other one than the platform's default
+            {
+                "local": {
+                    "ovms_variant": "python_on"
+                    if config_mod.default_ovms_variant() == "python_off"
+                    else "python_off"
+                }
+            },
+            ["local.ovms_variant"],
+        ),
         (
             {"local": {"device": "CPU", "max_prompt_len": 1024, "extra_args": ["a"]}},
             ["local.device", "local.max_prompt_len", "local.extra_args"],

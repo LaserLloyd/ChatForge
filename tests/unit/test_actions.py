@@ -93,7 +93,9 @@ def test_overrides_hide_and_custom_actions() -> None:
     got = {a.id: a for a in actions.effective(c)}
     ids = [a.id for a in actions.effective(c)]
     assert "insight" not in ids and "translate" not in ids
-    assert ids[:3] == ["proof", "improve", "check"]
+    assert ids[:2] == ["proof", "improve"]  # the list's order: proof, improve, customs...
+    assert ids[2:4] == ["custom-haiku-this", "custom-haiku-this-2"]
+    assert ids[4] == "check"  # the built-ins the list does not name follow
     # A rename keeps the built-in instructions, hint and style.
     proof = got["proof"]
     assert (
@@ -102,14 +104,66 @@ def test_overrides_hide_and_custom_actions() -> None:
     assert proof.style == actions.STRICT and proof.hint == "Paste the text to proofread…"
     assert got["improve"].instructions == "Polish it." and got["improve"].tools is True
     assert got["improve"].style == actions.MATCH  # unset match_style keeps the built-in's
-    # Custom actions come last, with ids made from their labels (unique).
-    assert ids[-2:] == ["custom-haiku-this", "custom-haiku-this-2"]
+    # Custom actions get ids made from their labels (unique).
     assert got["custom-haiku-this"].builtin is False and got["custom-haiku-this"].style is None
     assert got["custom-haiku-this-2"].style == actions.MATCH
     assert got["custom-haiku-this"].hint == actions.CUSTOM_HINT
     assert "custom-no-instructions" not in got
     assert actions.find(c, "custom-haiku-this").label == "Haiku this"
     assert actions.find(c, "insight") is None and actions.find(c, None) is None
+
+
+def _ids(**chat) -> list[str]:
+    return [a.id for a in actions.effective(cfg(**chat))]
+
+
+def _entry(eid: str, **kw) -> dict:
+    return {"id": eid, "label": eid.title(), "instructions": "", **kw}
+
+
+def test_no_quick_actions_keeps_the_default_order() -> None:
+    assert _ids() == [a.id for a in actions.DEFAULT_ACTIONS]
+    assert "improve" not in _ids(hidden_quick_actions=["improve"])
+
+
+def test_the_list_reorders_the_built_ins() -> None:
+    default = [a.id for a in actions.DEFAULT_ACTIONS]
+    order = list(reversed(default))
+    got = actions.effective(cfg(quick_actions=[_entry(i) for i in order]))
+    assert [a.id for a in got] == order
+    # An empty `instructions` keeps the built-in's; a label is the entry's.
+    assert got[-1].instructions == actions.DEFAULT_ACTIONS[0].instructions
+    assert got[-1].label == default[0].title()
+
+
+def test_built_ins_and_customs_interleave_as_listed() -> None:
+    got = _ids(
+        quick_actions=[
+            _entry("check"),
+            {"label": "Haiku", "instructions": "Make a haiku."},
+            _entry("proof"),
+            {"id": "mine", "label": "Mine", "instructions": "Do mine."},
+        ]
+    )
+    rest = [a.id for a in actions.DEFAULT_ACTIONS if a.id not in ("check", "proof")]
+    assert got == ["check", "custom-haiku", "proof", "mine", *rest]
+
+
+def test_a_built_in_the_list_does_not_name_is_appended_in_default_order() -> None:
+    default = [a.id for a in actions.DEFAULT_ACTIONS]
+    got = _ids(quick_actions=[_entry("translate"), _entry("improve")])
+    assert got[:2] == ["translate", "improve"]
+    assert got[2:] == [i for i in default if i not in ("translate", "improve")]
+
+
+def test_hidden_still_removes_a_listed_or_unlisted_built_in() -> None:
+    got = _ids(
+        quick_actions=[_entry("translate"), _entry("improve"), _entry("proof")],
+        hidden_quick_actions=["improve", "todo"],
+    )
+    assert "improve" not in got and "todo" not in got
+    assert got[:2] == ["translate", "proof"]
+    assert len(got) == len(actions.DEFAULT_ACTIONS) - 2
 
 
 def test_match_style_false_turns_the_guard_off_for_a_built_in() -> None:
@@ -164,7 +218,7 @@ def test_quick_actions_round_trip_through_config_toml(tmp_path) -> None:
     new, _restart = update_config(base, patch, paths)
     assert "quick_actions = [" in paths.config_file.read_text(encoding="utf-8")
     again = load_config(paths)
-    assert [a.id for a in actions.effective(again)][-1] == "custom-haiku"
+    assert [a.id for a in actions.effective(again)][0] == "custom-haiku"
     assert "translate" not in [a.id for a in actions.effective(again)]
     assert again.chat.quick_actions == new.chat.quick_actions
     assert actions.find(again, "custom-haiku").instructions == "Write a haiku.\nThree lines."

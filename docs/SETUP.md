@@ -1,5 +1,7 @@
 # Setting up ChatForge on a fresh Windows machine
 
+On a Linux desktop, follow [`SETUP-LINUX.md`](SETUP-LINUX.md) instead.
+
 Everything below runs as a normal user. No step needs administrator rights on a machine that
 already has the VC++ runtime and WebView2 (both ship with Windows 11 and most software); the one
 exception is called out in step 1.
@@ -36,7 +38,9 @@ py -3.12 -m uv sync --extra dev
 ```
 
 `uv sync` creates `.venv\` and installs pywebview, pystray, httpx, pydantic-settings, keyring,
-ddgs and the dev tools (about 150 MB). `py -3.12 -m uv run python -c "import chatforge"` should
+ddgs and the dev tools (about 150 MB). `pywin32` is not part of the base install any more; add
+`--extra office` (`py -3.12 -m uv sync --extra dev --extra office`) only if you want old `.xls`
+and `.ppt` attachments converted through Microsoft Office. `py -3.12 -m uv run python -c "import chatforge"` should
 print nothing.
 
 ## 3. Install the local runtime (OpenVINO Model Server)
@@ -125,14 +129,37 @@ py -3.12 -m uv run pytest -m live_minimax -s
 ## 8. Open ChatForge with the Copilot key (optional)
 
 The Copilot key sends `Win+Shift+F23` (left Win and left Shift, then F23). Windows registers that
-combination itself, so ChatForge can't take it as its hotkey: `RegisterHotKey` fails with error
-1409 (already registered) whatever the key is set to in Settings. The Settings picker
-(Personalization > Text input > *Customize Copilot key on keyboard* > Custom) only lists
-MSIX-packaged, signed apps. ChatForge runs from `.venv` with no package identity, so it never
-appears there.
+combination itself, so ChatForge can't take it with `RegisterHotKey`: that fails with error
+1409 (already registered). The Settings picker (Personalization > Text input > *Customize
+Copilot key on keyboard* > Custom) only lists MSIX-packaged, signed apps. ChatForge runs from
+`.venv` with no package identity, so it never appears there.
 
-What works is PowerToys Keyboard Manager. It catches the key before Windows does and sends
-ChatForge's own hotkey instead:
+### Without PowerToys: the `Copilot` hotkey
+
+ChatForge can catch the key itself. In Settings > General, click **Copilot key** next to the
+hotkey field (it fills in `Copilot`) and **Save**; or set it in `config.toml`:
+
+```toml
+[ui]
+hotkey = "Copilot"
+```
+
+ChatForge then installs a low-level keyboard hook (`WH_KEYBOARD_LL`, `_CopilotHook` in
+`desktop/hotkey.py`). It watches for F23 while left Win and left Shift are down, opens the popup,
+swallows the F23 key (and only that key, never a modifier) and masks the Win key-up so the Start
+menu stays closed. The log shows `Copilot key hooked` when it is installed, or why it could not
+be. `chatforge doctor` reports it too: its Hotkey line says whether the hook can be installed
+(it installs and removes a throwaway hook). It is Windows only.
+
+**Not verified on real hardware in this release.** The logic is tested against simulated key
+events, but nobody has yet pressed a real Copilot key with it. If the key still opens Windows
+Copilot or Search, or the Start menu flashes up, set the hotkey back to `Ctrl+Alt+C` and use
+PowerToys below.
+
+### With PowerToys (the fallback)
+
+PowerToys Keyboard Manager catches the key before Windows does and sends ChatForge's own hotkey
+instead (keep `ui.hotkey` at `Ctrl+Alt+C` for this):
 
 1. Install PowerToys (per-user, about 283 MB, from Microsoft's GitHub release):
 
@@ -151,11 +178,8 @@ ChatForge's own hotkey instead:
    PowerToys isn't running.
 
 If you change ChatForge's hotkey later, change the PowerToys target to match. The remap is saved
-in `%LOCALAPPDATA%\Microsoft\PowerToys\Keyboard Manager\default.json`.
-
-Not implemented: ChatForge could catch the key itself with a `WH_KEYBOARD_LL` hook in
-`desktop/hotkey.py`. The hook would swallow F23 while Win+Shift are down, and it must mask the
-Win key-up, or the Start menu opens.
+in `%LOCALAPPDATA%\Microsoft\PowerToys\Keyboard Manager\default.json`. Do not use both at once: with the
+`Copilot` hotkey set, turn the PowerToys remap off.
 
 ## 9. Verify (optional, developers)
 

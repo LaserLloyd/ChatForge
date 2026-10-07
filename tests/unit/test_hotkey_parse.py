@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from chatforge.config import UiCfg, parse_hotkey
 from chatforge.desktop.hotkey import (
     ERROR_HOTKEY_ALREADY_REGISTERED,
     MOD_ALT,
@@ -65,3 +66,25 @@ def test_describe_error_mentions_conflict() -> None:
     assert "in use" in text
     assert "Ctrl+Alt+Space" in text
     assert "1234" in describe_error("Ctrl+Q", 1234)
+
+
+@pytest.mark.parametrize("spec", ["Copilot", "copilot", "COPILOT KEY", " Copilot  key "])
+def test_copilot_is_a_distinct_valid_value(spec: str) -> None:
+    assert parse_hotkey(spec) == ((), "Copilot")
+    assert canonical(spec) == "Copilot"
+    assert UiCfg(hotkey=spec).hotkey == "Copilot"
+
+
+@pytest.mark.parametrize("spec", ["Ctrl+Copilot", "Copilot+Space", "Copilot+", "Copilot keys"])
+def test_copilot_does_not_combine_with_anything(spec: str) -> None:
+    with pytest.raises(ValueError):
+        parse_hotkey(spec)
+
+
+def test_copilot_has_no_registerhotkey_form() -> None:
+    with pytest.raises(ValueError, match="keyboard hook"):
+        to_win32("Copilot")
+
+
+def test_describe_error_for_copilot() -> None:
+    assert describe_error("Copilot", 5) == "Could not hook the Copilot key (Windows error 5)."

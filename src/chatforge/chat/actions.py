@@ -244,9 +244,13 @@ def _slug(label: str) -> str:
 
 
 def effective(cfg: Any) -> list[QuickAction]:
-    """The quick actions in use: the built-in ones in order (an entry of
-    ``chat.quick_actions`` with a built-in's ``id`` replaces it; ``chat.hidden_quick_actions``
-    removes it), then the custom entries in config order.
+    """The quick actions in use, in the order of ``chat.quick_actions`` when it lists entries.
+
+    Every id the list names appears where the list puts it: an entry with a built-in's
+    ``id`` overrides that built-in (and a repeated id uses the last entry, at the first
+    position), other entries are custom actions, interleaved as listed. Built-ins the list
+    does not name follow in default order. ``chat.hidden_quick_actions`` removes a built-in
+    wherever it is. With no list the built-ins come in default order.
 
     An override's empty ``instructions``/``hint`` and unset ``tools``/``match_style`` keep
     the built-in's. A custom entry without instructions is skipped; one without an ``id``
@@ -255,26 +259,25 @@ def effective(cfg: Any) -> list[QuickAction]:
     entries = list(getattr(chat, "quick_actions", None) or [])
     hidden = {str(h).strip() for h in getattr(chat, "hidden_quick_actions", None) or []}
     overrides: dict[str, Any] = {}
-    custom: list[Any] = []
     for entry in entries:
         eid = str(_field(entry, "id", "") or "").strip()
         if eid in _DEFAULTS_BY_ID:
             overrides[eid] = entry
-        else:
-            custom.append(entry)
     out: list[QuickAction] = []
-    for base in DEFAULT_ACTIONS:
-        if base.id in hidden:
+    placed: set[str] = set()
+    taken = set(_DEFAULTS_BY_ID)
+    for entry in entries:
+        eid = str(_field(entry, "id", "") or "").strip()
+        if eid in _DEFAULTS_BY_ID:
+            if eid not in placed and eid not in hidden:
+                out.append(_override(_DEFAULTS_BY_ID[eid], overrides[eid]))
+            placed.add(eid)
             continue
-        entry = overrides.get(base.id)
-        out.append(base if entry is None else _override(base, entry))
-    taken = {a.id for a in DEFAULT_ACTIONS}
-    for entry in custom:
         label = " ".join(str(_field(entry, "label", "") or "").split())
         instructions = str(_field(entry, "instructions", "") or "").strip()
         if not label or not instructions:
             continue
-        aid = str(_field(entry, "id", "") or "").strip() or _slug(label)
+        aid = eid or _slug(label)
         base_id, n = aid, 2
         while aid in taken:
             aid, n = f"{base_id}-{n}", n + 1
@@ -291,6 +294,7 @@ def effective(cfg: Any) -> list[QuickAction]:
                 builtin=False,
             )
         )
+    out.extend(a for a in DEFAULT_ACTIONS if a.id not in placed and a.id not in hidden)
     return out
 
 

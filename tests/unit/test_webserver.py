@@ -94,7 +94,9 @@ def test_path_confinement(server: StaticServer, root: Path) -> None:
 
     def raw(target: str) -> int:
         with socket.create_connection((server.host, server.port), timeout=5) as sock:
-            sock.sendall(f"GET {target} HTTP/1.0\r\nHost: x\r\n\r\n".encode())
+            sock.sendall(
+                f"GET {target} HTTP/1.0\r\nHost: {server.host}:{server.port}\r\n\r\n".encode()
+            )
             data = sock.recv(4096)
         return int(data.split(b" ")[1])
 
@@ -141,3 +143,52 @@ def test_real_web_root_exists_and_serves_modules() -> None:
 def test_missing_root_refused(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         StaticServer(tmp_path / "missing")
+
+
+# --- Host header (DNS rebinding) --------------------------------------------------------
+
+
+def _raw(server: StaticServer, request: bytes) -> bytes:
+    import socket
+
+    with socket.create_connection((server.host, server.port), timeout=5) as sock:
+        sock.sendall(request)
+        chunks = []
+        while data := sock.recv(65536):
+            chunks.append(data)
+    return b"".join(chunks)
+
+
+def _status(reply: bytes) -> int:
+    return int(reply.split(b" ", 2)[1])
+
+
+def test_host_header_must_be_loopback_and_this_port(server: StaticServer) -> None:
+    def get(host: str | None, version: str = "1.1") -> int:
+        lines = [f"GET /index.html HTTP/{version}"]
+        if host is not None:
+            lines.append(f"Host: {host}")
+        lines.append("Connection: close")
+        return _status(_raw(server, ("\r\n".join(lines) + "\r\n\r\n").encode()))
+
+    assert get(f"127.0.0.1:{server.port}") == 200
+    assert get(f"LOCALHOST:{server.port}") == 200
+    assert get("evil.example") == 421
+    assert get(f"evil.example:{server.port}") == 421
+    assert get("127.0.0.1:1") == 421
+    assert get("127.0.0.1") == 421  # no port: not this server's origin
+    assert get(f"127.0.0.1.evil.example:{server.port}") == 421
+    assert get(None, "1.1") == 421
+    assert get(None, "1.0") == 200  # HTTP/1.0 may omit Host
+
+
+def test_misdirected_host_is_refused_for_every_method(server: StaticServer) -> None:
+    for method in ("GET", "HEAD", "POST", "OPTIONS"):
+        reply = _raw(
+            server,
+            f"{method} /index.html HTTP/1.1\r\nHost: evil.example\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n".encode(),
+        )
+        assert _status(reply) == 421, method
+        if method != "HEAD":
+            assert b"index.html" not in reply.split(b"\r\n\r\n", 1)[1]

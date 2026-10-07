@@ -1034,31 +1034,49 @@ test('an empty reply says so, and offers Regenerate', async () => {
 
 test('the model menu starts with the recently used models that can still be chosen', async () => {
   await fresh();
-  emit({ type: 'settings.changed', config: { chat: { ...LOCAL, recent_models: [
-    { provider: 'studioforge', model: 'qwen-27b' },
-    { provider: 'minimax', model: 'MiniMax-M3' },          // no key: not offered
-    { provider: 'local-npu', model: LOCAL.model },
-    { provider: 'local-npu', model: 'OpenVINO/Deleted-int4-ov' },   // not installed any more
-  ] } } });
-  await settle();
-  $('model-chip').click();
-  await settle();
-  const menu = $('model-menu');
-  const first = menu.querySelector('.mm-group');
-  assert.ok(first.classList.contains('mm-recent'), 'the first group is not Recently used');
-  assert.equal(first.querySelector('.mm-head').textContent, 'Recently used');
-  const items = [...first.querySelectorAll('.mm-item')];
-  assert.deepEqual(items.map((b) => [b.querySelector('.mm-name').textContent, b.querySelector('.mm-sub').textContent]),
-    [['qwen-27b', 'StudioForge'], ['Qwen2.5-1.5B-Instruct-int4-ov', 'Local (NPU)']]);
-  assert.equal(items[1].getAttribute('aria-selected'), 'true');
-  assert.equal(win.document.activeElement, items[1], 'the selected model gets the focus');
-  // The provider groups follow, unchanged.
-  const heads = [...menu.querySelectorAll('.mm-group:not(.mm-recent) .mm-head')].map((h) => h.textContent);
-  assert.deepEqual(heads, ['Local (NPU)', 'StudioForge']);
-  items[0].click();
-  await settle();
-  assert.deepEqual(S().selected, { provider: 'studioforge', model: 'qwen-27b' });
-  assert.equal(menu.hidden, true);
+  PROVIDERS[2].models.push('qwen-14b');
+  try {
+    emit({ type: 'settings.changed', config: { chat: { ...LOCAL, recent_models: [
+      { provider: 'studioforge', model: 'qwen-27b' },
+      { provider: 'minimax', model: 'MiniMax-M3' },          // no key: not offered
+      { provider: 'local-npu', model: LOCAL.model },          // in use: marked in its own group instead
+      { provider: 'studioforge', model: 'qwen-14b' },
+      { provider: 'local-npu', model: 'OpenVINO/Deleted-int4-ov' },   // not installed any more
+    ] } } });
+    await settle();
+    $('model-chip').click();
+    await settle();
+    const menu = $('model-menu');
+    const first = menu.querySelector('.mm-group');
+    assert.ok(first.classList.contains('mm-recent'), 'the first group is not Recently used');
+    assert.equal(first.querySelector('.mm-head').textContent, 'Recently used');
+    const items = [...first.querySelectorAll('.mm-item')];
+    assert.deepEqual(items.map((b) => [b.querySelector('.mm-name').textContent, b.querySelector('.mm-sub').textContent]),
+      [['qwen-27b', 'StudioForge'], ['qwen-14b', 'StudioForge']]);
+    const checked = menu.querySelector('.mm-item[aria-checked="true"]');
+    assert.equal(checked.dataset.model, LOCAL.model);
+    assert.equal(win.document.activeElement, checked, 'the selected model gets the focus');
+    // The provider groups follow, unchanged.
+    const heads = [...menu.querySelectorAll('.mm-group:not(.mm-recent) .mm-head')].map((h) => h.textContent);
+    assert.deepEqual(heads, ['Local (NPU)', 'StudioForge']);
+    items[0].click();
+    await settle();
+    assert.deepEqual(S().selected, { provider: 'studioforge', model: 'qwen-27b' });
+    assert.equal(menu.hidden, true);
+
+    // One other model is not a section: it is in its provider's group anyway.
+    emit({ type: 'settings.changed', config: { chat: { ...LOCAL, recent_models: [
+      { provider: 'studioforge', model: 'qwen-27b' }, { provider: 'local-npu', model: LOCAL.model },
+    ] } } });
+    await settle();
+    $('model-chip').click();
+    await settle();
+    assert.equal(menu.querySelector('.mm-recent'), null, 'a Recently used list of one is noise');
+    $('model-chip').click();
+  } finally {
+    PROVIDERS[2].models.pop();
+    await settle();
+  }
 });
 
 test('no Recently used section before any model was used', async () => {
@@ -1084,7 +1102,15 @@ test('the status line says when a model compiles in the background or runs off t
     unload_at: Date.now() / 1000 + 600, background: false,
     device_fallback: { from: 'NPU', to: 'GPU', reason: 'This model gives wrong output on the NPU.' } });
   await settle();
-  assert.match($('status-text').textContent, /^Unloads in 10 min · on GPU$/);
+  // Calm while ready: no row for a countdown of minutes; the chip's title has it, and the device.
+  assert.equal($('status-line').hidden, true);
+  assert.match($('model-chip').title, /Unloads in 10 min\. Runs on GPU instead of NPU: This model gives wrong output/);
+  emit({ type: 'runtime.status', state: 'ready', model_id: LOCAL.model, device: 'GPU', idle_timeout_s: 600,
+    unload_at: Date.now() / 1000 + 30, background: false,
+    device_fallback: { from: 'NPU', to: 'GPU', reason: 'This model gives wrong output on the NPU.' } });
+  await settle();
+  assert.equal($('status-line').hidden, false, 'the last minute before the unload is shown');
+  assert.match($('status-text').textContent, /^Unloads in (?:29|30) s · on GPU$/);
   assert.match($('status-line').title, /Runs on GPU instead of NPU: This model gives wrong output/);
   emit({ type: 'runtime.status', state: 'ready', model_id: LOCAL.model, device: 'NPU', idle_timeout_s: 0,
     unload_at: null, background: false, device_fallback: null });
@@ -1392,3 +1418,483 @@ test('Clear chat sits in the composer footer as a labelled ghost button, not in 
   assert.ok(document.querySelector('.hdr .model-chip'));
 });
 
+
+// ------------------------------------------------- popup: shortcuts, undo, edit, copy ----
+
+const api = win.pywebview.api;
+const fail = (code, message) => ({ ok: false, error: { code, message, hint: '', action: null } });
+let dropReply = fail('empty', 'There is no message to edit.');
+let undoReply = fail('nothing_to_undo', 'There is nothing to bring back.');
+api.open_settings = async () => { calls.push(['open_settings']); return ok(); };
+api.open_logs_folder = async () => { calls.push(['open_logs_folder']); return ok({ path: 'C:\\logs' }); };
+api.open_external = async (url) => {
+  calls.push(['open_external', url]);
+  return /^(?:https?:\/\/|mailto:)/i.test(url) ? ok() : fail('bad_request', 'Only http(s) and mailto: links can be opened.');
+};
+api.drop_last_turn = async () => { calls.push(['drop_last_turn']); return dropReply; };
+api.undo_clear = async () => { calls.push(['undo_clear']); return undoReply; };
+
+const clipboardWrites = [];   // ['text', text] or ['rich', {html, text}]
+const blobText = (blob) => new Promise((resolve) => {
+  const fr = new win.FileReader();
+  fr.onload = () => resolve(String(fr.result));
+  fr.readAsText(blob);
+});
+/** navigator.clipboard as WebView2 has it; `rich: false` is a browser without ClipboardItem. */
+function stubClipboard({ rich = true } = {}) {
+  clipboardWrites.length = 0;
+  const clip = {
+    writeText: async (text) => { clipboardWrites.push(['text', text]); },
+    ...(rich ? { write: async (items) => {
+      const it = items[0].items;
+      clipboardWrites.push(['rich', { html: await blobText(it['text/html']), text: await blobText(it['text/plain']) }]);
+    } } : {}),
+  };
+  Object.defineProperty(win.navigator, 'clipboard', { value: clip, configurable: true });
+  if (rich) win.ClipboardItem = class { constructor(items) { this.items = items; } };
+  else delete win.ClipboardItem;
+}
+const toastParts = () => ({ text: $('toast').hidden ? '' : $('toast').childNodes[0]?.textContent ?? '', action: $('toast').hidden ? null : $('toast').querySelector('.toast-act') });
+
+test('the attachment list has room for three rows and scrolls the newest chip into view', async () => {
+  const css = readFileSync(join(STATIC, 'css', 'app.css'), 'utf8');
+  const px = Number(/\.attach-list \{[^}]*max-height: (\d+)px/.exec(css)[1]);
+  assert.ok(px >= 3 * 28 + 2 * 6, `max-height ${px}px clips the third row of 28px chips`);
+  await fresh();
+  const list = $('attach-list');
+  Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 250 });
+  try {
+    await attachViaDialog([view('a1', 'one.txt'), view('a2', 'two.txt'), view('a3', 'three.txt')]);
+    assert.deepEqual(chipNames(list), ['one.txt', 'two.txt', 'three.txt']);
+    assert.equal(list.scrollTop, 250, 'the list is not scrolled to the end');
+  } finally {
+    delete list.scrollHeight;
+  }
+});
+
+test('shortcuts: Ctrl+N, Ctrl+L, /, Ctrl+, Ctrl+M and Ctrl+Shift+C, named in the titles', async () => {
+  await fresh();
+  stubClipboard();
+  win.__chat.renderConversation(clone(SNAPSHOT));
+  const body = win.document.body;
+  const down = (target, k, extra = {}) => {
+    const e = new win.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...extra });
+    target.dispatchEvent(e);
+    return e;
+  };
+  assert.match($('btn-settings').title, /\(Ctrl\+,\)/);
+  assert.match($('btn-new').title, /\(Ctrl\+N\)/);
+  assert.match($('model-chip').title, /\(Ctrl\+M\)/);
+  assert.match($('stop').title, /Esc/);
+  assert.match(lastAssistant().querySelector('.act-copy-reply').title, /Ctrl\+Shift\+C/);
+
+  $('input').blur();
+  assert.ok(down(body, 'l', { ctrlKey: true }).defaultPrevented);
+  assert.equal(win.document.activeElement, $('input'));
+  $('input').blur();
+  assert.ok(down(body, '/').defaultPrevented);
+  assert.equal(win.document.activeElement, $('input'));
+  assert.equal(down($('input'), '/').defaultPrevented, false, 'a slash typed in the box is a slash');
+
+  down(body, ',', { ctrlKey: true });
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'open_settings'), [['open_settings']]);
+
+  down(body, 'm', { ctrlKey: true });
+  assert.equal(S().menuOpen, true);
+  assert.equal($('model-menu').hidden, false);
+  down(win.document.activeElement, 'Escape');
+  assert.equal(S().menuOpen, false);
+
+  down(body, 'C', { ctrlKey: true, shiftKey: true });
+  await settle();
+  assert.equal(clipboardWrites.length, 1);
+  assert.equal(clipboardWrites[0][0], 'rich');
+  assert.equal(clipboardWrites[0][1].text, 'Partial answer');
+  assert.match(clipboardWrites[0][1].html, /Partial answer/);
+  assert.equal(toastParts().text, 'Reply copied');
+
+  down(body, 'n', { ctrlKey: true });
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'new_chat'), [['new_chat']]);
+  assert.equal($('messages').querySelector('.msg'), null);
+});
+
+test('Esc stops a running reply first and hides on the second press; Enter says it is still replying', async () => {
+  await fresh();
+  await sendAs('tell me a story', 'req_e1');
+  const hides = () => calls.filter((c) => c[0] === 'hide_popup').length;
+  $('input').value = 'and then?';
+  press($('input'), 'Enter');
+  assert.equal(toastParts().text, 'Still replying. Press Esc to stop.');
+  assert.equal(sends.length, 0, 'Enter sent a second message while a reply ran');
+  assert.equal($('input').value, 'and then?', 'the draft stays');
+
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'stop_generation'), [['stop_generation', 'req_e1']]);
+  assert.equal(hides(), 0, 'the first Esc hid the popup instead of stopping');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await settle();
+  assert.equal(hides(), 1, 'the second Esc hides');
+  emit({ type: 'chat.error', request_id: 'req_e1', code: 'cancelled', message: 'Stopped.' });
+  await settle();
+  assert.ok(composerIdle());
+  $('input').value = '';
+});
+
+test('Clear chat: a toast with Undo for six seconds that brings the chat back; an empty chat clears silently', async () => {
+  await fresh();
+  const clear = async () => { $('btn-new').click(); await settle(); };
+  await clear();
+  assert.equal(toastParts().action, null, 'clearing an empty chat is not worth a toast');
+
+  win.__chat.renderConversation(clone(SNAPSHOT));
+  undoReply = ok({ conversation: clone(SNAPSHOT) });
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await clear();
+    assert.equal($('messages').querySelector('.msg'), null);
+    assert.equal(toastParts().text, 'Chat cleared');
+    assert.equal(toastParts().action.textContent, 'Undo');
+    mock.timers.tick(5900);
+    assert.equal($('toast').hidden, false, 'the toast went before six seconds');
+    mock.timers.tick(200);
+    assert.equal($('toast').hidden, true, 'the toast stays longer than six seconds');
+  } finally {
+    mock.timers.reset();
+  }
+
+  win.__chat.renderConversation(clone(SNAPSHOT));
+  await clear();
+  toastParts().action.click();
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'undo_clear'), [['undo_clear']]);
+  assert.equal(userRows().length, 2, 'the conversation did not come back');
+  assert.equal($('toast').hidden, true);
+  assert.equal(win.document.activeElement, $('input'));
+
+  // Sending ends the chance: the toast goes with it.
+  await clear();
+  assert.ok(toastParts().action);
+  await sendAs('new start', 'req_u1');
+  assert.equal($('toast').hidden, true);
+  emit({ type: 'chat.error', request_id: 'req_u1', code: 'cancelled', message: 'Stopped.' });
+  await settle();
+
+  // A refusal is said, not hidden.
+  win.__chat.renderConversation(clone(SNAPSHOT));
+  undoReply = fail('nothing_to_undo', 'There is nothing to bring back.');
+  await clear();
+  toastParts().action.click();
+  await settle();
+  assert.equal(toastParts().text, 'There is nothing to bring back.');
+
+  const css = readFileSync(join(STATIC, 'css', 'app.css'), 'utf8');
+  assert.match(css, /\.btn-clear, \.btn-clear:hover:not\(:disabled\) \{ color: var\(--text-secondary\); \}/, 'neutral at rest');
+  assert.match(css, /\.btn-clear:hover:not\(:disabled\), \.btn-clear:focus-visible:not\(:disabled\) \{ color: var\(--warning-text\); \}/);
+});
+
+test('Edit and resend: Up in an empty box and Edit take the last message back into the composer', async () => {
+  await fresh();
+  stubClipboard();
+  const convo = () => [
+    { role: 'user', content: 'first', ts: 1 },
+    { role: 'assistant', content: 'One.', ts: 2, model: LOCAL.model },
+    { role: 'user', content: 'Fix teh text', ts: 3, action: { id: 'proof', label: 'Proof this' },
+      attachments: [{ name: 'notes.md', kind: 'text', chars: 10, truncated: false }] },
+    { role: 'assistant', content: 'Done.', ts: 4, model: LOCAL.model },
+  ];
+  const edits = () => [...$('messages').querySelectorAll('.act-edit')].filter((b) => !b.hidden);
+  win.__chat.renderConversation(convo());
+  assert.equal(edits().length, 1, 'Edit is on the last message only');
+  assert.equal(edits()[0].closest('.msg.user').querySelector('.bubble').textContent, 'Fix teh text');
+  const copies = userRows().map((r) => r.querySelector('.msg-act-btn:not(.act-edit)'));
+  assert.equal(copies.length, 2, 'Copy is on every message of yours');
+  copies[1].click();
+  await settle();
+  assert.deepEqual(clipboardWrites, [['text', 'Fix teh text']]);
+
+  // Up with something typed is just a cursor key.
+  $('input').value = 'x';
+  press($('input'), 'ArrowUp');
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'drop_last_turn').length, 0);
+  // Edit never overwrites a draft.
+  edits()[0].click();
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'drop_last_turn').length, 0);
+  assert.equal($('input').value, 'x');
+  $('input').value = '';
+
+  // The attachments are gone from the bridge: the popup says so.
+  dropReply = ok({ removed: { content: 'Fix teh text', attachments: [{ name: 'notes.md', kind: 'text', chars: 10, truncated: false }], action: { id: 'proof', label: 'Proof this' } },
+    conversation: convo().slice(0, 2) });
+  const e = new win.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
+  $('input').dispatchEvent(e);
+  await settle();
+  assert.ok(e.defaultPrevented);
+  assert.deepEqual(calls.filter((c) => c[0] === 'drop_last_turn'), [['drop_last_turn']]);
+  assert.equal($('input').value, 'Fix teh text');
+  assert.equal(pill().querySelector('.action-pill-label').textContent, 'Proof this');
+  assert.equal(toastParts().text, 'Attachments were removed, add them again');
+  assert.equal(userRows().length, 1, 'the conversation is the one the bridge returned');
+  assert.equal(win.document.activeElement, $('input'));
+  pill().querySelector('.action-pill-remove').click();
+  $('input').value = '';
+
+  // Attachments the bridge still holds (they carry ids) come back as chips.
+  win.__chat.renderConversation(convo());
+  dropReply = ok({ removed: { content: 'Fix teh text', action: null,
+    attachments: [{ id: 'keep1', name: 'notes.md', kind: 'text', chars: 10, size: 100, truncated: false }] },
+  conversation: convo().slice(0, 2) });
+  edits()[0].click();
+  await settle();
+  assert.equal($('input').value, 'Fix teh text');
+  assert.deepEqual(chipNames($('attach-list')), ['notes.md']);
+  assert.equal(pill(), null);
+  $('attach-list').querySelector('.att-remove').click();
+  $('input').value = '';
+
+  // The bridge refuses while a reply streams or when there is nothing: said in a toast.
+  win.__chat.renderConversation(convo());
+  dropReply = fail('busy', 'Wait for the reply to finish, or press Stop.');
+  press($('input'), 'ArrowUp');
+  await settle();
+  assert.equal(toastParts().text, 'Wait for the reply to finish, or press Stop.');
+  assert.equal(userRows().length, 2);
+  // While a reply runs the popup does not even ask.
+  await sendAs('another', 'req_ed1');
+  assert.equal(edits().length, 0, 'Edit is offered while a reply runs');
+  const before = calls.filter((c) => c[0] === 'drop_last_turn').length;
+  press($('input'), 'ArrowUp');
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'drop_last_turn').length, before);
+  emit({ type: 'chat.error', request_id: 'req_ed1', code: 'cancelled', message: 'Stopped.' });
+  await settle();
+});
+
+test('Copy puts the rendered reply (HTML) and its Markdown on the clipboard; Copy as Markdown only the Markdown', async () => {
+  await fresh();
+  stubClipboard();
+  const md = 'Hello **world**\n\n```js\nlet a = 1;\n```\n\nSee [docs](https://example.com/x).';
+  await answered('q', 'req_c1', md);
+  const row = lastAssistant();
+  assert.ok(row.querySelector('.code-block-copy'), 'the fixture has a code block with its Copy button');
+  row.querySelector('.act-copy-reply').click();
+  await settle();
+  assert.equal(clipboardWrites.length, 1);
+  const [kind, got] = clipboardWrites[0];
+  assert.equal(kind, 'rich');
+  assert.equal(got.text, md);
+  assert.match(got.html, /<strong>world<\/strong>/);
+  assert.match(got.html, /let a/);
+  assert.doesNotMatch(got.html, /code-block-copy|<button|tool-chip/, 'the chrome went onto the clipboard');
+  assert.equal(win.document.activeElement, $('input'), 'the focus fell to the body after Copy');
+  assert.equal(row.querySelector('.act-copy-reply').classList.contains('ok'), true);
+
+  row.querySelector('.act-copy-md').click();
+  await settle();
+  assert.deepEqual(clipboardWrites[1], ['text', md]);
+
+  stubClipboard({ rich: false });   // no ClipboardItem: plain text
+  row.querySelector('.act-copy-reply').click();
+  await settle();
+  assert.deepEqual(clipboardWrites, [['text', md]]);
+
+  // Links say where they go, and open in the default app with a word about it.
+  const link = row.querySelector('a[href]');
+  assert.equal(link.title, 'https://example.com/x');
+  link.click();
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'open_external'), [['open_external', 'https://example.com/x']]);
+  assert.equal(toastParts().text, 'Opened in your browser');
+  const mail = win.document.createElement('a');
+  mail.href = 'mailto:me@example.com';
+  row.querySelector('.bubble').append(mail);
+  mail.click();
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'open_external').at(-1)[1], 'mailto:me@example.com');
+  const odd = win.document.createElement('a');
+  odd.href = 'ftp://example.com/file';
+  row.querySelector('.bubble').append(odd);
+  odd.click();
+  await settle();
+  assert.equal(calls.filter((c) => c[0] === 'open_external').length, 2, 'an unsupported link reached the bridge');
+  assert.equal(toastParts().text, 'That link type is not supported');
+});
+
+test('after Regenerate and Retry the focus is on Stop, never on the page body', async () => {
+  await fresh();
+  await answered('q', 'req_f10', 'An answer.');
+  visibleRegen()[0].focus();
+  await regenerateAs('req_f11');
+  assert.equal(win.document.activeElement, $('stop'));
+  emit({ type: 'chat.start', request_id: 'req_f11', provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.error', request_id: 'req_f11', code: 'server', message: 'Boom.', action: 'retry' });
+  await settle();
+  const retryBtn = [...$('messages').querySelectorAll('.msg.error .ui-btn')].find((b) => b.textContent === 'Retry');
+  retryBtn.focus();
+  retryBtn.click();
+  await settle();
+  assert.equal(S().busy, true);
+  assert.equal(win.document.activeElement, $('stop'));
+  emit({ type: 'chat.error', request_id: 'req_f11', code: 'cancelled', message: 'Stopped.' });
+  await settle();
+});
+
+test('an error row offers Open logs and Copy details next to Retry', async () => {
+  await fresh();
+  stubClipboard();
+  await sendAs('hello', 'req_x1');
+  emit({ type: 'chat.start', request_id: 'req_x1', provider: 'local-npu', model: LOCAL.model });
+  emit({ type: 'chat.error', request_id: 'req_x1', code: 'server', message: 'The model stopped answering.', hint: 'Try again.', action: 'retry' });
+  await settle();
+  const row = $('messages').querySelector('.msg.error');
+  const labels = [...row.querySelectorAll('.err-actions .ui-btn')].map((b) => b.textContent);
+  assert.deepEqual(labels, ['Retry', 'Open logs', 'Copy details']);
+  assert.doesNotMatch(row.textContent, /See the logs/);
+  [...row.querySelectorAll('.ui-btn')].find((b) => b.textContent === 'Open logs').click();
+  await settle();
+  assert.deepEqual(calls.filter((c) => c[0] === 'open_logs_folder'), [['open_logs_folder']]);
+  [...row.querySelectorAll('.ui-btn')].find((b) => b.textContent === 'Copy details').click();
+  await settle();
+  assert.equal(clipboardWrites[0][0], 'text');
+  assert.match(clipboardWrites[0][1], /The model stopped answering\.\nTry again\.\nCode: server\nModel: Local \(NPU\) \/ OpenVINO\/Qwen2\.5-1\.5B-Instruct-int4-ov\nTime: /);
+  assert.equal(toastParts().text, 'Details copied');
+  $('messages').querySelector('.msg.error').remove();
+});
+
+test('the model menu is a menu of radio items with aria-checked, and the chip shows the model alone', async () => {
+  await fresh();
+  const chip = $('model-chip');
+  assert.equal(chip.getAttribute('aria-haspopup'), 'menu');
+  assert.equal($('model-menu').getAttribute('role'), 'menu');
+  assert.equal($('chip-label').textContent, 'Qwen2.5-1.5B', 'the chip shows the model without its build suffix');
+  assert.match(chip.title, /^Local \(NPU\) · Qwen2\.5-1\.5B-Instruct-int4-ov \(/, 'the title keeps the provider and the full id');
+  assert.equal(S().selected.model, LOCAL.model, 'the data was shortened');
+
+  chip.click();
+  await settle();
+  const menu = $('model-menu');
+  const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
+  assert.equal(radios.length, 2);
+  assert.equal(menu.querySelectorAll('[role="option"]').length, 0);
+  assert.deepEqual(radios.map((b) => b.getAttribute('aria-checked')), ['true', 'false']);
+  assert.equal(radios[0].querySelector('.mm-name').textContent, 'Qwen2.5-1.5B-Instruct-int4-ov', 'the menu keeps full names');
+  assert.equal(menu.textContent.includes('✓'), false, 'a hidden check mark is still text for a screen reader');
+  assert.equal(win.document.activeElement, radios[0]);
+  press(menu, 'ArrowDown');
+  assert.equal(win.document.activeElement, radios[1]);
+  press(win.document.activeElement, 'Escape');
+  assert.equal(menu.hidden, true);
+
+  chip.click();
+  await settle();
+  menu.querySelector('[data-model="qwen-27b"]').click();
+  await settle();
+  assert.equal($('chip-label').textContent, 'qwen-27b');
+  assert.match(chip.title, /^StudioForge · qwen-27b/);
+  await fresh();
+});
+
+test('a long model list gets a filter box', async () => {
+  await fresh();
+  const extra = Array.from({ length: 9 }, (_, i) => `extra-model-${i}`);
+  PROVIDERS[2].models.push(...extra);
+  try {
+    emit({ type: 'settings.changed', config: { chat: { ...LOCAL } } });
+    await settle();
+    $('model-chip').click();
+    await settle();
+    const box = $('model-menu').querySelector('.mm-filter');
+    assert.ok(box, 'ten models and no filter');
+    box.value = 'extra-model-3';
+    box.dispatchEvent(new win.Event('input', { bubbles: true }));
+    const shown = [...$('model-menu').querySelectorAll('.mm-item[data-model]')].filter((b) => !b.hidden);
+    assert.deepEqual(shown.map((b) => b.dataset.model), ['extra-model-3']);
+    $('model-chip').click();
+  } finally {
+    PROVIDERS[2].models.length -= extra.length;
+    emit({ type: 'settings.changed', config: { chat: { ...LOCAL } } });
+    await settle();
+  }
+});
+
+test('popup.shown closes a model or quick-actions menu left open, before it focuses the box', async () => {
+  await fresh();
+  $('model-chip').click();
+  await settle();
+  assert.equal(S().menuOpen, true);
+  emit({ type: 'popup.shown' });
+  await settle();
+  assert.equal($('model-menu').hidden, true);
+  assert.equal($('model-chip').getAttribute('aria-expanded'), 'false');
+  assert.equal(win.document.activeElement, $('input'));
+
+  $('quick').click();
+  assert.equal($('quick-menu').hidden, false);
+  emit({ type: 'popup.shown' });
+  await settle();
+  assert.equal($('quick-menu').hidden, true);
+  assert.equal($('quick').getAttribute('aria-expanded'), 'false');
+  assert.equal(win.document.activeElement, $('input'));
+});
+
+test('a finished reply is announced with its first sentence and is a Tab stop; the quick menu pins its footer', async () => {
+  await fresh();
+  await answered('q', 'req_a1', 'The meeting is on Friday. Bring the notes.');
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal($('announcer').textContent, 'Reply ready. The meeting is on Friday.');
+  const row = lastAssistant();
+  assert.equal(row.tabIndex, 0);
+  assert.equal(row.getAttribute('aria-label'), 'Latest reply');
+  await answered('q2', 'req_a2', 'Second.');
+  assert.equal(row.hasAttribute('tabindex'), false, 'only the latest reply is a Tab stop');
+  assert.equal(lastAssistant().tabIndex, 0);
+
+  $('quick').click();
+  const menu = $('quick-menu');
+  const foot = menu.querySelector('.qm-foot .qm-edit');
+  assert.ok(foot, 'Edit quick actions… is not in a footer outside the scrolling list');
+  assert.equal(menu.querySelector('.qm-scroll .qm-edit'), null);
+  assert.ok(menu.querySelector('.qm-body .qm-fade'));
+  press(menu, 'Escape');
+});
+
+test('a paste that goes over the limit is kept and offers Attach as text; the counter says how far over', async () => {
+  await fresh();
+  const input = $('input');
+  const big = 'word '.repeat(1000);   // 5000 characters, limit 4000
+  const paste = new win.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, 'clipboardData', { value: { getData: (t) => (t === 'text/plain' ? big : ''), files: [], items: [] } });
+  input.value = 'intro ';
+  input.setSelectionRange(6, 6);
+  input.dispatchEvent(paste);
+  assert.equal(paste.defaultPrevented, false, 'the paste was dropped');
+  assert.equal(toastParts().text, 'That paste is over the 4,000 character limit');
+  assert.equal(toastParts().action.textContent, 'Attach as text');
+  // The browser inserts it...
+  input.value = `intro ${big}`;
+  input.dispatchEvent(new win.Event('input'));
+  assert.equal($('char-over').hidden, false);
+  assert.equal($('char-over').textContent, `${(6 + 5000 - 4000).toLocaleString()} characters over the limit`);
+  assert.equal($('send').disabled, true);
+  // ...and Attach as text moves it into pasted-text.txt.
+  toastParts().action.click();
+  await settle();
+  assert.equal(input.value, 'intro ');
+  assert.equal($('char-over').hidden, true);
+  assert.equal(datas.length, 1);
+  assert.equal(datas[0].name, 'pasted-text.txt');
+  datas.shift().resolve(ok({ attachments: [view('pt1', 'pasted-text.txt', { chars: 5000 })], errors: [] }));
+  await settle();
+  assert.deepEqual(chipNames($('attach-list')), ['pasted-text.txt']);
+
+  // A paste that fits is left alone.
+  const small = new win.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(small, 'clipboardData', { value: { getData: (t) => (t === 'text/plain' ? 'short' : ''), files: [], items: [] } });
+  $('toast').hidden = true;
+  input.dispatchEvent(small);
+  assert.equal($('toast').hidden, true);
+});

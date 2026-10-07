@@ -39,6 +39,7 @@ from typing import Any, Final, Literal, cast
 
 import httpx
 
+from chatforge.logging_setup import register_secret
 from chatforge.models import diskspace
 from chatforge.models.hf_search import (
     DEFAULT_HF_ENDPOINT,
@@ -78,6 +79,9 @@ _STATE_SCHEMA: Final = 1
 
 #: PLAN WS4: refuse unless free space >= total + 2 GB.
 FREE_SPACE_MARGIN_BYTES: Final = 2 * 1024**3
+#: Files with these endings are code, not model data: a model repository is downloaded without
+#: them, so nothing in it can later be run by a loader or a double-click.
+SKIPPED_SUFFIXES: Final = (".py", ".pyc", ".sh", ".bat", ".ps1")
 
 _CONTENT_RANGE_RE: Final = re.compile(
     r"\Abytes\s+(?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+|\*)\Z", re.I
@@ -512,6 +516,7 @@ class Downloader:
         self._hf = hf
         self._endpoint = endpoint.rstrip("/")
         self._token = token
+        register_secret(token)  # scrubbed from every log line, whatever carries it
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             # No overall timeout: a 2 GB file can legitimately stream for a long
@@ -722,6 +727,16 @@ class Downloader:
         meta = await self._hf.repo_meta(repo)
         listing = await self._hf.repo_files(repo)
         wanted = [f for f in listing if not any(p.startswith(".") for p in f.path.split("/"))]
+        skipped = [f.path for f in wanted if f.path.lower().endswith(SKIPPED_SUFFIXES)]
+        if skipped:
+            wanted = [f for f in wanted if f.path not in skipped]
+            shown = ", ".join(skipped[:5]) + (", ..." if len(skipped) > 5 else "")
+            log.info(
+                "downloader.skipped_code repo=%s files=%d (%s): scripts are never downloaded",
+                repo,
+                len(skipped),
+                shown,
+            )
         if not wanted:
             raise ModelError(f"{repo} has no files to download", code="empty_repo")
 

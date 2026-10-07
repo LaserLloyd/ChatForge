@@ -180,3 +180,45 @@ def test_first_time():
     assert first_time("k", 2) is True
     reset_first_time()
     assert first_time("k", 1) is True
+
+
+def test_exception_text_with_a_registered_key_is_scrubbed_in_the_file_log(log_dir):
+    register_secret(SECRET)
+    try:
+        raise RuntimeError(f"request failed: Authorization sent {SECRET} to host")
+    except RuntimeError:
+        logging.getLogger("thirdparty").exception("call failed")
+    try:
+        raise ValueError(f"structlog path {SECRET}")
+    except ValueError:
+        get_logger("test").exception("structlog call failed")
+    text = _log_text(log_dir)
+    assert "call failed" in text and "Traceback" in text
+    assert "request failed" in text and "structlog path" in text
+    assert SECRET not in text
+
+
+def test_cookie_and_other_header_keys_are_redacted(log_dir):
+    get_logger("test").info(
+        "headers",
+        headers={
+            "Cookie": "session=abc123def456",
+            "Set-Cookie": "id=zzz999yyy888",
+            "x-goog-api-key": "goog-key-123456",
+            "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+            "Accept": "text/html",
+        },
+    )
+    text = _log_text(log_dir)
+    for leaked in ("abc123def456", "zzz999yyy888", "goog-key-123456", "dXNlcjpwYXNz"):
+        assert leaked not in text
+    assert "text/html" in text
+
+
+def test_a_key_read_from_the_keyring_is_registered_for_redaction(fake_keyring, log_dir):
+    from chatforge import secrets as secrets_mod
+
+    fake_keyring.set_password("ChatForge", "acme", "kr-secret-value-777")
+    assert secrets_mod._keyring_get("acme") == "kr-secret-value-777"  # noqa: SLF001
+    logging.getLogger("thirdparty").warning("oops kr-secret-value-777")
+    assert "kr-secret-value-777" not in _log_text(log_dir)

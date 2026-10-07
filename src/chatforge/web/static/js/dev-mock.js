@@ -273,6 +273,18 @@ function keyStatus(pid) {
   };
 }
 
+/** Bridge contract: the stored key is deleted when a provider's base URL host or
+ *  api_key_env changes (it was saved for the old address). True when one was removed. */
+function dropKeyIfMoved(id, before, after) {
+  if (!before || !after || !S.keySaved[id]) return false;
+  const host = (u) => { try { return new URL(String(u || '')).host.toLowerCase(); } catch { return String(u || ''); } };
+  if (host(before.base_url) === host(after.base_url) && (before.api_key_env || null) === (after.api_key_env || null)) return false;
+  delete S.keySaved[id];
+  const st = keyStatus(id);
+  emit({ type: 'key.status', provider_id: id, source: st.source, env_name: st.env_name });
+  return true;
+}
+
 /** ProviderSpec.vision_for(): what the provider reported for the model, else whether it
  *  matches one of vision_models (shell-style patterns, any case). */
 function visionFor(spec, model) {
@@ -352,7 +364,13 @@ function effectiveActions() {
   const hidden = new Set(S.config.chat.hidden_quick_actions || []);
   const builtin = new Set(QUICK_ACTIONS.map((a) => a.id));
   const out = [];
-  for (const base of QUICK_ACTIONS) {
+  // Settings' reorder buttons write every built-in into chat.quick_actions in the order shown;
+  // when they are all there, that order wins over the built-in one.
+  const shown = QUICK_ACTIONS.filter((a) => !hidden.has(a.id));
+  const listed = entries.map((x) => x && x.id).filter((id) => shown.some((a) => a.id === id));
+  const ordered = listed.length === shown.length && shown.length > 1
+    ? listed.map((id) => shown.find((a) => a.id === id)) : shown;
+  for (const base of ordered) {
     if (hidden.has(base.id)) continue;
     const e = entries.find((x) => x && x.id === base.id);
     out.push({
@@ -1215,6 +1233,7 @@ function makeApi() {
         conversation: conversationItems(),
         limits: { max_prompt_chars: S.config.chat.max_prompt_chars },
         theme: S.config.ui.theme,
+        recommended_model: 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov',
       });
     },
 
@@ -1249,6 +1268,7 @@ function makeApi() {
       // expanded prompt; the popup never does).
       if (action) { user.action = { id: action.id, label: action.label }; req.action = action; }
       S.conversation.push(user);
+      S.cleared = null;   // sending ends what undo_clear could bring back
       if (rememberModel(S.config.chat.provider, S.config.chat.model)) emit({ type: 'settings.changed', config: uiConfig() });
       persist();
       startChat(text, req);
@@ -1351,11 +1371,37 @@ function makeApi() {
     },
 
     async new_chat() {
+      // Kept for undo_clear until something is sent (the bridge's contract).
+      S.cleared = S.conversation.length ? { conversation: S.conversation, contextStartTs: S.contextStartTs } : null;
       S.conversation = []; S.contextStartTs = null;
       // Clear chat also puts the popup back at its default size (reset_popup_size).
       S.config.ui = { ...S.config.ui, width: DEFAULT_CONFIG.ui.width, height: DEFAULT_CONFIG.ui.height };
       persist();
       return ok();
+    },
+
+    // Bridge contract: bring back what the last new_chat cleared, if nothing was sent since.
+    async undo_clear() {
+      if (!S.cleared || S.conversation.length) return fail('nothing_to_undo', 'There is nothing to bring back.');
+      S.conversation = S.cleared.conversation; S.contextStartTs = S.cleared.contextStartTs; S.cleared = null;
+      persist();
+      return ok({ conversation: conversationItems() });
+    },
+
+    // Bridge contract: remove the last user message and everything after it, and hand it
+    // back for editing. `attachments` are the conversation's view of the files (no ids: the
+    // pending files were released when the reply finished, so the popup asks to add them again).
+    async drop_last_turn() {
+      if (requests.size) return fail('busy', 'Wait for the reply to finish, or press Stop.');
+      let at = S.conversation.length - 1;
+      while (at >= 0 && S.conversation[at].role !== 'user') at -= 1;
+      if (at < 0) return fail('empty', 'There is no message to edit.');
+      const [user] = S.conversation.splice(at);
+      persist();
+      return ok({
+        removed: { content: user.content || '', attachments: clone(user.attachments || []), action: user.action ? clone(user.action) : null },
+        conversation: conversationItems(),
+      });
     },
 
     async select_model(provider_id, model_id) {
@@ -1401,7 +1447,7 @@ function makeApi() {
       return ok();
     },
     async open_external(url) {
-      if (!/^https?:\/\//i.test(String(url))) return fail('bad_request', 'Only http(s) links can be opened.');
+      if (!/^(?:https?:\/\/|mailto:)/i.test(String(url))) return fail('bad_request', 'Only http(s) and mailto: links can be opened.');
       try { window.open(url, '_blank', 'noopener'); } catch { /* popup blocked */ }
       return ok();
     },
@@ -1512,11 +1558,15 @@ function makeApi() {
         const [a, b] = key.split('.');
         if (JSON.stringify(S.config[a][b]) !== JSON.stringify(next[a][b])) restart.push(key);
       }
+      const before = S.config.providers;
       S.config = next;
+      let key_removed = false;
+      for (const id of Object.keys(next.providers || {})) if (dropKeyIfMoved(id, before[id], next.providers[id])) key_removed = true;
       if (S.runtime.state === 'ready') touchIdle();
       persist();
       emit({ type: 'settings.changed', config: uiConfig() });
-      return ok({ config: clone(S.config), restart_required: restart, errors: {}, quick_actions: quickActionsEditor() });
+      return ok({ config: clone(S.config), restart_required: restart, errors: {}, quick_actions: quickActionsEditor(),
+        ...(key_removed ? { key_removed: true } : {}) });
     },
 
     async list_providers() { return ok({ providers: Object.keys(S.config.providers).map(providerView) }); },
@@ -1528,8 +1578,9 @@ function makeApi() {
       const prev = S.config.providers[id] || {};
       const { id: _drop, ...rest } = spec;
       S.config.providers[id] = providerSpec(id, { ...prev, ...rest, builtin: prev.builtin || false });
+      const key_removed = !!S.config.providers[id] && !!prev.id && dropKeyIfMoved(id, prev, S.config.providers[id]);
       persist();
-      return ok({ provider: providerView(id) });
+      return ok({ provider: providerView(id), ...(key_removed ? { key_removed: true } : {}) });
     },
     async remove_provider(id) {
       const p = S.config.providers[id];
@@ -1619,7 +1670,7 @@ function makeApi() {
     },
     async runtime_status() {
       return ok({ installed: S.runtimeInstalled, version: '2026.4.0', variant: 'python_on',
-        exe: 'C:\\Users\\you\\AppData\\Local\\ChatForge\\runtime\\ovms-2026.4.0\\ovms\\ovms.exe', vcredist: true });
+        exe: 'C:\\Users\\you\\AppData\\Local\\ChatForge\\runtime\\ovms-2026.4.0\\ovms\\ovms.exe', vcredist: true, platform: 'win32' });
     },
 
     async get_logs(n = 200, level = 'INFO') {
@@ -1629,6 +1680,21 @@ function makeApi() {
       return ok({ lines });
     },
     async open_logs_folder() { return ok(); },
+    async open_config_folder() { return ok(); },
+    // Redacted diagnostics text: versions, runtime status, config without keys, last 50 log lines.
+    async diagnostics() {
+      const cfg = clone(S.config);
+      for (const p of Object.values(cfg.providers || {})) delete p.api_key;
+      const text = [
+        'ChatForge diagnostics (dev mock)',
+        'ChatForge 0.1.0 · Python 3.12 · WebView2 (mock)',
+        `Runtime: ${JSON.stringify(S.runtime)}`,
+        `OVMS installed: ${S.runtimeInstalled}`,
+        '', '--- config (keys removed) ---', JSON.stringify(cfg, null, 2),
+        '', '--- last 50 log lines ---', ...S.logs.slice(-50),
+      ].join('\n');
+      return ok({ text });
+    },
 
     async get_autostart() { return ok(autostartView()); },
     async set_autostart(flag) {
@@ -1641,8 +1707,9 @@ function makeApi() {
     },
 
     async set_hotkey(spec) {
-      const s = String(spec || '').trim();
-      if (!/^((ctrl|alt|shift|win)\+)+[a-z0-9]+$|^((ctrl|alt|shift|win)\+)+(space|f\d{1,2})$/i.test(s)) return fail('bad_request', `"${s}" is not a valid hotkey.`);
+      let s = String(spec || '').trim();
+      if (/^copilot$/i.test(s)) s = 'Copilot';   // the Copilot key (Meta+Shift+F23)
+      else if (!/^((ctrl|alt|shift|win)\+)+[a-z0-9]+$|^((ctrl|alt|shift|win)\+)+(space|f\d{1,2})$/i.test(s)) return fail('bad_request', `"${s}" is not a valid hotkey.`);
       if (/^ctrl\+alt\+delete$/i.test(s) || /^win\+l$/i.test(s)) return fail('conflict', `${s} is in use by another app.`);
       S.config.ui.hotkey = s; persist();
       emit({ type: 'settings.changed', config: uiConfig() });

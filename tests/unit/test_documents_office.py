@@ -17,7 +17,7 @@ import pytest
 
 from chatforge.chat.engine import DOCUMENTS_SENTENCE
 from chatforge.tools import doc_pptx, doc_xlsx, documents
-from chatforge.tools.doc_html import markdown_to_html
+from chatforge.tools.doc_html import CSP_META, markdown_to_html
 from chatforge.tools.doc_markdown import find_tables, parse, unfence
 from chatforge.tools.doc_pptx import markdown_to_pptx
 from chatforge.tools.doc_xlsx import cell_value, column_letter, markdown_to_xlsx, sheet_name
@@ -653,7 +653,9 @@ def test_html_from_markdown_is_a_standalone_page(tmp_path) -> None:
 def test_html_content_is_kept_as_written(tmp_path) -> None:
     raw = "<!doctype html><html><body><p>Hi</p></body></html>"
     create_document("page.htm", raw, folder=str(tmp_path))
-    assert (tmp_path / "page.htm").read_text(encoding="utf-8") == raw
+    # Kept as written, plus the one Content-Security-Policy line.
+    written = (tmp_path / "page.htm").read_text(encoding="utf-8")
+    assert written.replace(f"\n{CSP_META}\n", "") == raw
     assert markdown_to_html("plain").count("<p>plain</p>") == 1
 
 

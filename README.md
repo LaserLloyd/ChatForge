@@ -5,9 +5,23 @@
 [![CI](https://github.com/LaserLloyd/ChatForge/actions/workflows/ci.yml/badge.svg)](https://github.com/LaserLloyd/ChatForge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/images/popup-reply.png" width="300" alt="The ChatForge popup in the dark LaserLloyd theme. The header chip reads Qwen2.5-1.5B with a green ready dot, beside the pin, Settings and Close buttons. A reply shows rendered Markdown: a Python code line, inline code, bold, italic and a link, a blue Note callout saying compiled NPU graphs are cached per model, a nested bullet list, a task list with one finished and one open item, and a footnote. Under it the reply is signed Qwen2.5-1.5B-Instruct-int4-ov at 14.2 tok/s with Copy, Copy as Markdown and Regenerate. At the bottom are the paperclip and quick-action buttons, the message box, Send, and a Clear chat button"></td>
+    <td align="center"><img src="docs/images/popup-light.png" width="300" alt="The same Markdown reply in the light Daylight theme: white background, dark text, a blue Note callout, the same lists, footnote, signature line and Copy, Copy as Markdown and Regenerate buttons"></td>
+    <td align="center"><img src="docs/images/popup-files.png" width="300" alt="The popup after the user asked for a document with a meeting summary. A create_document tool chip shows the file was saved, the reply says it saved Meeting summary.md in the ChatForge documents folder, and a document card for Meeting summary.md offers Open, Download and Show in folder buttons, with Copy, Copy as Markdown and Regenerate under the reply"></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/popup-search.png" width="300" alt="A web search answered by the small model: the user asked to search the web for running LLMs on an NPU with OpenVINO, a web_search tool chip shows the query and 5 results, and a two-line answer names the OpenVINO Model Server documentation with a numbered source below"></td>
+    <td align="center"><img src="docs/images/popup-model-menu.png" width="300" alt="The popup with the model menu open over the empty chat. Under the Local (NPU) heading are Qwen2.5-1.5B-Instruct-int4-ov (checked) and Qwen3-4B-int4-ov; under StudioForge is Qwen3.8-27B-Q5_K_S. A separator leads to Load model and Manage models"></td>
+    <td align="center"><img src="docs/images/settings-general.png" width="300" alt="Settings, General tab: the Window and shortcut card with the Ctrl+Alt+C hotkey field, a Record button and a Copilot key preset, a theme swatch grid with LaserLloyd selected among eight themes, and switches for Start at login, Sticky popup and Show the popup when a reply finishes"></td>
+  </tr>
+</table>
+
+<p align="center"><em>Rendered Markdown in the dark and light themes, a document the model saved for you, a live web search, the model menu, and Settings. Rendered from the real pages against their development mock, so the content is example data.</em></p>
+
 A simple local NPU / API desktop assistant — an AI-button replacement. ChatForge lives in the
-Windows notification area: press `Ctrl+Alt+C` (or the keyboard's Copilot key, remapped with
-PowerToys) and a chat popup opens at the lower right of the screen. A small language model
+Windows notification area: press `Ctrl+Alt+C` (or the keyboard's Copilot key) and a chat popup opens at the lower right of the screen. A small language model
 answers **on the Intel NPU** (no account, and the conversation stays on the PC), or a bigger one
 does: **StudioForge** (your own GPU server on the LAN or tailnet), **MiniMax**, **OpenAI**,
 **DeepSeek** or any OpenAI-compatible service. Answers stream in as rendered Markdown. Attach
@@ -19,9 +33,19 @@ page fetch, weather, Wikipedia, exchange rates, the current date and time, a cal
 that creates documents.
 
 **Status:** v0.1.0, formerly *AI Chat*: existing AI Chat settings, keys and models are migrated
-automatically on first start. Windows 11 only; built and tested on an Intel Core Ultra 5 226V
-(Lunar Lake) with its "Intel AI Boost" NPU. CI runs ruff and the Python unit tests on Windows
-and Ubuntu, and the JS tests on Node 24. Questions and bug reports: [Contact](#contact).
+automatically on first start. Built and tested on Windows 11 with an Intel Core Ultra 5 226V
+(Lunar Lake) and its "Intel AI Boost" NPU; that is the only platform verified on real hardware.
+CI runs ruff and the Python unit tests on Windows and Ubuntu, and the JS tests on Node 24.
+Questions and bug reports: [Contact](#contact).
+
+**Linux (new, not yet verified on a real desktop).** ChatForge now also runs on a Linux desktop
+(X11, or Wayland through XWayland): the tray icon, the popup, Settings, the cloud providers and
+the local model on the CPU through the Linux OpenVINO Model Server archive (the NPU only where
+Intel's driver is installed). The global hotkey is an X11 grab; on Wayland, bind a desktop
+shortcut to `chatforge --show`. Start at login is an XDG `.desktop` file, and API keys go in
+GNOME Keyring or KWallet through `keyring` (or an environment variable). OCR of pictures and
+the conversion of old `.doc`/`.xls`/`.ppt` files are Windows only. This port was written and
+tested headless, so expect rough edges. Setup: [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md).
 
 ---
 
@@ -52,6 +76,23 @@ no tool can run a program or change a setting. It keeps one conversation, not a 
 and it does not summarise: when a chat outgrows the model's context window, the oldest turns are
 left out of the prompt. It needs no admin rights and sends nothing anywhere except to the
 provider you chose and the public services its tools call.
+
+Some guard rails, for a model that reads untrusted pages and files:
+
+- Tool results and attached files are marked as data for the model, never instructions (the
+  system prompt says so, and each tool result is wrapped in marker lines).
+- A provider's stored API key is deleted when its address changes, so a key cannot be sent to a
+  new server by editing the URL.
+- The documents folder (`tools.documents_dir`) and the private-address guard of `fetch_url`
+  (`tools.block_private_addresses`) cannot be changed from the Settings page, only in
+  `config.toml`.
+- `create_document` saves script types (`.js`, `.ps1`, `.py`, `.sh`) with `.txt` added, so
+  opening one never runs it; it neutralises spreadsheet formulas in CSV and TSV cells; and
+  every HTML page it writes carries a Content-Security-Policy that forbids scripts and network
+  requests.
+- The app's own static server answers only requests whose `Host` header is its loopback address.
+- An attachment gets a 45 s parse budget and a PDF is read to 500 pages at most; model downloads
+  skip code files (`.py`, `.pyc`, `.sh`, `.bat`, `.ps1`).
 
 The design lifts working pieces from LaserLloyd's other projects: the process supervisor,
 downloader, tray, autostart and logging from **StudioForge**; the chat UI, Markdown pipeline, key
@@ -101,8 +142,8 @@ at the top.
 ### Why it is worth running
 
 - **One keystroke from any app.** `Ctrl+Alt+C` or a click on the tray icon toggles the popup.
-  Escape or a click elsewhere hides it; a pin keeps it open. The Copilot key works too, with a
-  PowerToys remap ([below](#the-copilot-key)).
+  Escape or a click elsewhere hides it; a pin keeps it open. The Copilot key works too
+  ([below](#the-copilot-key)).
 - **A model that costs nothing to ask.** Qwen2.5-1.5B on the Intel AI Boost NPU: 42–51 tokens/s,
   about 3 s to load from cache, no account, and the conversation stays on the PC.
 - **Small model, real answers.** The local model gets a compact toolset sized for its 4096-token
@@ -133,7 +174,7 @@ at the top.
 
 | You want to… | Go to |
 | --- | --- |
-| Install it | [Install](#install) · [step-by-step guide](docs/SETUP.md) |
+| Install it | [Install](#install) · [step-by-step guide](docs/SETUP.md) · [on Linux](docs/SETUP-LINUX.md) |
 | See it | [What it looks like](#what-it-looks-like) |
 | Learn the popup, the tray and the hotkeys | [Usage](#usage) |
 | Know what happens when a chat gets long | [Long conversations](#long-conversations) |
@@ -151,7 +192,7 @@ at the top.
 
 ## Install
 
-You need Windows 11, [Python 3.12](https://www.python.org/downloads/) (with the `py` launcher),
+You need Windows 11 (for Linux, see [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md)), [Python 3.12](https://www.python.org/downloads/) (with the `py` launcher),
 [uv](https://docs.astral.sh/uv/) installed for it (`py -3.12 -m pip install --user uv`) and
 [Git](https://git-scm.com/download/win). The WebView2 runtime and the VC++ 2015+ x64 runtime ship
 with Windows 11; the NPU needs an Intel Core Ultra with the "Intel AI Boost" driver. Node 24 is
@@ -166,6 +207,10 @@ after every step, is [`docs/SETUP.md`](docs/SETUP.md).
    cd ChatForge
    py -3.12 -m uv sync --extra dev
    ```
+
+   Old `.xls` and `.ppt` files (and a rare `.doc`) can only be attached on a PC with Microsoft
+   Office, through `pywin32`, which is an optional extra since the Linux port: add
+   `--extra office` (`py -3.12 -m uv sync --extra dev --extra office`) if you want that.
 
 2. Install the local runtime, OpenVINO Model Server 2026.4.0 `python_on` (a 139 MB download,
    SHA-256 pinned, resumable), and check the machine:
@@ -202,29 +247,31 @@ about 3 s from the cache after that.
 ## What it looks like
 
 The popup opens at the lower right of the screen, above the taskbar: 420 × 620 until you
-resize it (see [Usage](#usage)). Every answer says which model wrote it and how fast:
+resize it (see [Usage](#usage)). Every answer says which model wrote it and how fast; the top of
+this page shows two. An empty chat offers one-tap quick actions, and the header chip opens the
+model menu:
 
-| A weather question, answered on the NPU | A spreadsheet in, a Word report out |
+| An empty chat: quick actions | The model menu |
 | --- | --- |
-| ![The chat popup in the dark LaserLloyd theme. The header chip reads "Local (NPU) · Qwen2.5-1.5B-Instruct-int4-ov" with a ready dot, beside the header's icon buttons, and a status line says "Unloads in 10 min". The user asks "Will it rain in Lisbon this weekend?"; a weather tool chip shows "Lisbon" and the result "Weather: Lisbon, Portugal"; the answer is a short paragraph and a Markdown table of Saturday and Sunday with sky, temperature and chance of rain, signed "Qwen2.5-1.5B-Instruct-int4-ov · 47.6 tok/s", with Copy and Regenerate buttons under it. The composer has a paperclip button for attaching files and the placeholder "Message ChatForge"](docs/images/chat-weather.png) | ![The popup with MiniMax-M3 selected. The user's message carries a file chip, "Q3 sales.xlsx, 47 KB · 12.8k chars", above the text "Summarise this sheet as a one-page Word report."; the reply has a create_document tool chip reading "Saved Q3 sales summary.docx", a short bulleted summary of revenue, best month and top product, and a document card for "Q3 sales summary.docx" (DOCX · 9 KB) with Open and Show in folder buttons, signed "MiniMax-M3 · 61.8 tok/s", with Copy and Regenerate buttons under it](docs/images/chat-files.png) |
+| ![The popup with no messages. The header chip reads Qwen2.5-1.5B with a grey unloaded dot. The centre says "Ask anything" and "Chatting with Local (NPU) · Qwen2.5-1.5B-Instruct-int4-ov", then offers twelve quick actions in two columns: Proof this, Improve this, Check me on this, News insight, Summarize, Reply to this, Explain this, Fact-check, Make it shorter, Make it professional, Action items and Translate. The message box has the focus](docs/images/popup-empty.png) | ![The popup with the model menu open over the empty chat. Under the Local (NPU) heading are Qwen2.5-1.5B-Instruct-int4-ov (ticked) and Qwen3-4B-int4-ov; under StudioForge is Qwen3.8-27B-Q5_K_S. A separator leads to Load model and Manage models…](docs/images/popup-model-menu.png) |
 
-The model menu starts with the models you used last, then lists only the providers that are set up:
+<p align="center"><img src="docs/images/popup-markdown.png" width="420" alt="The same Markdown reply scrolled to its start: an \"A small table\" heading over a three-column table, then a Python code block with a PYTHON label and a Copy button; a scroll-to-latest button sits at the lower right"></p>
 
-<p align="center"><img src="docs/images/model-menu.png" alt="The popup with the model menu open over the empty chat. At the top, Recently used lists Qwen2.5-1.5B-Instruct-int4-ov (ticked), MiniMax-M3 and Qwen3.8-27B-Q5_K_S, each with its provider (Local (NPU), MiniMax, StudioForge) on the right. Below a separator come the provider groups: Local (NPU) with Qwen2.5-1.5B-Instruct-int4-ov ticked and MiniMax with four models; a scrollbar shows the menu goes on (StudioForge, Unload model and Manage models…). OpenAI and DeepSeek are absent because no key is saved for them" width="420"></p>
+The model menu lists only the providers that are set up, with the models you used last on top
+once there are some.
 
 Settings has four tabs: **Models**, **Providers**, **General** and **Logs**.
 
-![Settings, Models tab: the installed Qwen2.5 1.5B Instruct INT4 model with Recommended, Active and Loaded badges, 940 MB, "Compiled for NPU", and its catalog note; Active (greyed out, as it already is), Unload, Clear cache and Delete buttons; a disk-usage bar for models, compile cache, runtime and logs; and the Local runtime card showing OpenVINO Model Server 2026.4.0 and the Visual C++ runtime installed](docs/images/settings-models.png)
+![Settings, Models tab: the installed Qwen2.5 1.5B Instruct INT4 model with Recommended, Active and Loaded badges, 930 MB, "Compiled for NPU", its catalog note and Unload, Clear cache and Delete model buttons; a second model, Qwen3-4B-int4-ov, marked Untested with a "Use this model" button; a disk-usage bar for models, compile cache, runtime and logs; and the Local runtime card showing OpenVINO Model Server 2026.4.0 and the Visual C++ runtime installed, with a Check again button](docs/images/settings-models.png)
 
 | Providers — StudioForge on your own server | General — personality, instructions, tools and fallback |
 | --- | --- |
-| ![Settings, Providers tab, scrolled to the StudioForge card: base URL http://gpu-server:1234/v1, the model picker, a context window left on Auto with the note "Qwen3.8-27B-Q5_K_S reports 66k tokens (from Refresh models)" and a longest reply of 4096 tokens, an empty optional API key field with the status "No key (optional for this server)", and Save key, Test, Refresh models and Remove key buttons; the OpenAI card starts below it](docs/images/settings-providers.png) | ![Settings, General tab: idle unload minutes, max prompt length, the Ctrl+Alt+C hotkey, the LaserLloyd theme and show reasoning; the Personality box holding the default system prompt and the Instructions box holding two example instructions; start at login, hide the popup when it loses focus and show the popup when a reply finishes, all ticked; all nine tools ticked, Create documents among them, with a note that the small local model is offered five of them; home location "Lisbon, Portugal" with metric units; and "When the local model fails: answer with StudioForge"](docs/images/settings-general.png) |
+| ![Settings, Providers tab, scrolled to the Cloud providers heading with the MiniMax and StudioForge cards: each has a base URL, a model picker, context window and longest reply fields, a key status line and Save & test, Refresh models and Remove key buttons](docs/images/settings-providers.png) | ![Settings, General tab: the hotkey field with Record and a Copilot key preset, the theme swatch grid, the Start at login, Sticky popup and Show the popup when a reply finishes switches, then the Chat card with the personality and instructions boxes, the quick actions list with reorder buttons, the tools list with a Local badge on the five the small model gets and a line per tool saying what leaves the PC, location and units, and the "When the local model fails" card](docs/images/settings-general.png) |
 
-The popup screenshots were taken before **Clear chat** moved from the header to a labelled button at the
-bottom of the popup (in the composer's footer row), so they still show it in the header.
-The screenshots are of the real UI in Microsoft Edge (the engine behind WebView2), served from
-`src/chatforge/web` against its development mock (`static/js/dev-mock.js`) with example data:
-the conversation, the spreadsheet and its figures, the location and the server name are made up.
+The screenshots are of the real pages rendered in Chromium (the engine behind WebView2) by
+`node scripts/screenshots.mjs`, served from `src/chatforge/web` against the development mock
+(`static/js/dev-mock.js`) with example data: the conversation, the document, the location and
+the server name are made up. Re-run the script after a UI change.
 
 ---
 
@@ -240,14 +287,20 @@ the conversation, the spreadsheet and its figures, the location and the server n
 login on or off. Starting a second copy just brings the running popup up.
 
 - **Popup.** `Ctrl+Alt+C` or a tray click. The header chip shows the provider and model with a
-  status dot (grey unloaded, amber loading or compiling, green ready, red error); while
-  loading, the status line under the header shows a countdown ("Compiling for NPU 0:12 / ~0:45"
-  the first time, "Loading… ~3 s" after). The header also holds the pin, Settings and Close.
+  status dot (grey unloaded, amber loading or compiling, green ready, red error). The chip
+  shows the model's name only; the provider, the full model id and, for the local model, when it
+  unloads and which device it runs on are in its tooltip. The status line under the header shows
+  only while the model is loading or compiling (a countdown: "Compiling for NPU 0:12 / ~0:45"
+  the first time, "Loading… ~3 s" after), when it failed, or in the last minute before the idle
+  unload ("Unloads in 40 s"); the rest of the time it is hidden. The header also holds the pin,
+  Settings and Close.
   Enter sends, Shift+Enter adds a line, Stop cancels, and a counter appears near the
   4000-character limit on the typed text (`chat.max_prompt_chars`; attached files have their own
   limit). The **Clear chat** button at the bottom of the popup, in the composer's footer row
   beside that counter, starts over with an empty conversation and puts the popup back at its
-  default size. With the local
+  default size; a toast offers **Undo** for 6 seconds (not once you have sent a new message).
+  A paste that takes the box past the limit is kept, with a toast offering **Attach as text**
+  to move the pasted part into a `pasted-text.txt` attachment instead. With the local
   model selected, opening the popup starts loading it in the background.
 - **Sticky.** The popup stays up while you work in other windows, until you close it (Escape or
   ×) or press the hotkey (or the Copilot key) again. The pin in the header shows it and turns
@@ -264,14 +317,25 @@ login on or off. Starting a second copy just brings the running popup up.
 - **Model menu.** Click the header chip. A **Recently used** section at the top lists the last
   three models you used. Below it are the local models and every provider that can answer now:
   StudioForge (no key needed) and each provider with a saved or environment key; the provider in
-  use stays listed even without a key. At the bottom: Load or Unload model (when the local model
+  use stays listed even without a key. With more than 8 models the menu gets a **Filter models**
+  box at the top. At the bottom: Load or Unload model (when the local model
   is selected) and Manage models…, which opens Settings.
 - **Replies.** Tables, fenced code with copy buttons and syntax highlighting, footnotes and
   callouts, sanitised with DOMPurify. Tool calls appear as chips with a result summary; a
   reasoning block (for models that produce one) is collapsed under the reply; a document the
   model saved appears as a card. **Regenerate** on the latest reply asks again for the same
   message and files, in place of that reply; if the new answer fails, or you stop it before it
-  says anything, the old reply comes back.
+  says anything, the old reply comes back. Links open in your default app (web links in the
+  browser, `mailto:` links in the mail app), never in the popup.
+- **Copy and Edit.** Every reply has **Copy**, which puts rich text (formatted, for Word or an
+  email) and plain Markdown text on the clipboard, and **Copy as Markdown**, which puts the
+  Markdown only. Your own messages have **Copy** too, and the last one has **Edit**: it takes
+  that message and everything after it out of the conversation and puts the text (and its quick
+  action) back in the box to change and send again. Attached files are not brought back; add
+  them again.
+- **When something goes wrong.** The error row under a failed message has **Retry**, **Open
+  logs** (the log folder) and **Copy details** (the error, the model and the time, for a bug
+  report).
 - **When a reply finishes.** If the popup was put away while the model was answering, it comes
   back in its corner when the reply finishes or fails, without taking the focus, and stays up
   until you click into it. A reply you stopped does not bring it back. Turn this off with
@@ -282,6 +346,19 @@ login on or off. Starting a second copy just brings the running popup up.
   login, **Restart** and Quit. Restart starts a new copy hidden in the tray and quits this one
   the normal way; if the new copy cannot start, a tray message says why and this one keeps
   running. Quit unloads the model and ends `ovms.exe`.
+
+### Keyboard
+
+| Keys | In the popup |
+| --- | --- |
+| `Enter` / `Shift+Enter` | Send / new line |
+| `Esc` | Close an open menu; else stop a running reply; else hide the popup (so a second press hides it after a stop) |
+| `Ctrl+N` | Clear chat (with Undo) |
+| `Ctrl+L`, or `/` outside a text box | Focus the message box |
+| `Ctrl+Shift+C` | Copy the latest reply, formatted |
+| `Ctrl+,` | Open Settings |
+| `Ctrl+M` | Open the model menu |
+| `Up` in an empty box | Bring back your last message to edit and send again |
 
 ### Quick actions
 
@@ -302,16 +379,27 @@ Rewrites keep the form of your text: plain text stays plain, the same paragraphs
 quotes, dashes, spelling and tone, and no emojis unless yours had them. After a reply finishes,
 ChatForge also corrects those surface conventions inside the copyable block itself, for models
 that ignore the instructions. Actions that don't need the internet run without tools. Edit, add
-or hide actions in Settings > General > *Quick actions*; **Restore defaults** brings the built-in
-ones back.
+or hide actions, and put them in order with the up and down buttons, in Settings > General >
+*Quick actions*; **Restore defaults** brings the built-in ones back (it asks first).
 
 ### The Copilot key
 
-The Copilot key sends `Win+Shift+F23`, which Windows registers for itself, so no app can take it
-as a hotkey, and the Settings picker for that key only lists packaged, signed apps. PowerToys
-Keyboard Manager catches it first: remap the shortcut `Win (Left) + Shift (Left) + F23` to
-`Ctrl+Alt+C` and turn on PowerToys *Run at startup*. The steps are in
-[`docs/SETUP.md` §8](docs/SETUP.md#8-open-chatforge-with-the-copilot-key-optional).
+The Copilot key sends `Win+Shift+F23`, which Windows registers for itself, so `RegisterHotKey`
+cannot take it, and the Settings picker for that key only lists packaged, signed apps. ChatForge
+has two ways round that:
+
+- **The `Copilot` hotkey (no extra software).** In Settings > General, press **Copilot key**
+  beside the hotkey field (or put `Copilot` in `ui.hotkey`) and Save. ChatForge installs a
+  low-level keyboard hook (`desktop/hotkey.py`) that catches `Win+Shift+F23`, opens the popup
+  and keeps the Start menu from opening. It swallows only the F23 key, never a modifier.
+  **Windows only, and not yet verified on real hardware in this release**: if the key still
+  opens Windows Copilot or Search, or the Start menu appears, use the PowerToys remap below.
+  `chatforge doctor` reports it on its Hotkey line (it installs and removes a throwaway hook),
+  and the log says "Copilot key hooked", or why it could not be.
+- **PowerToys, the fallback.** PowerToys Keyboard Manager catches the key first: remap the
+  shortcut `Win (Left) + Shift (Left) + F23` to `Ctrl+Alt+C` and turn on PowerToys *Run at
+  startup*. Keep the hotkey at `Ctrl+Alt+C` for this. The steps are in
+  [`docs/SETUP.md` §8](docs/SETUP.md#8-open-chatforge-with-the-copilot-key-optional).
 
 ### Long conversations
 
@@ -466,11 +554,13 @@ your text, one `<file name="…">` block each.
 | PDF | `.pdf` | The text of each page (scanned pages have no text to read) |
 
 Old `.doc` files are read directly. Old `.xls` and `.ppt` files are converted to the modern format
-by Microsoft Office when it is installed (hidden, on a temporary copy, never touching the original);
-without Office, save them as `.xlsx` or `.pptx` first. Password-protected files are refused.
+by Microsoft Office when it is installed and the optional `office` extra (`pywin32`) is in the
+environment (hidden, on a temporary copy, never touching the original); without them, and on
+Linux, save them as `.xlsx` or `.pptx` first. Password-protected files are refused.
 
-The limits are in [`src/chatforge/attachments.py`](src/chatforge/attachments.py): 20 MB per file
-and 10 files per message. A file's text is cut at 200,000 characters (`tools.attachment_max_chars`
+The limits are in [`src/chatforge/attachments.py`](src/chatforge/attachments.py): 20 MB per file,
+10 files per message, 500 pages of a PDF and a 45 s budget for reading one file (what was read
+by then is kept, with a note). A file's text is cut at 200,000 characters (`tools.attachment_max_chars`
 in `config.toml`, 1,000 to 4,000,000). The model's context window may cut it further: a cut file
 ends with a note saying so, and on the local model's 4096-token window the note suggests a cloud
 or StudioForge model for long files. The text is kept with the message, so you can ask follow-up
@@ -527,7 +617,11 @@ are built by ChatForge itself (no Office needed to make them).
 - **Other formats** are written as UTF-8: `.csv` and `.tsv` (a Markdown table is converted; a
   `.csv` starts with a byte-order mark so Excel reads accents), `.md`, `.txt`, `.json`, `.html`
   (Markdown becomes a standalone page), `.xml`, `.yaml` and code (`.py`, `.js`, `.ts`, `.css`,
-  `.sql`, `.ps1`, `.sh`).
+  `.sql`, `.ps1`, `.sh`). Script types (`.js`, `.ps1`, `.py`, `.sh`) are saved with `.txt` added
+  (`report.py.txt`) so that opening one cannot run it, and the model is told. In CSV and
+  TSV, a cell that starts with `=`, `+`, `-` or `@` gets a `'` in front so a spreadsheet does not
+  run it as a formula. A generated `.html` carries a Content-Security-Policy that forbids
+  scripts and network requests.
 - **Nothing is overwritten.** A name that is taken becomes `report (2).docx`, `report (3).docx`
   and so on. Characters Windows forbids are replaced, and a document is at most 5 MB.
 - **In the chat.** The reply gets a card with the file's name, type and size. **Open** opens it
@@ -547,10 +641,10 @@ Secrets are never written there.
 
 | Tab | What you can change |
 | --- | --- |
-| **Models** | Installed models (set active, load, unload, delete, clear compile cache), disk usage, the OVMS runtime card (install, re-check), Hugging Face search with badges (*Recommended*, *Supported*, *Untested*, *Avoid*), downloads with progress, cancel and resume |
+| **Models** | Installed models (set active, load, unload, delete, clear compile cache), disk usage, the OVMS runtime card (install, re-check), Hugging Face search with badges (*Recommended*, *Supported*, *Untested*, *Avoid*), downloads with progress, cancel (after a confirmation) and resume |
 | **Providers** | Local: device (NPU, GPU, CPU) and `max_prompt_len` (reload required). Model lists: refresh all, refresh once a day. One card per provider: base URL (MiniMax: region), model, context window (with what the provider reported for the selected model), longest reply, API key with Save key, Test, Refresh models and Remove key. Add a custom OpenAI-compatible provider; custom ones can be removed |
-| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`; conflicts are reported), theme (LaserLloyd by default, LaserLloyd Light its light partner, and the six core ThemeForge themes; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login, sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback |
-| **Logs** | The last 500 redacted lines with a level filter, auto-refresh, Copy and Open folder |
+| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`, or press **Record** and then the keys; the **Copilot key** button fills in the `Copilot` preset, Windows only; conflicts are reported), theme (a grid of swatch cards: LaserLloyd by default, LaserLloyd Light its light partner, and the six core ThemeForge themes; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login, sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback, and the quick actions (reorder, **Restore defaults**). Unsaved changes are flagged beside **Save**, and **Revert** puts the saved values back; the theme and start at login apply at once and are not part of Save |
+| **Logs** | The last 500 redacted lines with a level filter and a text filter, auto-refresh, Copy, Open folder, **Copy diagnostics** (a redacted report for bug reports: versions, the runtime state, the active provider and model, `config.toml` with key-like values removed, and the last 50 log lines) and **Open config folder** |
 
 **Personality and instructions.** The *Personality* box is the system prompt: who the assistant
 is and how it sounds (leave it empty for the default, a concise desktop assistant). The
@@ -559,9 +653,11 @@ how you like answers; they go last in the system prompt, under "The user's instr
 them in every reply)". Each box takes up to 20,000 characters, and both count against the model's
 context window, which matters most on the 4096-token local model.
 
-Two settings are only in `config.toml`: `tools.attachment_max_chars` (the most text one attached
-file contributes, 200,000 characters by default) and `tools.documents_dir` (where documents are
-saved; empty means `Documents\ChatForge`).
+Three settings are only in `config.toml`: `tools.attachment_max_chars` (the most text one attached
+file contributes, 200,000 characters by default), `tools.documents_dir` (where documents are
+saved; empty means `Documents\ChatForge`) and `tools.block_private_addresses` (the guard that
+keeps `fetch_url` away from private and local addresses). The Settings page shows the last two
+but refuses to change them.
 
 ---
 
@@ -722,7 +818,9 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
   the app is running. It exits 1 on any FAIL and names the fix.
 - Logs: `%LOCALAPPDATA%\ChatForge\logs\`, or Settings > Logs. Secrets are redacted.
 - "Ctrl+Alt+C is in use by another app": change the hotkey in Settings > General.
-- The Copilot key opens Windows Search or Copilot instead of the popup: PowerToys is not running
+- The Copilot key opens Windows Search or Copilot instead of the popup: the hotkey is not set to
+  `Copilot` (Settings > General > **Copilot key**), or, with the PowerToys remap, PowerToys is not
+  running. The `Copilot` hook is unverified on real hardware; the PowerToys remap is the fallback
   (see [The Copilot key](#the-copilot-key)).
 - The model fails to load after a driver update or a sleep/resume: Settings > Models > Clear
   cache, then Load. Setting a fallback provider keeps you answered meanwhile.
@@ -734,7 +832,8 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
   window, so its oldest turns are no longer sent. Press **Clear chat** to start fresh, or switch
   to a model with a bigger window ([Long conversations](#long-conversations)).
 - A HEIC photo will not attach: export it as JPEG (or add `pillow-heif`). An old `.xls` or
-  `.ppt` will not attach on a PC without Microsoft Office: save it as `.xlsx` or `.pptx` first.
+  `.ppt` will not attach on a PC without Microsoft Office (and `uv sync --extra office`), or on
+  Linux: save it as `.xlsx` or `.pptx` first.
 - A model you know a provider offers is missing from the menu: **Refresh models** on its card in
   Settings > Providers (a provider that needs a key is skipped until one is saved).
 - The popup comes back by itself when a reply finishes: that is Settings > General > *Show the
@@ -746,6 +845,8 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
 
 - [`docs/SETUP.md`](docs/SETUP.md) — a fresh Windows machine, step by step, with a check after
   each step; MiniMax; the Copilot key; where everything lives; uninstall
+- [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md) — the same on a Linux desktop (X11 or Wayland
+  through XWayland)
 - [`docs/RUNTIME-NOTES.md`](docs/RUNTIME-NOTES.md) — the OVMS and NPU measurements behind the
   model choice and the defaults
 - [`docs/PLAN.md`](docs/PLAN.md) — the original build plan, kept as history: workstreams, the

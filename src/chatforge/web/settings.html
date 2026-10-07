@@ -35,6 +35,42 @@
     <main class="panels">
       <!-- ============================== Models ============================== -->
       <section id="panel-models" class="ui-stack panel" role="tabpanel" aria-labelledby="tab-models" tabindex="0">
+        <!-- First run: shown while the runtime or every model is missing. -->
+        <section id="firstrun" class="ui-card firstrun" aria-labelledby="h-firstrun" hidden>
+          <div class="ui-card__header">
+            <h2 id="h-firstrun" class="ui-card__title">Set up the local model</h2>
+            <p id="fr-progress" class="ui-text-tertiary ui-small card-note ui-num"></p>
+          </div>
+          <p class="ui-text-secondary ui-small">Three steps, once. Afterwards the assistant runs on this PC, with no account.</p>
+          <ol class="steps" aria-label="Setup steps">
+            <li id="fr-step-1" class="step" data-state="current">
+              <span class="step-no ui-num" aria-hidden="true">1</span>
+              <div class="step-body">
+                <strong class="step-title">Install the runtime</strong>
+                <p id="fr-text-1" class="ui-text-secondary ui-small"></p>
+                <div class="ui-row"><button type="button" id="fr-install" class="ui-btn ui-btn--sm ui-btn--primary">Install the runtime</button></div>
+              </div>
+            </li>
+            <li id="fr-step-2" class="step" data-state="todo">
+              <span class="step-no ui-num" aria-hidden="true">2</span>
+              <div class="step-body">
+                <strong class="step-title">Download the recommended model</strong>
+                <p id="fr-text-2" class="ui-text-secondary ui-small"></p>
+                <div class="ui-row"><button type="button" id="fr-download" class="ui-btn ui-btn--sm ui-btn--primary">Download recommended model</button></div>
+              </div>
+            </li>
+            <li id="fr-step-3" class="step" data-state="todo">
+              <span class="step-no ui-num" aria-hidden="true">3</span>
+              <div class="step-body">
+                <strong class="step-title">Load it</strong>
+                <p id="fr-text-3" class="ui-text-secondary ui-small"></p>
+                <div class="ui-row"><button type="button" id="fr-load" class="ui-btn ui-btn--sm" disabled>Load the model</button></div>
+              </div>
+            </li>
+          </ol>
+          <p id="fr-msg" class="ui-small" role="status" aria-live="polite"></p>
+        </section>
+
         <section class="ui-card" aria-labelledby="h-installed">
           <div class="ui-card__header">
             <h2 id="h-installed" class="ui-card__title">Installed models</h2>
@@ -43,7 +79,7 @@
           <ul id="model-list" class="model-list" aria-label="Installed models"></ul>
           <p id="model-empty" class="empty ui-text-secondary" hidden>No models installed yet. Search below and download one.</p>
 
-          <div class="disk" aria-labelledby="h-disk">
+          <div id="disk" class="disk" aria-labelledby="h-disk">
             <h3 id="h-disk" class="h3">Disk usage</h3>
             <div id="disk-bar" class="disk-bar" role="img" aria-label="Disk usage"></div>
             <ul id="disk-legend" class="legend"></ul>
@@ -63,17 +99,20 @@
           </p>
           <div class="ui-row">
             <button type="button" id="rt-install" class="ui-btn ui-btn--sm ui-btn--primary">Install OVMS</button>
-            <button type="button" id="rt-recheck" class="ui-btn ui-btn--sm">Re-check</button>
+            <button type="button" id="rt-recheck" class="ui-btn ui-btn--sm">Check again</button>
           </div>
           <p id="rt-msg" class="ui-text-secondary ui-small" role="status" aria-live="polite"></p>
           <div id="rt-progress" class="ui-stack progress-wrap" hidden>
             <progress id="rt-bar" class="ui-progress" max="100" value="0" aria-label="OVMS download"></progress>
-            <p id="rt-progress-text" class="ui-text-secondary ui-small" role="status" aria-live="polite"></p>
+            <p id="rt-progress-text" class="ui-text-secondary ui-small ui-num" role="status" aria-live="polite"></p>
           </div>
         </section>
 
         <section class="ui-card" aria-labelledby="h-downloads">
-          <h2 id="h-downloads" class="ui-card__title">Downloads</h2>
+          <div class="ui-card__header">
+            <h2 id="h-downloads" class="ui-card__title">Downloads</h2>
+            <button type="button" id="dl-clear" class="ui-btn ui-btn--sm ui-btn--ghost card-note" hidden>Clear finished</button>
+          </div>
           <ul id="download-list" class="dl-list" aria-label="Downloads"></ul>
           <p id="download-empty" class="empty ui-text-secondary">No downloads in progress.</p>
         </section>
@@ -117,8 +156,8 @@
           <details class="ui-details">
             <summary>Advanced</summary>
             <div class="ui-details__body ui-field">
-              <label class="ui-label" for="local-mpl">Max prompt length (tokens, NPU prompt window)</label>
-              <input id="local-mpl" type="number" class="ui-input narrow" min="1024" max="8192" step="256" data-field="local.max_prompt_len" inputmode="numeric" aria-describedby="local-mpl-hint err-local.max_prompt_len">
+              <label class="ui-label" for="local-mpl">NPU prompt window (tokens)</label>
+              <input id="local-mpl" type="number" class="ui-input narrow ui-num" min="1024" max="8192" step="256" data-field="local.max_prompt_len" inputmode="numeric" aria-describedby="local-mpl-hint err-local.max_prompt_len">
               <p class="ui-help" id="local-mpl-hint">From 1024 to 8192. Reload required: the model recompiles when this changes. Larger windows use more memory and take longer to compile.</p>
               <p class="ui-error" id="err-local.max_prompt_len" role="alert"></p>
             </div>
@@ -133,96 +172,117 @@
 
         <section class="ui-card" aria-labelledby="h-refresh">
           <h2 id="h-refresh" class="ui-card__title">Model lists</h2>
-          <p class="ui-text-secondary ui-small">Providers add new models over time. Refresh reads each provider's current list with its saved key; providers without a key are skipped.</p>
+          <p class="ui-text-secondary ui-small">Providers add new models over time. Refreshing reads each provider's current list with its saved key; providers without a key are skipped.</p>
           <div class="ui-row">
-            <button type="button" id="refresh-all" class="ui-btn ui-btn--sm">Refresh all model lists</button>
+            <button type="button" id="refresh-all" class="ui-btn ui-btn--sm">Refresh all models</button>
             <label class="ui-check" for="auto-refresh"><input id="auto-refresh" type="checkbox" role="switch" class="ui-switch"> <span>Refresh automatically once a day</span><span class="ui-switch-state" aria-hidden="true"></span></label>
           </div>
           <p id="refresh-msg" class="ui-small" role="status" aria-live="polite"></p>
         </section>
 
-        <div id="provider-cards" class="ui-stack cards"></div>
+        <section class="ui-stack cloud" aria-labelledby="h-cloud">
+          <h2 id="h-cloud" class="s-section">Cloud providers</h2>
+          <div id="provider-cards" class="ui-stack cards"></div>
 
-        <section class="ui-card" aria-labelledby="h-add">
-          <h2 id="h-add" class="ui-card__title">Add a custom provider</h2>
-          <p class="ui-text-secondary ui-small">Any OpenAI-compatible endpoint. The key is stored in Windows Credential Manager, or read from the environment variable you name.</p>
-          <form id="add-form" class="add-form" autocomplete="off" novalidate>
-            <div class="grid2">
-              <div class="ui-field">
-                <label class="ui-label" for="add-id">Provider id</label>
-                <input id="add-id" class="ui-input" type="text" spellcheck="false" autocapitalize="none" placeholder="my-provider" aria-describedby="add-id-hint err-add-id">
-                <p id="add-id-hint" class="ui-help">Lowercase letters, digits and dashes (2 to 32 characters).</p>
-                <p class="ui-error" id="err-add-id" role="alert"></p>
+          <section class="ui-card" aria-labelledby="h-add">
+            <h3 id="h-add" class="ui-card__title">Add a custom provider</h3>
+            <p class="ui-text-secondary ui-small">Any OpenAI-compatible endpoint. The key is stored in Windows Credential Manager, or read from the environment variable you name.</p>
+            <form id="add-form" class="add-form" autocomplete="off" novalidate>
+              <div class="grid2">
+                <div class="ui-field">
+                  <label class="ui-label" for="add-id">Provider id</label>
+                  <input id="add-id" class="ui-input" type="text" spellcheck="false" autocapitalize="none" placeholder="my-provider" aria-describedby="add-id-hint err-add-id">
+                  <p id="add-id-hint" class="ui-help">Lowercase letters, digits and dashes (2 to 32 characters).</p>
+                  <p class="ui-error" id="err-add-id" role="alert"></p>
+                </div>
+                <div class="ui-field">
+                  <label class="ui-label" for="add-name">Display name</label>
+                  <input id="add-name" class="ui-input" type="text" placeholder="My provider">
+                  <p class="ui-error" id="err-add-name" role="alert"></p>
+                </div>
+                <div class="ui-field">
+                  <label class="ui-label" for="add-url">Base URL</label>
+                  <input id="add-url" class="ui-input" type="url" spellcheck="false" placeholder="https://api.example.com/v1">
+                  <p class="ui-error" id="err-add-url" role="alert"></p>
+                </div>
+                <div class="ui-field">
+                  <label class="ui-label" for="add-env">API key environment variable (optional)</label>
+                  <input id="add-env" class="ui-input ui-mono" type="text" spellcheck="false" autocapitalize="characters" placeholder="MY_PROVIDER_API_KEY" aria-describedby="err-add-env">
+                  <p class="ui-error" id="err-add-env" role="alert"></p>
+                </div>
               </div>
               <div class="ui-field">
-                <label class="ui-label" for="add-name">Display name</label>
-                <input id="add-name" class="ui-input" type="text" placeholder="My provider">
-                <p class="ui-error" id="err-add-name" role="alert"></p>
+                <label class="ui-label" for="add-models">Models (comma separated; you can also fetch them with Save &amp; test after adding)</label>
+                <input id="add-models" class="ui-input ui-mono" type="text" spellcheck="false" placeholder="model-a, model-b">
+                <p class="ui-error" id="err-add-models" role="alert"></p>
               </div>
-              <div class="ui-field">
-                <label class="ui-label" for="add-url">Base URL</label>
-                <input id="add-url" class="ui-input" type="url" spellcheck="false" placeholder="https://api.example.com/v1">
-                <p class="ui-error" id="err-add-url" role="alert"></p>
+              <div class="ui-row">
+                <button type="submit" class="ui-btn ui-btn--sm ui-btn--primary">Add provider</button>
+                <span id="add-msg" class="ui-text-secondary ui-small" role="status" aria-live="polite"></span>
               </div>
-              <div class="ui-field">
-                <label class="ui-label" for="add-env">API key environment variable (optional)</label>
-                <input id="add-env" class="ui-input ui-mono" type="text" spellcheck="false" autocapitalize="characters" placeholder="MY_PROVIDER_API_KEY" aria-describedby="err-add-env">
-                <p class="ui-error" id="err-add-env" role="alert"></p>
-              </div>
-            </div>
-            <div class="ui-field">
-              <label class="ui-label" for="add-models">Models (comma separated; you can also fetch them with Test after adding)</label>
-              <input id="add-models" class="ui-input ui-mono" type="text" spellcheck="false" placeholder="model-a, model-b">
-              <p class="ui-error" id="err-add-models" role="alert"></p>
-            </div>
-            <div class="ui-row">
-              <button type="submit" class="ui-btn ui-btn--sm ui-btn--primary">Add provider</button>
-              <span id="add-msg" class="ui-text-secondary ui-small" role="status" aria-live="polite"></span>
-            </div>
-          </form>
+            </form>
+          </section>
         </section>
       </section>
 
       <!-- ============================== General ============================= -->
       <section id="panel-general" class="ui-stack panel" role="tabpanel" aria-labelledby="tab-general" tabindex="0" hidden>
-        <form id="general-form" class="ui-card general" autocomplete="off" novalidate>
-          <h2 class="ui-card__title">General</h2>
-          <div class="grid2">
-            <div class="ui-field">
-              <label class="ui-label" for="g-idle">Unload the local model after idle (minutes)</label>
-              <input id="g-idle" type="number" class="ui-input narrow" min="0" max="1440" step="1" data-field="local.idle_unload_minutes" inputmode="numeric" aria-describedby="g-idle-hint err-local.idle_unload_minutes">
-              <p id="g-idle-hint" class="ui-help">0 = never unload.</p>
-              <p class="ui-error" id="err-local.idle_unload_minutes" role="alert"></p>
-            </div>
-            <div class="ui-field">
-              <label class="ui-label" for="g-mpc">Max prompt length (characters)</label>
-              <input id="g-mpc" type="number" class="ui-input narrow" min="200" max="4000000" step="100" data-field="chat.max_prompt_chars" inputmode="numeric" aria-describedby="g-mpc-hint err-chat.max_prompt_chars">
-              <p id="g-mpc-hint" class="ui-help">The longest message you can type; attached files have their own limit. 200 to 4000000 characters (MiniMax accepts about 1M tokens).</p>
-              <p class="ui-error" id="err-chat.max_prompt_chars" role="alert"></p>
-            </div>
+        <form id="general-form" class="ui-stack general" autocomplete="off" novalidate>
+
+          <section class="ui-card" aria-labelledby="h-window">
+            <h2 id="h-window" class="ui-card__title">Window and shortcut</h2>
             <div class="ui-field">
               <label class="ui-label" for="g-hotkey">Global hotkey</label>
-              <input id="g-hotkey" type="text" class="ui-input ui-mono" data-field="ui.hotkey" spellcheck="false" autocomplete="off" placeholder="Ctrl+Alt+C" aria-describedby="g-hotkey-hint err-ui.hotkey">
-              <p id="g-hotkey-hint" class="ui-help">Type a combination such as Ctrl+Alt+C. It is registered when you save.</p>
+              <div class="ui-row hotkey-row">
+                <input id="g-hotkey" type="text" class="ui-input ui-mono" data-field="ui.hotkey" spellcheck="false" autocomplete="off" placeholder="Ctrl+Alt+C" aria-describedby="g-hotkey-hint err-ui.hotkey">
+                <button type="button" id="g-hotkey-record" class="ui-btn ui-btn--sm" aria-pressed="false">Record</button>
+                <button type="button" id="g-hotkey-reset" class="ui-btn ui-btn--sm ui-btn--ghost">Reset to Ctrl+Alt+C</button>
+                <button type="button" id="g-hotkey-copilot" class="ui-btn ui-btn--sm ui-btn--ghost" aria-describedby="g-hotkey-copilot-hint">Copilot key</button>
+              </div>
+              <p id="g-hotkey-hint" class="ui-help">Press Record and then the keys you want, or type a combination such as Ctrl+Alt+C. It is registered when you save.</p>
+              <p id="g-hotkey-copilot-hint" class="ui-help">Copilot key: Windows only. Replaces the PowerToys remap.</p>
               <p class="ui-error" id="err-ui.hotkey" role="alert"></p>
             </div>
+
             <div class="ui-field">
-              <label class="ui-label" for="g-theme">Theme</label>
-              <select id="g-theme" class="ui-select" data-ui-theme-picker aria-label="Theme"></select>
+              <span class="ui-label" id="g-theme-label">Theme</span>
+              <div id="g-theme-grid" class="theme-grid" role="radiogroup" aria-labelledby="g-theme-label"></div>
+              <select id="g-theme" class="ui-select" data-ui-theme-picker aria-label="Theme" hidden></select>
               <p class="ui-help">Applies to both windows immediately.</p>
             </div>
-            <div class="ui-field">
-              <label class="ui-label" for="g-reasoning">Show reasoning</label>
-              <select id="g-reasoning" class="ui-select" data-field="chat.show_reasoning">
-                <option value="collapsed">Collapsed (expand on demand)</option>
-                <option value="hidden">Hidden</option>
-              </select>
-              <p class="ui-error" id="err-chat.show_reasoning" role="alert"></p>
-            </div>
-          </div>
 
-          <fieldset class="ui-fieldset tools prompts">
-            <legend>Personality and instructions</legend>
+            <div class="switches">
+              <label class="ui-check" for="g-autostart"><input id="g-autostart" type="checkbox" role="switch" class="ui-switch"> <span>Start at login</span><span class="ui-switch-state" aria-hidden="true"></span></label>
+              <p id="autostart-msg" class="ui-help" role="status" aria-live="polite"></p>
+              <label class="ui-check" for="g-sticky"><input id="g-sticky" type="checkbox" role="switch" class="ui-switch" data-field="ui.sticky"> <span>Sticky popup: stays open until you close it or press the hotkey again</span><span class="ui-switch-state" aria-hidden="true"></span></label>
+              <label class="ui-check" for="g-reply"><input id="g-reply" type="checkbox" role="switch" class="ui-switch" data-field="ui.show_on_reply"> <span>Show the popup when a reply finishes</span><span class="ui-switch-state" aria-hidden="true"></span></label>
+            </div>
+          </section>
+
+          <section class="ui-card" aria-labelledby="h-chat">
+            <h2 id="h-chat" class="ui-card__title">Chat</h2>
+            <div class="grid2">
+              <div class="ui-field">
+                <label class="ui-label" for="g-mpc">Longest message you can type (characters)</label>
+                <input id="g-mpc" type="number" class="ui-input narrow ui-num" min="200" max="4000000" step="100" data-field="chat.max_prompt_chars" inputmode="numeric" aria-describedby="g-mpc-hint err-chat.max_prompt_chars">
+                <p id="g-mpc-hint" class="ui-help">Attached files have their own limit. 200 to 4000000 characters (MiniMax accepts about 1M tokens).</p>
+                <p class="ui-error" id="err-chat.max_prompt_chars" role="alert"></p>
+              </div>
+              <div class="ui-field">
+                <label class="ui-label" for="g-idle">Unload the local model after idle (minutes)</label>
+                <input id="g-idle" type="number" class="ui-input narrow ui-num" min="0" max="1440" step="1" data-field="local.idle_unload_minutes" inputmode="numeric" aria-describedby="g-idle-hint err-local.idle_unload_minutes">
+                <p id="g-idle-hint" class="ui-help">0 = never unload.</p>
+                <p class="ui-error" id="err-local.idle_unload_minutes" role="alert"></p>
+              </div>
+              <div class="ui-field">
+                <label class="ui-label" for="g-reasoning">Show reasoning</label>
+                <select id="g-reasoning" class="ui-select" data-field="chat.show_reasoning">
+                  <option value="collapsed">Collapsed (expand on demand)</option>
+                  <option value="hidden">Hidden</option>
+                </select>
+                <p class="ui-error" id="err-chat.show_reasoning" role="alert"></p>
+              </div>
+            </div>
             <div class="ui-field">
               <label class="ui-label" for="g-personality">Personality (system prompt)</label>
               <textarea id="g-personality" class="ui-textarea" rows="3" maxlength="20000" data-field="chat.system_prompt" spellcheck="true"
@@ -239,64 +299,87 @@
               <p id="g-instructions-hint" class="ui-help">Standing directions sent with every message: facts about you, preferences, rules. Like "custom instructions" in other assistants.</p>
               <p class="ui-error" id="err-chat.instructions" role="alert"></p>
             </div>
-          </fieldset>
+          </section>
 
-          <fieldset class="ui-fieldset tools quick-actions" aria-describedby="qa-hint">
-            <legend>Quick actions</legend>
-            <p id="qa-hint" class="ui-help">One-tap prompts shown in a new chat and under the bolt button next to the message box. Pick one, paste your text, press Enter. The instructions go to the model with your text; keep them short and explicit for the small local model.</p>
+          <section class="ui-card quick-actions" aria-labelledby="h-qa" aria-describedby="qa-hint">
+            <h2 id="h-qa" class="ui-card__title">Quick actions</h2>
+            <p id="qa-hint" class="ui-help">One-tap prompts shown in a new chat and under the bolt button next to the message box, in this order. Pick one, paste your text, press Enter. The instructions go to the model with your text; keep them short and explicit for the small local model.</p>
             <ol id="qa-list" class="qa-list" aria-label="Quick actions"></ol>
             <div class="ui-row">
               <button type="button" id="qa-add" class="ui-btn ui-btn--sm">Add action</button>
               <button type="button" id="qa-restore" class="ui-btn ui-btn--sm">Restore defaults</button>
             </div>
             <p class="ui-error" id="err-chat.quick_actions" role="alert"></p>
-          </fieldset>
+          </section>
 
-          <div class="switches">
-            <label class="ui-check" for="g-autostart"><input id="g-autostart" type="checkbox" role="switch" class="ui-switch"> <span>Start at login</span><span class="ui-switch-state" aria-hidden="true"></span></label>
-            <p id="autostart-msg" class="ui-help" role="status" aria-live="polite"></p>
-            <label class="ui-check" for="g-sticky"><input id="g-sticky" type="checkbox" role="switch" class="ui-switch" data-field="ui.sticky"> <span>Sticky popup: stays open until you close it or press the hotkey again</span><span class="ui-switch-state" aria-hidden="true"></span></label>
-            <label class="ui-check" for="g-reply"><input id="g-reply" type="checkbox" role="switch" class="ui-switch" data-field="ui.show_on_reply"> <span>Show the popup when a reply finishes</span><span class="ui-switch-state" aria-hidden="true"></span></label>
-          </div>
-
-          <fieldset class="ui-fieldset tools">
-            <legend>Tools the assistant may use</legend>
-            <label class="ui-check" for="tool-web_search"><input id="tool-web_search" type="checkbox" class="ui-checkbox" value="web_search" data-tool> <span>Web search</span></label>
-            <label class="ui-check" for="tool-news_search"><input id="tool-news_search" type="checkbox" class="ui-checkbox" value="news_search" data-tool> <span>News search</span></label>
-            <label class="ui-check" for="tool-fetch_url"><input id="tool-fetch_url" type="checkbox" class="ui-checkbox" value="fetch_url" data-tool> <span>Fetch a web page</span></label>
-            <label class="ui-check" for="tool-weather"><input id="tool-weather" type="checkbox" class="ui-checkbox" value="weather" data-tool> <span>Weather (Open-Meteo)</span></label>
-            <label class="ui-check" for="tool-wikipedia"><input id="tool-wikipedia" type="checkbox" class="ui-checkbox" value="wikipedia" data-tool> <span>Wikipedia</span></label>
-            <label class="ui-check" for="tool-exchange_rate"><input id="tool-exchange_rate" type="checkbox" class="ui-checkbox" value="exchange_rate" data-tool> <span>Exchange rates</span></label>
-            <label class="ui-check" for="tool-current_datetime"><input id="tool-current_datetime" type="checkbox" class="ui-checkbox" value="current_datetime" data-tool> <span>Current date and time</span></label>
-            <label class="ui-check" for="tool-calculator"><input id="tool-calculator" type="checkbox" class="ui-checkbox" value="calculator" data-tool> <span>Calculator</span></label>
-            <label class="ui-check" for="tool-create_document"><input id="tool-create_document" type="checkbox" class="ui-checkbox" value="create_document" data-tool> <span>Create documents</span></label>
-            <p class="ui-help">The small local model is offered web search, page fetch, weather, date and time, and the calculator. Cloud and StudioForge models get every tool that is on.</p>
+          <section class="ui-card" aria-labelledby="h-tools">
+            <h2 id="h-tools" class="ui-card__title">Tools the assistant may use</h2>
+            <p class="ui-help">Each line says what leaves this PC when the tool runs. <span class="ui-badge">Local</span> marks the five tools the small local model is offered; cloud and StudioForge models get every tool that is on.</p>
+            <ul class="tool-list">
+              <li class="tool">
+                <label class="ui-check" for="tool-web_search"><input id="tool-web_search" type="checkbox" class="ui-checkbox" value="web_search" data-tool> <span>Web search</span></label><span class="ui-badge" data-local-tool>Local</span>
+                <p class="ui-help">Your search words go to DuckDuckGo (through the ddgs library).</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-news_search"><input id="tool-news_search" type="checkbox" class="ui-checkbox" value="news_search" data-tool> <span>News search</span></label>
+                <p class="ui-help">Your search words go to DuckDuckGo News (through the ddgs library).</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-fetch_url"><input id="tool-fetch_url" type="checkbox" class="ui-checkbox" value="fetch_url" data-tool> <span>Fetch a web page</span></label><span class="ui-badge" data-local-tool>Local</span>
+                <p class="ui-help">The content of the web address the assistant asks for is downloaded to this PC.</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-weather"><input id="tool-weather" type="checkbox" class="ui-checkbox" value="weather" data-tool> <span>Weather</span></label><span class="ui-badge" data-local-tool>Local</span>
+                <p class="ui-help">Your location goes to Open-Meteo.</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-wikipedia"><input id="tool-wikipedia" type="checkbox" class="ui-checkbox" value="wikipedia" data-tool> <span>Wikipedia</span></label>
+                <p class="ui-help">The search term goes to Wikipedia.</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-exchange_rate"><input id="tool-exchange_rate" type="checkbox" class="ui-checkbox" value="exchange_rate" data-tool> <span>Exchange rates</span></label>
+                <p class="ui-help">Nothing personal: only the currency codes are looked up (frankfurter.dev).</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-current_datetime"><input id="tool-current_datetime" type="checkbox" class="ui-checkbox" value="current_datetime" data-tool> <span>Current date and time</span></label><span class="ui-badge" data-local-tool>Local</span>
+                <p class="ui-help">Nothing leaves this PC.</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-calculator"><input id="tool-calculator" type="checkbox" class="ui-checkbox" value="calculator" data-tool> <span>Calculator</span></label><span class="ui-badge" data-local-tool>Local</span>
+                <p class="ui-help">Nothing leaves this PC.</p>
+              </li>
+              <li class="tool">
+                <label class="ui-check" for="tool-create_document"><input id="tool-create_document" type="checkbox" class="ui-checkbox" value="create_document" data-tool> <span>Create documents</span></label>
+                <p class="ui-help">Writes a file in Documents\ChatForge on this PC.</p>
+              </li>
+            </ul>
             <p class="ui-error" id="err-tools.enabled" role="alert"></p>
-          </fieldset>
-
-          <div class="grid2">
-            <div class="ui-field">
-              <label class="ui-label" for="g-location">Your location</label>
-              <input id="g-location" type="text" class="ui-input" maxlength="100" data-field="tools.location" placeholder="e.g. Lisbon, Portugal" autocomplete="off" aria-describedby="g-location-hint err-tools.location">
-              <p id="g-location-hint" class="ui-help">For weather and "near me" questions. Leave it empty and the assistant asks.</p>
-              <p class="ui-error" id="err-tools.location" role="alert"></p>
-            </div>
-            <div class="ui-field">
-              <label class="ui-label" for="g-units">Units</label>
-              <select id="g-units" class="ui-select" data-field="tools.units">
-                <option value="metric">Metric (°C, km/h, mm)</option>
-                <option value="imperial">Imperial (°F, mph, inches)</option>
-              </select>
-              <p class="ui-error" id="err-tools.units" role="alert"></p>
-            </div>
-          </div>
-
-          <fieldset class="ui-fieldset tools">
-            <legend>When the local model fails</legend>
             <div class="grid2">
               <div class="ui-field">
+                <label class="ui-label" for="g-location">Your location</label>
+                <input id="g-location" type="text" class="ui-input" maxlength="100" data-field="tools.location" placeholder="e.g. Lisbon, Portugal" autocomplete="off" aria-describedby="g-location-hint err-tools.location">
+                <p id="g-location-hint" class="ui-help">For weather and "near me" questions. Leave it empty and the assistant asks.</p>
+                <p class="ui-error" id="err-tools.location" role="alert"></p>
+              </div>
+              <div class="ui-field">
+                <label class="ui-label" for="g-units">Units</label>
+                <select id="g-units" class="ui-select" data-field="tools.units">
+                  <option value="metric">Metric (°C, km/h, mm)</option>
+                  <option value="imperial">Imperial (°F, mph, inches)</option>
+                </select>
+                <p class="ui-error" id="err-tools.units" role="alert"></p>
+              </div>
+            </div>
+          </section>
+
+          <section class="ui-card" aria-labelledby="h-fallback">
+            <h2 id="h-fallback" class="ui-card__title">When the local model fails</h2>
+            <p id="g-fallback-hint" class="ui-help">If the NPU model cannot load, crashes or times out, the message is sent again to the provider you pick, for example StudioForge.</p>
+            <p class="ui-text-secondary ui-small">When this happens your message is sent to that provider, so it leaves this PC.</p>
+            <div class="grid2 fallback-grid">
+              <div class="ui-field">
                 <label class="ui-label" for="g-fallback">Answer with</label>
-                <select id="g-fallback" class="ui-select" data-field="chat.fallback_provider" aria-describedby="g-fallback-hint"></select>
+                <select id="g-fallback" class="ui-select" data-field="chat.fallback_provider" aria-describedby="g-fallback-hint g-fallback-warn"></select>
                 <p class="ui-error" id="err-chat.fallback_provider" role="alert"></p>
               </div>
               <div class="ui-field">
@@ -306,14 +389,18 @@
                 <p class="ui-error" id="err-chat.fallback_model" role="alert"></p>
               </div>
             </div>
-            <p id="g-fallback-hint" class="ui-help">If the NPU model cannot load, crashes or times out, the message is sent again to this provider, for example StudioForge.</p>
-          </fieldset>
+            <p id="g-fallback-warn" class="ui-help warn-text" role="status" hidden></p>
+          </section>
 
-          <div class="ui-row">
-            <button type="submit" id="g-save" class="ui-btn ui-btn--sm ui-btn--primary">Save</button>
-            <span id="g-msg" class="ui-text-secondary ui-small" role="status" aria-live="polite"></span>
-          </div>
           <p id="g-restart" class="ui-callout ui-callout--warning" role="status" hidden></p>
+
+          <div class="savebar" id="g-savebar">
+            <span id="g-dirty" class="dirty ui-small" hidden><span class="ui-dot ui-dot--warning" aria-hidden="true"></span> Unsaved changes</span>
+            <span id="g-msg" class="ui-text-secondary ui-small" role="status" aria-live="polite"></span>
+            <span class="ui-spacer"></span>
+            <button type="button" id="g-revert" class="ui-btn ui-btn--sm" disabled>Revert</button>
+            <button type="submit" id="g-save" class="ui-btn ui-btn--sm ui-btn--primary">Save</button>
+          </div>
         </form>
       </section>
 
@@ -330,14 +417,22 @@
                 <option value="ERROR">Error</option>
               </select>
             </div>
+            <div class="ui-row">
+              <label class="ui-label sr-only" for="log-filter">Filter the log</label>
+              <input id="log-filter" type="search" class="ui-input log-filter" placeholder="Filter lines" spellcheck="false" autocomplete="off">
+            </div>
             <label class="ui-check" for="log-auto"><input id="log-auto" type="checkbox" role="switch" class="ui-switch" checked> <span>Auto-refresh (2 s)</span><span class="ui-switch-state" aria-hidden="true"></span></label>
-            <span class="ui-spacer"></span>
+          </div>
+          <div class="logs-bar">
             <button type="button" id="log-refresh" class="ui-btn ui-btn--sm">Refresh</button>
             <button type="button" id="log-copy" class="ui-btn ui-btn--sm">Copy</button>
+            <button type="button" id="log-diagnostics" class="ui-btn ui-btn--sm">Copy diagnostics</button>
+            <span class="ui-spacer"></span>
             <button type="button" id="log-open" class="ui-btn ui-btn--sm">Open folder</button>
+            <button type="button" id="log-open-config" class="ui-btn ui-btn--sm">Open config folder</button>
           </div>
           <pre id="log-view" class="log-view" tabindex="0" aria-label="Log output (last 500 lines)"></pre>
-          <p id="log-count" class="ui-help" role="status"></p>
+          <p id="log-count" class="ui-help ui-num" role="status"></p>
         </div>
       </section>
     </main>
@@ -352,7 +447,8 @@
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
 
-  <div id="toast" class="ui-toast" role="status" aria-live="polite" hidden></div>
+  <!-- Fallback toast host (the bundle's UIComponents.toast makes its own region). -->
+  <div id="toast" class="ui-toasts" aria-live="polite" hidden></div>
 
   <!-- No inline scripts and no inline handlers (the CSP forbids them). -->
   <script type="module" src="/static/js/settings.js"></script>

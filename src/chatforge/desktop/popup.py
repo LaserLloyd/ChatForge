@@ -31,6 +31,14 @@ thread, and ``SetWindowPos`` sends messages to it, while ``events.closing`` runs
 thread. So ``self._lock`` guards state only and is never held across a call into the
 window, and the closing handlers never take it.
 
+Linux (X11, or Wayland through XWayland; ``app.py`` sets ``GDK_BACKEND=x11``): the same
+behaviour on pywebview's GTK backend, through :mod:`chatforge.desktop.xutil`. Placement is the
+same pure :func:`~chatforge.desktop.win32util.place` over the primary monitor's work area,
+applied with ``Gtk.Window.move``/``resize``; the resize handles follow the pointer read over
+Xlib; a close hides through ``events.closing`` returning False (pywebview's GTK
+``delete-event`` handler then keeps the window); a reply-finished show sets
+``set_accept_focus(False)`` for the first moment, and every show ends in ``present()``.
+
 Closing: pywebview's ``FormClosing`` handler cancels whenever ``events.closing`` returns
 False, whatever the reason. :meth:`Popup._on_closing` returns False so Alt+F4 hides the
 popup; :meth:`Popup._on_form_closing`, subscribed after pywebview's, lets every close that
@@ -49,7 +57,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from chatforge.desktop import theme, win32util
+from chatforge.desktop import theme, win32util, xutil
 
 _log = logging.getLogger(__name__)
 
@@ -98,6 +106,8 @@ class _Resize:
     #: The work area of the monitor the popup is on: it does not grow past it.
     bounds: win32util.Rect
     follow: bool
+    #: Linux: the X pointer a mouse resize reads (Windows reads ``GetCursorPos``).
+    pointer: Any = None
     #: :data:`RESIZE_THRESHOLD` in physical px; ``dragging`` once the pointer went that far.
     threshold: int = 0
     dragging: bool = False
@@ -161,7 +171,10 @@ class Popup:
             width=int(ui.width),
             height=int(ui.height),
             min_size=MIN_SIZE,
-            resizable=False,  # no frame to grab: the page's handles resize it (begin_resize)
+            # No frame to grab: the page's handles resize it (begin_resize). On GTK a window
+            # that is not resizable ignores resize(), so Linux says True (it has no frame
+            # either, since frameless=True).
+            resizable=self._linux(),
             frameless=True,
             easy_drag=False,  # §7 item 5: text selection must not drag the window
             on_top=True,
@@ -176,6 +189,11 @@ class Popup:
             self._events.attach(self.window)
         return self.window
 
+    @staticmethod
+    def _linux() -> bool:
+        """Whether this is the Linux (GTK) shell."""
+        return xutil.is_linux() and not win32util.IS_WINDOWS
+
     def _on_before_show(self) -> None:
         """GUI thread, once the native form exists: subscribe :meth:`_on_form_closing` and
         :meth:`_on_activated`.
@@ -185,6 +203,12 @@ class Popup:
         """
         native = getattr(self.window, "native", None)
         if native is None:
+            return
+        if self._linux():
+            # GTK: no FormClosing; the closing event's veto is the whole story. Keep the
+            # popup out of the dock, and learn about the user clicking into it.
+            xutil.skip_taskbar(native)
+            xutil.connect_focus_in(native, self._on_activated)
             return
         native.FormClosing += self._on_form_closing
         native.Activated += self._on_activated
@@ -205,7 +229,10 @@ class Popup:
         native = getattr(self.window, "native", None)
         if native is not None:
             try:
-                native.Hide()  # already on the GUI thread: no Invoke, no wait for "shown"
+                if self._linux():
+                    xutil.hide_native(native)  # GTK main thread: delete-event is running
+                else:
+                    native.Hide()  # on the GUI thread: no Invoke, no wait for "shown"
             except Exception as exc:  # noqa: BLE001
                 _log.warning("popup hide on close failed: %s", type(exc).__name__)
         self._note_hidden("close")
@@ -306,6 +333,13 @@ class Popup:
     def target_rect(self, size: tuple[int, int] | None = None) -> win32util.Rect | None:
         """Where the popup goes right now (pure placement over live monitor data), at
         ``size`` (logical px) or the configured size."""
+        if self._linux():
+            if self.window is None or not self._is_created():
+                return None
+            ui = self._config().ui
+            width, height = size if size is not None else (int(ui.width), int(ui.height))
+            # GDK logical px: the 96 dpi the pure math wants for "no scaling".
+            return win32util.place(xutil.work_area(), 96, int(width), int(height), int(ui.margin))
         hwnd = self.hwnd
         if hwnd is None or not win32util.IS_WINDOWS:
             return None
@@ -316,6 +350,11 @@ class Popup:
         return win32util.place(work, dpi, int(width), int(height), int(ui.margin))
 
     def place(self, size: tuple[int, int] | None = None) -> win32util.Rect | None:
+        if self._linux():
+            rect = self.target_rect(size)
+            if rect is None or not xutil.move_resize(self.window, rect):
+                return None
+            return rect
         hwnd = self.hwnd
         rect = self.target_rect(size)
         if hwnd is None or rect is None:
@@ -342,21 +381,26 @@ class Popup:
         otherwise the page reports the moves to :meth:`drag_resize`.
         """
         moves = RESIZE_EDGES.get(edge)
-        hwnd = self.hwnd
-        if moves is None or hwnd is None or not win32util.IS_WINDOWS:
-            return False
-        start = win32util.window_rect(hwnd)
-        scale = win32util.dpi_for_window(hwnd) / 96.0
-        bounds = win32util.monitor_info_at((start.right - 1, start.bottom - 1))[1]
-        session = _Resize(
-            moves=moves,
-            start=start,
-            press=(start.left + int(grab_x), start.top + int(grab_y)),
-            min_size=(round(MIN_SIZE[0] * scale), round(MIN_SIZE[1] * scale)),
-            bounds=bounds,
-            follow=bool(follow),
-            threshold=max(1, round(RESIZE_THRESHOLD * scale)),
-        )
+        if moves is not None and self._linux():
+            session = self._linux_resize_session(moves, grab_x, grab_y, follow)
+            if session is None:
+                return False
+        else:
+            hwnd = self.hwnd
+            if moves is None or hwnd is None or not win32util.IS_WINDOWS:
+                return False
+            start = win32util.window_rect(hwnd)
+            scale = win32util.dpi_for_window(hwnd) / 96.0
+            bounds = win32util.monitor_info_at((start.right - 1, start.bottom - 1))[1]
+            session = _Resize(
+                moves=moves,
+                start=start,
+                press=(start.left + int(grab_x), start.top + int(grab_y)),
+                min_size=(round(MIN_SIZE[0] * scale), round(MIN_SIZE[1] * scale)),
+                bounds=bounds,
+                follow=bool(follow),
+                threshold=max(1, round(RESIZE_THRESHOLD * scale)),
+            )
         with self._lock:
             previous, self._resize = self._resize, session
         if previous is not None:
@@ -367,6 +411,33 @@ class Popup:
             )
             session.thread.start()
         return True
+
+    def _linux_resize_session(
+        self, moves: tuple[bool, bool], grab_x: int, grab_y: int, follow: bool
+    ) -> _Resize | None:
+        """The resize state in GDK logical px, or ``None`` (no window yet, or a mouse
+        resize without a readable pointer, which is python-xlib and ``DISPLAY``)."""
+        if self.window is None or not self._is_created():
+            return None
+        start = xutil.window_rect(self.window)
+        if start is None:
+            return None
+        pointer = None
+        if follow:
+            pointer = xutil.open_pointer()
+            if pointer is None:
+                return None
+        scale = max(1, int(getattr(pointer, "_scale", 1) or 1))
+        return _Resize(
+            moves=moves,
+            start=start,
+            press=(start.left + int(grab_x) // scale, start.top + int(grab_y) // scale),
+            min_size=MIN_SIZE,
+            bounds=xutil.work_area(),
+            follow=bool(follow),
+            pointer=pointer,
+            threshold=RESIZE_THRESHOLD,
+        )
 
     def drag_resize(self, dx: int, dy: int) -> bool:
         """A pen or touch resize moved ``dx``/``dy`` physical px from where it started."""
@@ -388,6 +459,10 @@ class Popup:
         thread = session.thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(RESIZE_JOIN_S)
+        if self._linux():
+            # The rect we applied: GTK reports the new size only after a configure event.
+            last = session.last
+            return None if last is None else (last.width, last.height)
         hwnd = self.hwnd
         if session.last is None or hwnd is None:
             return None
@@ -423,8 +498,11 @@ class Popup:
         last_point: tuple[int, int] | None = None
         try:
             while not session.stop.is_set() and time.monotonic() < deadline:
-                down = win32util.primary_button_down()
-                point = win32util.cursor_pos()
+                if session.pointer is not None:
+                    point, down = session.pointer.read()
+                else:
+                    down = win32util.primary_button_down()
+                    point = win32util.cursor_pos()
                 if point != last_point:
                     last_point = point
                     self._resize_to(session, point)
@@ -433,6 +511,9 @@ class Popup:
                 time.sleep(RESIZE_POLL_S)
         except Exception:  # noqa: BLE001 - a daemon thread has nobody to raise to
             _log.exception("popup resize failed")
+        finally:
+            if session.pointer is not None:
+                session.pointer.close()
 
     def _resize_to(self, session: _Resize, point: tuple[int, int]) -> None:
         if not session.dragging:
@@ -448,10 +529,14 @@ class Popup:
         )
         if rect == (session.last or session.start):
             return
-        hwnd = self.hwnd
-        if hwnd is None:
-            return
-        win32util.set_window_pos(hwnd, rect, activate=False, keep_zorder=True)
+        if self._linux():
+            if not xutil.move_resize(self.window, rect):
+                return
+        else:
+            hwnd = self.hwnd
+            if hwnd is None:
+                return
+            win32util.set_window_pos(hwnd, rect, activate=False, keep_zorder=True)
         session.last = rect
 
     # --- show / hide / toggle ------------------------------------------------------------
@@ -486,7 +571,9 @@ class Popup:
             self._visible = True
             self._shown_inactive = False
         hwnd = self.hwnd
-        if hwnd is not None and win32util.IS_WINDOWS:
+        if self._linux():
+            xutil.present(getattr(window, "native", None))
+        elif hwnd is not None and win32util.IS_WINDOWS:
             try:
                 win32util.force_foreground(hwnd)
             except Exception as exc:  # noqa: BLE001
@@ -511,6 +598,8 @@ class Popup:
         window = self.window
         if window is None or self._destroying or not self._is_created():
             return False
+        if self._linux():
+            return self._show_inactive_linux(window, source)
         hwnd = self.hwnd
         if hwnd is None or not win32util.IS_WINDOWS:
             return False  # pywebview's own show() always activates the window
@@ -538,6 +627,37 @@ class Popup:
             self._visible = True
             if foreground:
                 self._shown_inactive = False  # a hotkey show won the race: it has the focus
+        _log.debug(
+            "popup shown without focus source=%s rect=%s", source, rect.as_tuple() if rect else None
+        )
+        return True
+
+    def _show_inactive_linux(self, window: Any, source: str) -> bool:
+        """:meth:`show_inactive` on GTK: ``set_accept_focus(False)`` and
+        ``set_focus_on_map(False)`` around pywebview's ``show()``, undone shortly after
+        (:func:`xutil.restore_focus`) so a click into the popup still focuses it."""
+        native = getattr(window, "native", None)
+        if not xutil.is_gtk_window(native) or self.visible:
+            return False
+        with self._lock:
+            self._shown_inactive = True  # before the window appears (see the Windows branch)
+        rect = None
+        try:
+            rect = self.place()
+        except Exception as exc:  # noqa: BLE001 - placement must never block showing
+            _log.warning("popup placement failed: %s", type(exc).__name__)
+        xutil.prepare_no_focus(native)
+        try:
+            window.show()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("popup show failed: %s", type(exc).__name__)
+            xutil.restore_focus(native, 0)
+            with self._lock:
+                self._shown_inactive = False
+            return False
+        xutil.restore_focus(native)
+        with self._lock:
+            self._visible = True
         _log.debug(
             "popup shown without focus source=%s rect=%s", source, rect.as_tuple() if rect else None
         )

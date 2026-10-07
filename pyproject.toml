@@ -20,11 +20,17 @@ dependencies = [
     "psutil>=7.2",
     "keyring>=25.7",
     "ddgs>=9.16,<10",
-    "pywin32>=312; sys_platform=='win32'",
     "pypdf>=6.19",
+    # X11 pointer reads and the global hotkey grab on Linux (pystray pulls it in there too).
+    "python-xlib>=0.33; sys_platform=='linux'",
 ]
 
 [project.optional-dependencies]
+# COM conversion of legacy Office files (.doc/.xls/.ppt) in attachments.py; the import there is
+# lazy and guarded, so without it those files are reported as unreadable.
+office = [
+    "pywin32>=312; sys_platform=='win32'",
+]
 dev = [
     "pytest>=8.3,<10",
     "pytest-asyncio>=1.4,<2",

@@ -57,9 +57,11 @@ from chatforge.logging_setup import get_logger
 from chatforge.models import npu_compat
 from chatforge.runtime import compile_cache
 from chatforge.runtime.ovms_supervisor import (
+    NPU_DEVICE_NODE,
     OVMS_VERSION,
     LaunchSpec,
     OvmsError,
+    npu_unavailable_on_host,
     spec_compile_hash,
 )
 
@@ -103,6 +105,15 @@ class _Lease:
 def _consume_result(task: asyncio.Task) -> None:
     if not task.cancelled():
         task.exception()
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    """Done-callback for a background task nobody awaits: its failure is logged, not lost."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("background_task_failed", task=task.get_name(), error=repr(exc)[:300])
 
 
 def _cfg(get_config: Callable[[], Any], dotted: str, default: Any) -> Any:
@@ -251,11 +262,21 @@ class LocalModelManager:
         """The ``LaunchSpec`` for ``model_id`` under the current config and catalog."""
         return self.plan(model_id)[0]
 
+    _warned_no_npu = False
+
     def _resolve_device(self, model_id: str, model_path: Path) -> tuple[str, dict[str, str] | None]:
         """The device to run ``model_id`` on, and why it is not the configured one."""
         device = str(_cfg(self._get_config, "local.device", "NPU")).upper()
         if "NPU" not in device:
             return device, None
+        if npu_unavailable_on_host(device):
+            # Linux without the NPU driver node: CPU for this launch (the config is kept),
+            # chosen here so the compile-cache key is the CPU's.
+            reason = f"no {NPU_DEVICE_NODE} on this host (Intel NPU driver not installed)"
+            if not self._warned_no_npu:
+                self._warned_no_npu = True
+                log.warning("npu_unavailable_using_cpu", reason=reason)
+            return LAST_RESORT_DEVICE, {"from": device, "to": LAST_RESORT_DEVICE, "reason": reason}
         verdict = npu_compat.npu_verdict(model_id, model_path, self._catalog_safe())
         if verdict.ok is not False:
             return device, None
@@ -442,6 +463,7 @@ class LocalModelManager:
             self._precompile_task = asyncio.create_task(
                 self.precompiler.run(), name="ovms-precompiler"
             )
+            self._precompile_task.add_done_callback(_log_task_failure)
 
     async def aclose(self) -> None:
         """Stop the precompiler, unload (reason ``shutdown``) and close the supervisor."""
@@ -748,6 +770,7 @@ class LocalModelManager:
         if event is None:
             return
         self._watch_task = asyncio.create_task(self._watch_exit(event, gen), name="ovms-watch")
+        self._watch_task.add_done_callback(_log_task_failure)
 
     async def _watch_exit(self, event: asyncio.Event, gen: int) -> None:
         """``exit_event`` is set on every exit, deliberate or not. Our own stops bump

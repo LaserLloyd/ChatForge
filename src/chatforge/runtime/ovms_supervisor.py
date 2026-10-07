@@ -1,4 +1,4 @@
-"""Supervision of the single ``ovms.exe`` child: argv, env, spawn, readiness, stop.
+"""Supervision of the single OVMS child (``ovms.exe`` / ``ovms``): argv, env, spawn, ready, stop.
 
 Adapted from StudioForge src/studioforge/core/supervisor.py (MIT, LaserLloyd):
 ``_spawn`` (suspended -> assign to job -> resume), ``_resume``, ``_pump``, the
@@ -33,6 +33,7 @@ import contextlib
 import hashlib
 import json
 import os
+import sys
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
@@ -49,6 +50,7 @@ from chatforge.runtime.jobobject import (
     create_child_job,
     describe_exit_code,
     kill_process_tree,
+    make_pdeathsig_preexec,
     process_create_time,
     process_is_alive,
     resume_process,
@@ -248,10 +250,40 @@ def _split_path(value: str) -> list[str]:
     return [p for p in value.split(os.pathsep) if p]
 
 
-def ovms_env(ovms_dir: Path, base: Mapping[str, str]) -> dict[str, str]:
-    """The child environment: ``base`` minus the venv, plus what ``setupvars.ps1`` sets.
+def is_windows_host() -> bool:
+    return sys.platform == "win32"
 
-    ``setupvars.ps1`` (2026.4.0) sets, when ``ovms\\python`` exists (python_on)::
+
+def ovms_root(exe: Path) -> Path:
+    """The ``ovms`` folder for an executable: its parent on Windows, the grandparent
+    (``ovms/bin/ovms`` -> ``ovms``) on Linux."""
+    exe = Path(exe)
+    if not is_windows_host() and exe.parent.name == "bin":
+        return exe.parent.parent
+    return exe.parent
+
+
+#: The Linux accelerator node of the Intel NPU driver (``intel_vpu`` / ``accel`` class).
+NPU_DEVICE_NODE = Path("/dev/accel/accel0")
+
+
+def npu_unavailable_on_host(device: str, *, node: Path | None = None) -> bool:
+    """True when ``device`` is ``NPU`` on Linux and the driver node does not exist.
+
+    For the manager's device resolution (warn, then run on CPU). The supervisor itself
+    launches exactly the device it is given.
+    """
+    if is_windows_host() or not sys.platform.startswith("linux"):
+        return False
+    if device.strip().upper() != "NPU":
+        return False
+    return not (node if node is not None else NPU_DEVICE_NODE).exists()
+
+
+def ovms_env(ovms_dir: Path, base: Mapping[str, str]) -> dict[str, str]:
+    """The child environment: ``base`` minus the venv, plus what the archive's env script sets.
+
+    Windows: ``setupvars.ps1`` (2026.4.0) sets, when ``ovms\\python`` exists (python_on)::
 
         OVMS_DIR   = <ovms dir>
         PYTHONHOME = <ovms dir>\\python
@@ -262,7 +294,61 @@ def ovms_env(ovms_dir: Path, base: Mapping[str, str]) -> dict[str, str]:
     and for python_off only ``PATH = <old PATH>;<ovms dir>``. It never sets
     ``PYTHONPATH``; the bundled interpreter is isolated by ``python312._pth``.
     Keys are matched case-insensitively (Windows env semantics).
+
+    Linux: the 2026.4.0 ``.tar.gz`` archives contain **no** ``setupvars.sh`` (the
+    listing of ``ovms_ubuntu24_2026.4.0_python_on.tar.gz`` has ``ovms/bin``,
+    ``ovms/lib`` and ``ovms/thirdparty-licenses`` only). What the release documents
+    instead (docs/deploying_server_baremetal.md, "Ubuntu 22.04 / 24.04") is mirrored::
+
+        export LD_LIBRARY_PATH=${PWD}/ovms/lib            -> <ovms dir>/lib (+ the old value)
+        export PATH=$PATH:${PWD}/ovms/bin                 -> <old PATH>:<ovms dir>/bin
+        export PYTHONPATH=${PWD}/ovms/lib/python          -> only when lib/python exists
+                                                             (python_on; it holds pyovms.so)
+
+    plus ``OVMS_DIR``. ``ovms_dir`` is the ``ovms`` folder (the one holding ``bin`` and
+    ``lib``). python_on uses the *system* ``python3`` (with Jinja2 and MarkupSafe), not a
+    bundled interpreter, so ``PYTHONHOME`` is left alone (and stripped from ``base``).
     """
+    return (
+        _ovms_env_windows(ovms_dir, base) if is_windows_host() else _ovms_env_linux(ovms_dir, base)
+    )
+
+
+def _ovms_env_linux(ovms_dir: Path, base: Mapping[str, str]) -> dict[str, str]:
+    ovms_dir = Path(ovms_dir)
+    env: dict[str, str] = {}
+    old_path = ""
+    old_ld = ""
+    venv = None
+    for key, value in base.items():
+        if key == "VIRTUAL_ENV":
+            venv = value
+        if key in STRIPPED_ENV:
+            continue
+        if key == "PATH":
+            old_path = value
+            continue
+        if key == "LD_LIBRARY_PATH":
+            old_ld = value
+            continue
+        env[key] = value
+    path_parts = _split_path(old_path)
+    if venv:
+        venv_bin = os.path.normpath(os.path.join(venv, "bin"))
+        path_parts = [p for p in path_parts if os.path.normpath(p) != venv_bin]
+    env["OVMS_DIR"] = str(ovms_dir)
+    env["LD_LIBRARY_PATH"] = os.pathsep.join([str(ovms_dir / "lib"), *_split_path(old_ld)])
+    env["PATH"] = os.pathsep.join([*path_parts, str(ovms_dir / "bin")])
+    pylib = ovms_dir / "lib" / "python"
+    if pylib.is_dir():
+        env["PYTHONPATH"] = str(pylib)
+    espeak = ovms_dir / "espeak-ng-data"
+    if espeak.is_dir():
+        env["ESPEAK_DATA_PATH"] = str(espeak)
+    return env
+
+
+def _ovms_env_windows(ovms_dir: Path, base: Mapping[str, str]) -> dict[str, str]:
     ovms_dir = Path(ovms_dir)
     env: dict[str, str] = {}
     old_path = ""
@@ -344,7 +430,7 @@ def rotate_log(path: Path, *, max_bytes: int = 5_000_000, backups: int = 3) -> N
 
 
 class OvmsSupervisor:
-    """Owns at most one ``ovms.exe`` child.
+    """Owns at most one ``ovms`` (``ovms.exe`` on Windows) child.
 
     ``start()`` returns the OpenAI base URL (``http://127.0.0.1:<port>/v3``) once
     the model is ``AVAILABLE``. ``exit_event`` is set whenever the child ends
@@ -673,10 +759,9 @@ class OvmsSupervisor:
         """Create the child suspended, put it in the job, resume it, start pumping."""
         argv = self._full_argv(spec)
         self.argv = argv
-        env = ovms_env(
-            self.exe.parent, self._base_env if self._base_env is not None else os.environ
-        )
-        cwd = str(self.exe.parent) if self.exe.parent.is_dir() else None
+        root = ovms_root(self.exe)
+        env = ovms_env(root, self._base_env if self._base_env is not None else os.environ)
+        cwd = str(root) if root.is_dir() else None
         if self.use_job and not self._job_tried:
             self._job_tried = True
             self._job = create_child_job()
@@ -686,6 +771,10 @@ class OvmsSupervisor:
             kwargs["creationflags"] = spawn_creationflags(suspended=suspended)
         else:
             kwargs["start_new_session"] = True
+            # Linux: ask the kernel to SIGTERM ovms when this process dies, even by SIGKILL.
+            preexec = make_pdeathsig_preexec()
+            if preexec is not None:
+                kwargs["preexec_fn"] = preexec
 
         self._open_log(spec)
         self._write_log(

@@ -61,13 +61,13 @@ test('without pywebview the dev mock supplies every contract method', async () =
   assert.equal(state.ok, true);
   assert.ok(win.pywebview && win.pywebview.__mock, 'dev-mock was not installed');
   const methods = ['get_state', 'send_message', 'regenerate', 'attach_files', 'attach_data', 'remove_attachment', 'open_document',
-    'reveal_document', 'save_document', 'stop_generation', 'new_chat', 'select_model', 'load_model', 'unload_model',
+    'reveal_document', 'save_document', 'stop_generation', 'new_chat', 'drop_last_turn', 'undo_clear', 'select_model', 'load_model', 'unload_model',
     'hide_popup', 'set_sticky', 'start_resize', 'drag_resize', 'end_resize', 'reset_popup_size',
     'open_settings', 'open_external', 'save_api_key', 'remove_api_key', 'test_provider', 'refresh_models',
     'get_settings', 'update_settings', 'list_providers', 'upsert_provider', 'remove_provider', 'list_models',
     'delete_model', 'clear_compile_cache', 'search_models', 'repo_details', 'start_download', 'cancel_download',
     'resume_download', 'list_downloads', 'runtime_install', 'runtime_status', 'get_logs', 'open_logs_folder',
-    'get_autostart', 'set_autostart', 'set_hotkey', 'disk_usage'];
+    'open_config_folder', 'diagnostics', 'get_autostart', 'set_autostart', 'set_hotkey', 'disk_usage'];
   for (const m of methods) assert.equal(typeof win.pywebview.api[m], 'function', m);
   assert.deepEqual(Object.keys(win.pywebview.api).filter((k) => !methods.includes(k)), [], 'extra public methods');
 });
@@ -335,9 +335,10 @@ test('models: search badges, download progress events, delete refusals', async (
   assert.ok(Array.isArray(logs.lines) && logs.lines.length > 0);
 });
 
-test('open_external accepts only http(s)', async () => {
+test('open_external accepts http(s) and mailto only', async () => {
   assert.equal((await api.call('open_external', 'file:///C:/Windows/system32')).ok, false);
   assert.equal((await api.call('open_external', 'javascript:alert(1)')).ok, false);
+  assert.equal((await api.call('open_external', 'mailto:someone@example.com')).ok, true);
 });
 
 // ------------------------------------------------------------ attachments ----

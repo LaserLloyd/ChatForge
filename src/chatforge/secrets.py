@@ -62,6 +62,8 @@ def _keyring_get(provider_id: str) -> str | None:
     if value is None:
         return None
     value = value.strip()
+    if value:
+        register_secret(value)  # every read path, not only ``get_api_key``
     return value or None
 
 

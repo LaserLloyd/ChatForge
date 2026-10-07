@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -137,7 +138,8 @@ def test_launch_hash_tracks_compile_relevant_fields(tmp_path):
     assert launch_hash(spec, ovms_version="2027.0.0") != h
 
 
-def test_ovms_env_mirrors_setupvars_and_strips_venv(tmp_path):
+def test_ovms_env_mirrors_setupvars_and_strips_venv(tmp_path, monkeypatch):
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: True)
     ovms = tmp_path / "ovms"
     (ovms / "python" / "Scripts").mkdir(parents=True)
     (ovms / "espeak-ng-data").mkdir()
@@ -166,13 +168,118 @@ def test_ovms_env_mirrors_setupvars_and_strips_venv(tmp_path):
     assert "PYTHONPATH" not in env  # setupvars never sets it; the bundled python uses ._pth
 
 
-def test_ovms_env_python_off_appends_dir(tmp_path):
+def test_ovms_env_python_off_appends_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: True)
     ovms = tmp_path / "ovms"
     ovms.mkdir()
     windows = str(tmp_path / "Windows")  # OS-native: no ":" on the Linux CI leg
     env = ovms_env(ovms, {"PATH": windows, "PYTHONHOME": "C:\\x"})
     assert env["PATH"].split(os.pathsep) == [windows, str(ovms)]
     assert "PYTHONHOME" not in env and "ESPEAK_DATA_PATH" not in env
+
+
+def test_ovms_env_linux_mirrors_documented_exports(tmp_path, monkeypatch):
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: False)
+    ovms = tmp_path / "ovms"
+    (ovms / "lib" / "python").mkdir(parents=True)
+    (ovms / "bin").mkdir()
+    venv = tmp_path / "venv"
+    base = {
+        "PATH": os.pathsep.join([str(venv / "bin"), "/usr/bin", "/opt/tools"]),
+        "LD_LIBRARY_PATH": "/opt/npu/lib",
+        "VIRTUAL_ENV": str(venv),
+        "PYTHONHOME": "/wrong",
+        "PYTHONPATH": "/wrong/lib",
+        "API_KEY": "secret-value",
+        "HOME": "/home/me",
+    }
+    env = ovms_env(ovms, base)
+    assert env["OVMS_DIR"] == str(ovms)
+    # export LD_LIBRARY_PATH=${PWD}/ovms/lib (the driver's own entries stay behind it)
+    assert env["LD_LIBRARY_PATH"].split(os.pathsep) == [str(ovms / "lib"), "/opt/npu/lib"]
+    # export PATH=$PATH:${PWD}/ovms/bin (venv bin dropped)
+    assert env["PATH"].split(os.pathsep) == ["/usr/bin", "/opt/tools", str(ovms / "bin")]
+    # export PYTHONPATH=${PWD}/ovms/lib/python (python_on only)
+    assert env["PYTHONPATH"] == str(ovms / "lib" / "python")
+    for gone in ("VIRTUAL_ENV", "PYTHONHOME", "API_KEY"):
+        assert gone not in env
+    assert env["HOME"] == "/home/me"
+    assert "SCRIPTS" not in env
+
+
+def test_ovms_env_linux_python_off_has_no_pythonpath(tmp_path, monkeypatch):
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: False)
+    ovms = tmp_path / "ovms"
+    (ovms / "lib").mkdir(parents=True)
+    env = ovms_env(ovms, {"PATH": "/usr/bin", "PYTHONPATH": "/wrong"})
+    assert "PYTHONPATH" not in env
+    assert env["LD_LIBRARY_PATH"] == str(ovms / "lib")  # no stray empty entry
+    assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(ovms / "bin")]
+
+
+def test_ovms_root_is_the_folder_with_bin_and_lib(tmp_path, monkeypatch):
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: False)
+    assert sup_mod.ovms_root(tmp_path / "ovms" / "bin" / "ovms") == tmp_path / "ovms"
+    assert sup_mod.ovms_root(tmp_path / "ovms" / "ovms") == tmp_path / "ovms"  # test layouts
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: True)
+    assert sup_mod.ovms_root(tmp_path / "ovms" / "ovms.exe") == tmp_path / "ovms"
+
+
+def test_npu_unavailable_on_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: False)
+    node = tmp_path / "accel0"
+    assert sup_mod.npu_unavailable_on_host("NPU", node=node) is True
+    assert sup_mod.npu_unavailable_on_host(" npu ", node=node) is True
+    assert sup_mod.npu_unavailable_on_host("CPU", node=node) is False
+    assert sup_mod.npu_unavailable_on_host("GPU", node=node) is False
+    assert sup_mod.npu_unavailable_on_host("AUTO:NPU,CPU", node=node) is False  # AUTO copes
+    node.write_text("")
+    assert sup_mod.npu_unavailable_on_host("NPU", node=node) is False
+    assert str(sup_mod.NPU_DEVICE_NODE) == "/dev/accel/accel0"
+    monkeypatch.setattr(sup_mod, "is_windows_host", lambda: True)
+    assert sup_mod.npu_unavailable_on_host("NPU", node=tmp_path / "missing") is False
+
+
+def test_argv_passes_the_device_through_unchanged():
+    exe = Path("/x/ovms/bin/ovms")
+    for device, has_prompt_len in (("NPU", True), ("CPU", False), ("GPU", False)):
+        spec = LaunchSpec(
+            model_id="m",
+            model_path=Path("/m"),
+            device=device,
+            max_prompt_len=2048,
+            cache_dir=Path("/c"),
+            port=18700,
+        )
+        argv = build_argv(exe, spec)
+        assert argv[argv.index("--target_device") + 1] == device
+        assert ("--max_prompt_len" in argv) is has_prompt_len
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux spawn flags")
+async def test_spawn_arms_the_parent_death_signal_on_linux(tmp_path, monkeypatch):
+    marker = lambda: None  # noqa: E731 - sentinel preexec_fn
+    monkeypatch.setattr(sup_mod, "make_pdeathsig_preexec", lambda: marker)
+    seen: dict = {}
+
+    async def fake_exec(*argv, **kwargs):
+        seen.update(kwargs)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    sup = _supervisor(tmp_path)
+    with pytest.raises(OvmsError) as err:
+        await sup._spawn(_spec(tmp_path, port=18999))
+    assert err.value.code == "spawn"
+    assert seen["start_new_session"] is True
+    assert seen["preexec_fn"] is marker
+    # and when prctl is unavailable the spawn still goes ahead, just unprotected
+    seen.clear()
+    monkeypatch.setattr(sup_mod, "make_pdeathsig_preexec", lambda: None)
+    with pytest.raises(OvmsError):
+        await sup._spawn(_spec(tmp_path, port=18999))
+    assert seen["start_new_session"] is True and "preexec_fn" not in seen
 
 
 def test_parse_model_state():
@@ -540,18 +647,31 @@ async def test_not_installed(tmp_path):
 
 @pytest.mark.skipif(os.name != "nt", reason="job objects are Windows-only")
 async def test_child_is_in_kill_on_close_job(tmp_path):
-    import win32api
-    import win32con
-    import win32job
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.IsProcessInJob.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_int32),
+    ]
+    kernel32.IsProcessInJob.restype = ctypes.c_int32
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    process_query_limited_information = 0x1000
 
     sup = _supervisor(tmp_path)
     try:
         await sup.start(_spec(tmp_path))
-        handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, sup.pid)
+        handle = kernel32.OpenProcess(process_query_limited_information, 0, sup.pid)
+        assert handle
         try:
-            assert win32job.IsProcessInJob(handle, None)
+            in_job = ctypes.c_int32(0)
+            assert kernel32.IsProcessInJob(handle, None, ctypes.byref(in_job))
+            assert in_job.value
         finally:
-            handle.Close()
+            kernel32.CloseHandle(handle)
         pid = sup.pid
     finally:
         await sup.aclose()

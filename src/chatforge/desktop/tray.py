@@ -15,12 +15,13 @@ models" while it is loaded or loading (unloading also abandons a load in progres
 from __future__ import annotations
 
 import logging
+import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from chatforge.desktop import win32util
+from chatforge.desktop import win32util, xutil
 from chatforge.desktop.icon import IconState, make_icon_image
 
 _log = logging.getLogger(__name__)
@@ -29,6 +30,27 @@ APP_NAME = "ChatForge"
 
 #: ``runtime.status`` states in which the local model is loading.
 LOADING_STATES = frozenset({"starting", "compiling"})
+
+
+def choose_backend(environ: MutableMapping[str, str] | None = None) -> str | None:
+    """Linux: pin pystray's backend before it is imported, and return the choice.
+
+    ``PYSTRAY_BACKEND`` (``appindicator``, ``gtk``, ``xorg``, ``dummy``) is honoured as is.
+    Unset, an X display means ``xorg``: the AppIndicator and GTK backends need a GTK main
+    loop of their own, which pywebview already owns, while ``xorg`` talks to the X server
+    from the tray thread. Without a display nothing is set and pystray decides (and fails
+    with its own message). ``None`` off Linux.
+    """
+    env = os.environ if environ is None else environ
+    if not xutil.is_linux():
+        return None
+    explicit = env.get("PYSTRAY_BACKEND")
+    if explicit:
+        return explicit
+    if env.get("DISPLAY"):
+        env["PYSTRAY_BACKEND"] = "xorg"
+        return "xorg"
+    return None
 
 
 class Tray:
@@ -71,6 +93,7 @@ class Tray:
     # --- lifecycle ------------------------------------------------------------------
 
     def start(self) -> Tray:
+        choose_backend()  # before pystray picks its backend at import
         import pystray
 
         if self.icon is not None:

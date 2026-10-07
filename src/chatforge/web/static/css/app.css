@@ -60,8 +60,6 @@ button:disabled { cursor: not-allowed; }
 }
 .model-chip:hover, .model-chip[aria-expanded="true"] { background: var(--surface-3); border-color: var(--border-strong); }
 .chip-label { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
-.chip-provider { color: var(--text-secondary); flex: none; }
-.chip-sep { color: var(--text-tertiary); flex: none; }
 .chip-model { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; }
 .icon-caret { width: 12px; height: 12px; color: var(--text-secondary); }
 
@@ -91,9 +89,16 @@ button:disabled { cursor: not-allowed; }
 }
 .mm-item:hover, .mm-item:focus-visible { background: var(--surface-3); color: var(--text-primary); }
 .mm-item:focus-visible { outline-offset: -2px; }
-.mm-item[aria-selected="true"] { color: var(--text-primary); }
+.mm-item[aria-checked="true"] { color: var(--text-primary); }
 .mm-item:disabled { color: var(--text-disabled); }
-.mm-check { width: 14px; flex: none; color: var(--text-link); text-align: center; }
+/* The check is drawn, not typed: screen readers get aria-checked. */
+.mm-check { position: relative; width: 14px; height: 14px; flex: none; color: var(--text-link); }
+.mm-item[aria-checked="true"] .mm-check::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+/* A long list gets a filter box on top. */
+.mm-filter.ui-input { display: block; width: calc(100% - 8px); margin: 4px; }
 .mm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* "Recently used": the provider after the model name. */
 .mm-sub { margin-left: auto; flex: none; padding-left: 8px; font-size: var(--fs-xs); color: var(--text-tertiary); }
@@ -174,6 +179,14 @@ html[data-resizing="left"], html[data-resizing="left"] * { cursor: ew-resize !im
 }
 .msg.assistant .bubble { padding: 2px 0 0; color: var(--text-primary); background: transparent; border: 0; }
 .msg-time { margin-top: 4px; padding: 0 2px; font-size: var(--fs-micro); color: var(--text-tertiary); }
+/* Your own message: Copy and Edit sit on the time line and show on hover or focus. */
+.msg-foot { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-height: 22px; margin-top: 2px; }
+.msg-foot .msg-time { margin-top: 0; }
+.msg-foot .msg-actions { margin: 0; opacity: 0; transition: opacity var(--dur-fast) var(--ease-standard); }
+.msg.user:hover .msg-foot .msg-actions, .msg.user:focus-within .msg-foot .msg-actions { opacity: 1; }
+@media (hover: none) { .msg-foot .msg-actions { opacity: 1; } }
+/* The latest reply is a Tab stop (Tab reaches its Copy and Regenerate next). */
+.msg.assistant:focus-visible { outline-offset: 4px; border-radius: var(--radius-sm); }
 .muted { color: var(--text-secondary); font-style: italic; }
 
 /* Where the model's view of a long conversation starts (chat.context): a thin rule with a
@@ -299,14 +312,16 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .stop-btn:hover:not(:disabled) { background: var(--danger); color: var(--on-danger); }
 .stop-btn:disabled { color: var(--text-disabled); border-color: var(--border); background: var(--surface-3); }
 .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; margin-top: 2px; padding: 0; }
-/* Clear chat: bottom-left, labelled, in the theme's caution colour (orange beside LaserLloyd's blue,
- * apart from the accent in every theme). The ghost variant's hover would set the primary text
- * colour, so both states are restated; :disabled in ui-components.css still wins at rest. */
-.btn-clear, .btn-clear:hover:not(:disabled) { color: var(--warning-text); }
+/* Clear chat: bottom-left, labelled, in secondary text at rest and the theme's caution colour (orange
+ * beside LaserLloyd's blue, apart from the accent in every theme) on hover and keyboard focus only.
+ * The ghost variant's hover would set the primary text colour, so the states are restated;
+ * :disabled in ui-components.css still wins at rest. */
+.btn-clear, .btn-clear:hover:not(:disabled) { color: var(--text-secondary); }
+.btn-clear:hover:not(:disabled), .btn-clear:focus-visible:not(:disabled) { color: var(--warning-text); }
 .btn-clear:hover:not(:disabled) { background: var(--warning-subtle); }
-.char-count { margin-inline-start: auto; padding-inline-end: 4px; }
-.char-count { font-size: var(--fs-micro); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.char-count[data-over="true"] { color: var(--danger-text); }
+.char-wrap { display: flex; flex-direction: column; align-items: flex-end; margin-inline-start: auto; padding-inline-end: 4px; }
+.char-count, .char-over { font-size: var(--fs-micro); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.char-count[data-over="true"], .char-over { color: var(--danger-text); }
 
 /* The paperclip: as tall as the text box, quieter than Send. */
 .attach-btn {
@@ -320,8 +335,9 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 
 /* ------------------------------------------------------------- attachments ---- */
 /* A chip: file icon, name, size · characters, a "partial" badge when the text was cut and,
- * in the composer, a remove button. Two rows at most above the composer, then it scrolls. */
-.attach-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 64px; overflow-y: auto; margin: 0 0 8px; }
+ * in the composer, a remove button. Three rows (3 x 28px + 2 gaps) fit above the composer, then it
+ * scrolls; chat.js scrolls a newly added chip into view. */
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 96px; overflow-y: auto; margin: 0 0 8px; }
 .att-chip {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 28px; padding: 0 8px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -409,6 +425,15 @@ details.think.is-live .rail-icon { animation: ui-pulse 1.2s var(--ease-standard)
 .drop-title { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
 .drop-sub { max-width: 260px; font-size: var(--fs-xs); color: var(--text-secondary); }
 
+/* The bundle's toast region (UIComponents.toast, used when ui-components.js is loaded) is centred just
+ * above the composer; a toast with an action puts its button on the same line. */
+.ui-toasts { inset-inline: 16px; bottom: calc(var(--composer-h, 72px) + 12px); align-items: center; }
+.ui-toast:has(.toast-act), .toast:has(.toast-act) { display: flex; align-items: center; gap: 12px; }
+.toast-act {
+  flex: none; padding: 2px 8px; background: transparent; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); color: var(--text-link); font-size: var(--fs-sm); font-weight: var(--fw-medium);
+}
+.toast-act:hover { background: var(--surface-3); color: var(--text-link-hover); }
 /* --composer-h is set by chat.js as the composer grows (attachment chips), so the toast
  * stays just above it. */
 .toast {
@@ -595,7 +620,8 @@ details.json-collapse .code-block-wrapper { margin: 0; border: 0; border-top: 1p
 .quick-btn[aria-expanded="true"] { background: var(--surface-3); color: var(--text-primary); }
 .quick-menu {
   position: absolute; bottom: calc(100% + 4px); left: 12px; z-index: var(--z-popover);
-  width: min(260px, calc(100% - 24px)); max-height: min(360px, 70vh); overflow-y: auto; padding: 4px;
+  display: flex; flex-direction: column;
+  width: min(260px, calc(100% - 24px)); max-height: min(360px, 70vh); overflow: hidden; padding: 4px;
   background: var(--surface-overlay); border: 1px solid var(--border); border-radius: var(--radius-md);
   box-shadow: var(--shadow-2);
   animation: ui-menu-in var(--dur-fast) var(--ease-out);
@@ -618,6 +644,17 @@ details.json-collapse .code-block-wrapper { margin: 0; border: 0; border-top: 1p
 .qm-edit { padding-left: 32px; }
 .qm-empty { padding: 4px 10px 8px; font-size: var(--fs-xs); color: var(--text-tertiary); }
 .qm-sep { height: 1px; margin: 4px 6px; background: var(--divider); }
+/* The list scrolls; "Edit quick actions…" stays pinned under it, and a fade at the bottom edge
+ * says there is more (chat.js sets data-more while the list is not at its end). */
+.qm-body { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.qm-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.qm-fade {
+  position: absolute; inset: auto 0 0 0; height: 28px; pointer-events: none; opacity: 0;
+  background: linear-gradient(to bottom, transparent, var(--surface-overlay));
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.qm-body[data-more="true"] .qm-fade { opacity: 1; }
+.qm-foot { flex: none; }
 
 .action-bar { display: flex; margin: 0 0 8px; }
 .action-pill {

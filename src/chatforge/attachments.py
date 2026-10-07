@@ -28,6 +28,7 @@ import binascii
 import bisect
 import codecs
 import contextlib
+import contextvars
 import csv
 import html
 import io
@@ -73,9 +74,21 @@ MAX_DEPTH = 512
 #: Excel's last column is XFD, the 16,384th.
 MAX_XLSX_COLUMNS = 16_384
 MAX_NAME_CHARS = 255
+#: The most entries an Office file's zip may list (a real document has a few hundred).
+MAX_ZIP_ENTRIES = 20_000
+#: An XML part is refused when anything before its first element (the prolog, which is all
+#: a DOCTYPE or ENTITY declaration may sit in) declares one: Office files never do, and
+#: entity tricks are how XML parsers get blown up. Each chunk is checked before the parser
+#: sees it, starting with the first 4 KB; a prolog longer than this is refused too.
+MAX_PROLOG_BYTES = 1024 * 1024
+#: The most pages read from a PDF.
+MAX_PDF_PAGES = 500
+#: Wall-clock seconds one file may take to read; the text so far is used after that.
+PARSE_TIMEOUT_S = 45.0
 
 TOO_MUCH_DATA = "The file unpacks to too much data to read."
 TOO_COMPLEX = "The file is too complex to read."
+XML_REFUSED = "The file uses XML features that are not supported, so it was not read."
 
 # ``pypdf`` is a required dependency; this only shows when its import fails (a broken install).
 PDF_NEEDS_PYPDF = (
@@ -289,18 +302,45 @@ def _tidy(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+_clock = time.monotonic
+
+
+class _Budget:
+    """The time one :func:`extract_text` call may take, and what the readers cut short
+    (``cut`` holds a note for each)."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.deadline = _clock() + seconds
+        self.expired = False
+        self.cut: list[str] = []
+
+    def check(self) -> bool:
+        """True once the time is up (and from then on)."""
+        if not self.expired and _clock() > self.deadline:
+            self.expired = True
+        return self.expired
+
+
+#: The running extraction's budget (a context variable: extractions may run in threads).
+_BUDGET: contextvars.ContextVar[_Budget | None] = contextvars.ContextVar(
+    "chatforge_attachment_budget", default=None
+)
+
+
 class _Out:
-    """Collects extracted text and says when ``limit`` characters have been passed, so the
-    readers can stop early on huge files."""
+    """Collects extracted text and says when ``limit`` characters have been passed or the
+    file's time is up, so the readers can stop early on huge or slow files."""
 
     def __init__(self, limit: int) -> None:
         self.parts: list[str] = []
         self.size = 0
         self.limit = limit
+        self.budget = _BUDGET.get()
 
     @property
     def full(self) -> bool:
-        return self.size > self.limit
+        return self.size > self.limit or (self.budget is not None and self.budget.check())
 
     def add(self, text: str) -> None:
         if not self.full and text:
@@ -331,6 +371,8 @@ def extract_text(name: str, data: bytes, *, max_chars: int = DEFAULT_MAX_CHARS) 
         "ppt": _ppt, "eml": _eml, "msg": _msg,
     }  # fmt: skip
     reader = readers.get(kind, _plain)
+    budget = _Budget(PARSE_TIMEOUT_S)
+    token = _BUDGET.set(budget)
     try:
         text, warning = reader(data, limit)
     except AttachmentError:
@@ -338,13 +380,24 @@ def extract_text(name: str, data: bytes, *, max_chars: int = DEFAULT_MAX_CHARS) 
     except (zipfile.BadZipFile, zlib.error, ET.ParseError, EOFError, KeyError, ValueError,
             IndexError, OSError, struct.error):  # fmt: skip
         raise AttachmentError(_damaged(kind)) from None
+    finally:
+        _BUDGET.reset(token)
+    if budget.expired:
+        budget.cut.append(
+            f"Reading stopped after {PARSE_TIMEOUT_S:g} seconds; the rest of the file is not used."
+        )
     text = _tidy(text)
     if not text.strip():
+        if budget.expired:
+            raise AttachmentError("The file took too long to read.")
         raise AttachmentError("There is no text in this file.")
     truncated = len(text) > limit
     if truncated:
         text = text[:limit]
         warning = f"Only the first {limit:,} characters are used."
+    if budget.cut:
+        truncated = True
+        warning = " ".join(w for w in (warning, *budget.cut) if w)
     return Extracted(name, kind, text, len(text), truncated, warning)
 
 
@@ -398,6 +451,12 @@ class _Zip(zipfile.ZipFile):
 
     def __init__(self, data: bytes) -> None:
         super().__init__(io.BytesIO(data))
+        if len(self.filelist) > MAX_ZIP_ENTRIES:
+            self.close()
+            raise AttachmentError(TOO_COMPLEX)
+        #: The entry names, listed once (``namelist`` builds a new list on every call).
+        self.names: list[str] = self.namelist()
+        self.name_set: frozenset[str] = frozenset(self.names)
         self.bytes_left = MAX_UNPACKED_BYTES
         self.elements_left = MAX_ELEMENTS
 
@@ -410,6 +469,8 @@ class _CappedReader:
         self._fh = fh
         self._zf = zf
         self._left = MAX_PART_BYTES
+        #: What has been read so far, until the first element starts; ``None`` after.
+        self.prolog: bytearray | None = bytearray()
 
     def read(self, size: int = -1) -> bytes:
         left = min(self._left, self._zf.bytes_left)
@@ -419,7 +480,26 @@ class _CappedReader:
         self._zf.bytes_left -= len(chunk)
         if self._left < 0 or self._zf.bytes_left < 0:
             raise AttachmentError(TOO_MUCH_DATA)
+        if self.prolog is not None:
+            self.prolog += chunk
+            if len(self.prolog) > MAX_PROLOG_BYTES:
+                raise AttachmentError(XML_REFUSED)
+            _refuse_dtd(bytes(self.prolog))
         return chunk
+
+
+_DTD = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+
+
+def _refuse_dtd(head: bytes) -> None:
+    """Refuse ``head`` (the start of an XML part) if it holds a ``<!DOCTYPE`` or
+    ``<!ENTITY``, also when the part is UTF-16."""
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        head += head.decode("utf-16", "ignore").encode("ascii", "ignore")
+    elif b"\x00" in head[:4]:  # UTF-16 without a byte-order mark
+        head += head.replace(b"\x00", b"")
+    if _DTD.search(head):
+        raise AttachmentError(XML_REFUSED)
 
 
 #: Finished children are dropped from their parent this many at a time: dropping them one
@@ -445,10 +525,17 @@ def _iterparse(
     done: list[int] = []  # per open element: how many of its first children are finished
     kept = 0  # open elements whose tag is in ``keep``
     inside = 0  # elements started inside the outermost open kept element
+    budget = _BUDGET.get()
+    seen = 0
     with zf.open(part) as fh:
-        for event, el in ET.iterparse(_CappedReader(fh, zf), events=("start", "end")):
+        reader = _CappedReader(fh, zf)
+        for event, el in ET.iterparse(reader, events=("start", "end")):
             if event == "start":
+                reader.prolog = None  # past the prolog: no declaration can follow
                 zf.elements_left -= 1
+                seen += 1
+                if budget is not None and not seen & 1023 and budget.check():
+                    return  # out of time: the reader finishes with what it has
                 if kept:
                     inside += 1
                 if zf.elements_left < 0 or inside > MAX_KEPT_ELEMENTS or len(stack) >= MAX_DEPTH:
@@ -480,7 +567,7 @@ _DOC_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships
 
 def _rels(zf: _Zip, part: str, base: str) -> dict[str, str]:
     """``{relationship id: part name}`` from a ``.rels`` part (external targets skipped)."""
-    if part not in zf.namelist():
+    if part not in zf.name_set:
         return {}
     out: dict[str, str] = {}
     for _, rel in _iterparse(zf, part):
@@ -516,7 +603,7 @@ _HEADING_NAME = re.compile(r"heading\s*([1-6])$", re.IGNORECASE)
 def _docx_styles(zf: _Zip) -> dict[str, str]:
     """``{styleId: prefix}``: ``"# "`` .. ``"###### "`` for headings (by the style's
     English name, which built-in styles keep in every language), ``"- "`` for list styles."""
-    if "word/styles.xml" not in zf.namelist():
+    if "word/styles.xml" not in zf.name_set:
         return {}
     out: dict[str, str] = {}
     for _, style in _iterparse(zf, "word/styles.xml", keep=frozenset({f"{_W}style"})):
@@ -637,7 +724,7 @@ def _rich_text(node: ET.Element | None) -> str:
 
 
 def _shared_strings(zf: _Zip) -> list[str]:
-    if "xl/sharedStrings.xml" not in zf.namelist():
+    if "xl/sharedStrings.xml" not in zf.name_set:
         return []
     strings: list[str] = []
     for _, el in _iterparse(zf, "xl/sharedStrings.xml", keep=frozenset({f"{_S}si"})):
@@ -654,7 +741,7 @@ def _is_date_format(code: str) -> bool:
 
 def _date_styles(zf: _Zip) -> set[int]:
     """Indexes of the cell formats (``c/@s``) that show a date or time."""
-    if "xl/styles.xml" not in zf.namelist():
+    if "xl/styles.xml" not in zf.name_set:
         return set()
     custom: dict[int, str] = {}  # numFmtId -> format code
     formats: list[int] = []  # the numFmtId of each cellXfs/xf, in order
@@ -740,7 +827,7 @@ def _column_index(ref: str) -> int | None:
 
 def _workbook_sheets(zf: _Zip) -> tuple[list[tuple[str, str]], bool]:
     """``([(sheet name, part)], date1904)`` in workbook order."""
-    names = set(zf.namelist())
+    names = zf.name_set
     sheets: list[tuple[str, str]] = []
     date1904 = False
     if "xl/workbook.xml" in names:
@@ -809,7 +896,7 @@ _P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 
 
 def _slide_parts(zf: _Zip) -> list[str]:
-    names = set(zf.namelist())
+    names = zf.name_set
     slides: list[str] = []
     if "ppt/presentation.xml" in names:
         rel_ids = [
@@ -929,7 +1016,7 @@ def _od_note(note: ET.Element) -> str:
 def _od_content(zf: _Zip) -> str:
     """The part with the document (``content.xml``); refuses password-protected files,
     whose parts are encrypted."""
-    names = set(zf.namelist())
+    names = zf.name_set
     if "META-INF/manifest.xml" in names:
         for _, el in _iterparse(zf, "META-INF/manifest.xml"):
             if el.tag == f"{_OD_MANIFEST}encryption-data":
@@ -1963,7 +2050,7 @@ def _office_convert(kind: str, data: bytes) -> bytes:
     if not _office_installed(prog_id):
         raise _Unreadable
     try:
-        import pythoncom  # noqa: F401 - pywin32, a dependency on Windows
+        import pythoncom  # noqa: F401 - pywin32, the optional "office" extra
         import win32com.client  # noqa: F401
     except ImportError:
         raise _Unreadable from None
@@ -2206,19 +2293,27 @@ def _pdf(data: bytes, limit: int) -> tuple[str, str | None]:
                 "This PDF is password-protected. Remove the password and attach it again."
             )
         total = len(reader.pages)
-        for number, page in enumerate(reader.pages, 1):
-            text = (page.extract_text() or "").strip()
+        if total > MAX_PDF_PAGES:
+            if out.budget is not None:
+                out.budget.cut.append(
+                    f"Only the first {MAX_PDF_PAGES} of {total:,} pages are read."
+                )
+            total = MAX_PDF_PAGES
+        for number in range(1, total + 1):
+            if out.full:
+                break
+            text = (reader.pages[number - 1].extract_text() or "").strip()
             if not text:
                 empty += 1
                 continue
             out.add(f"## Page {number}\n{text}\n\n")
-            if out.full:
-                break
     except AttachmentError:
         raise
     except Exception as exc:  # noqa: BLE001 - pypdf raises many types for broken files
         raise AttachmentError(f"This PDF could not be read ({type(exc).__name__}).") from None
     if not out.parts:
+        if out.budget is not None and out.budget.expired:
+            raise AttachmentError("The file took too long to read.")
         raise AttachmentError(
             "This PDF has no text to read. It may be scanned pages, and images are not "
             "supported yet."

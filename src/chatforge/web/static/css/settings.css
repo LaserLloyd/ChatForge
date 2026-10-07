@@ -28,7 +28,20 @@
 .s-tabs .ui-tab { padding-block: var(--space-2) var(--space-3); }
 .s-tabs .ui-tab:focus-visible { outline-offset: -2px; }
 
+.s-tabs .ui-tab[data-dirty="true"]::after {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-inline-start: var(--space-2);
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--warning-text);
+}
+
 .panels { flex: 1; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* A group of cards under one heading (Cloud providers): the h2 is the section, the cards h3. */
+.s-section { margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); }
 .panel, .cards { --ui-gap: var(--space-4); }   /* gap of the .ui-stack they also carry */
 
 /* The bundle's base layer draws the focus ring; scrollable regions keep it inside. */
@@ -45,6 +58,7 @@
 .pad-top { padding-top: var(--space-5); }
 .empty { margin: 0; font-size: var(--fs-sm); }
 .ok-text { color: var(--success-text); }
+.warn-text { color: var(--warning-text); }
 .danger-text { color: var(--danger-text); }
 .compiled-yes { color: var(--success-text); font-weight: var(--fw-medium); }
 
@@ -66,14 +80,69 @@
 .narrow { max-width: 180px; }
 .ui-error:empty { display: none; }
 
-/* Two-column layout for a ui-fieldset (the tool boxes, the prompt fields). */
-fieldset.tools {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-1) var(--space-5);
-}
-fieldset.tools .ui-error { grid-column: 1 / -1; }
 .switches { display: flex; flex-direction: column; gap: var(--space-2); }
+.hotkey-row { flex-wrap: nowrap; }
+.hotkey-row .ui-input { flex: 0 1 220px; min-width: 0; }
+.hotkey-row .ui-btn { flex: none; }
+.hotkey-row [aria-pressed="true"] { border-color: var(--focus-ring); color: var(--text-link); }
+.fallback-grid { grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr); }
+.fallback-grid .ui-select { width: 100%; }
+
+/* The tool list: one column, a checkbox, an optional "Local" badge, then what it sends where. */
+.tool-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.tool { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: var(--space-2); padding: var(--space-2) 0; }
+.tool + .tool { border-top: var(--stroke-hairline) solid var(--divider); }
+.tool > .ui-help { grid-column: 1 / -1; padding-inline-start: calc(var(--space-5) + var(--space-1)); }
+.tool > .ui-badge { justify-self: start; }
+
+/* The theme picker: a grid of radio cards. The swatch shows the theme's ground and accent. */
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: var(--space-2); }
+.theme-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2);
+  border: var(--stroke-default) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  cursor: pointer;
+}
+.theme-card:hover { background: var(--surface-3); border-color: var(--border-strong); }
+.theme-card:has(.theme-radio:checked) { border-color: var(--selected); box-shadow: inset 0 0 0 1px var(--selected); }
+.theme-card:has(.theme-radio:focus-visible) { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+.theme-radio { position: absolute; width: 1px; height: 1px; margin: -1px; opacity: 0; }
+.theme-swatch {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  height: 34px;
+  padding: var(--space-1);
+  border: var(--stroke-hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--sw-ground);
+}
+.theme-dot { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--sw-accent); }
+.theme-name { font-size: var(--fs-sm); color: var(--text-primary); }
+.theme-card:has(.theme-radio:checked) .theme-name::after { content: " ✓"; color: var(--text-link); }
+.theme-ground { align-self: center; }
+
+/* The Save row: a bar stuck to the bottom of the window while General is open. */
+.savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--stroke-default) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-2);
+}
+.dirty { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--warning-text); font-weight: var(--fw-medium); }
 
 /* --------------------------------------------------- model + result + dl rows -- */
 
@@ -94,6 +163,31 @@ fieldset.tools .ui-error { grid-column: 1 / -1; }
 .m-note { font-size: var(--fs-xs); }
 .m-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; align-items: center; }
 .m-actions.confirm { max-width: 360px; }
+.m-side { display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-1); min-width: 0; }
+.m-why { max-width: 320px; text-align: end; }
+.m-load { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.m-load .ui-progress { flex: 0 1 220px; }
+
+/* First run checklist: a number (a tick when done) beside each step. */
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.step { display: grid; grid-template-columns: 28px 1fr; gap: var(--space-3); align-items: start; }
+.step-no {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border: var(--stroke-default) solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+.step[data-state="current"] .step-no { border-color: var(--selected); background: var(--selected); color: var(--on-selected); }
+.step[data-state="done"] .step-no { border-color: var(--success); background: var(--success-subtle); color: var(--success-text); }
+.step[data-state="error"] .step-no { border-color: var(--danger); color: var(--danger-text); }
+.step[data-state="todo"] .step-title { color: var(--text-secondary); }
+.step-body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.step-title { font-size: var(--fs-sm); color: var(--text-primary); }
+.step-body .ui-row { margin-top: var(--space-1); }
+.step-body .ui-row:not(:has(.ui-btn:not([hidden]))) { display: none; }
 
 .dl-row { display: flex; flex-direction: column; gap: var(--space-2); }
 .dl-top { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
@@ -159,6 +253,11 @@ fieldset.tools .ui-error { grid-column: 1 / -1; }
 
 .panel-logs, .logs-card { min-height: 0; }
 .logs-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.logs-bar .ui-row { flex-wrap: nowrap; }
+.logs-bar .ui-select { width: auto; }
+.log-filter { width: 200px; }
+.ll-warn { color: var(--warning-text); }
+.ll-error { color: var(--danger-text); }
 .log-view {
   margin: 0;
   height: min(60vh, 520px);
@@ -197,26 +296,27 @@ fieldset.tools .ui-error { grid-column: 1 / -1; }
 .file-list li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-secondary); }
 .drawer-actions { padding-top: var(--space-2); }
 
-/* #toast is a .ui-toast (look and variants); this places it. No transform: the bundle's
-   entrance animation owns it. */
-#toast {
-  position: fixed;
-  inset-inline: 0;
-  bottom: var(--space-5);
-  width: fit-content;
-  margin-inline: auto;
-  z-index: var(--z-toast);
-}
+/* Toasts are the bundle's .ui-toast in its .ui-toasts region (#toast is the fallback host).
+   Each carries a close button; errors stay until it is pressed. */
+.s-toast { display: flex; align-items: flex-start; gap: var(--space-3); }
+.s-toast[data-kind="danger"] { border-color: var(--danger-border); }
+.toast-close { flex: none; margin: calc(var(--space-1) * -1) calc(var(--space-2) * -1) calc(var(--space-1) * -1) 0; }
 
 /* ------------------------------------------------------------ quick actions -- */
 /* settings.js "quick actions": one row per action (name, built-in/custom chip, Remove),
  * its instructions and two switches folded under "Instructions". */
-fieldset.quick-actions { grid-template-columns: 1fr; gap: var(--space-2); }
 .qa-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .qa-row { display: flex; flex-direction: column; gap: var(--space-1); }   /* also a .ui-well */
 .qa-head { display: flex; align-items: center; gap: var(--space-2); }
 .qa-head .qa-label { flex: 1 1 auto; min-width: 0; }
 .qa-head .ui-badge, .qa-head .ui-btn { flex: none; }
+.qa-move { display: inline-flex; flex: none; }
+.qa-preview { margin: 0; padding-inline-start: calc(var(--space-2) + 2 * var(--control-h-sm)); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.qa-row:has(.qa-more[open]) .qa-preview { display: none; }
+.qa-count { flex: none; }
+/* Remove: a ghost button in the danger text colour (the bundle has no ghost-danger). */
+.qa-remove { color: var(--danger-text); }
+.qa-remove:hover { background: var(--danger-subtle); color: var(--danger-text); }
 .qa-more > summary { cursor: pointer; width: max-content; font-size: var(--fs-xs); color: var(--text-secondary); padding: var(--space-1) 0; }
 .qa-more[open] > summary { margin-bottom: var(--space-1); }
 .qa-flags { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin-top: var(--space-1); }
@@ -225,7 +325,9 @@ fieldset.quick-actions { grid-template-columns: 1fr; gap: var(--space-2); }
 /* ------------------------------------------------------------ narrow windows -- */
 
 @media (max-width: 720px) {
-  .grid2, fieldset.tools { grid-template-columns: 1fr; }
+  .grid2, .fallback-grid { grid-template-columns: 1fr; }
+  .m-side { align-items: flex-start; }
+  .m-why { text-align: start; }
   .model-row, .result-row { grid-template-columns: 1fr; }
   .m-actions { justify-content: flex-start; }
   .pad-top { padding-top: 0; }

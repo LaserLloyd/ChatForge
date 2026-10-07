@@ -28,6 +28,7 @@ from typing import Any
 
 from chatforge import autostart, legacy, single_instance
 from chatforge.config import AppConfig, load_config
+from chatforge.desktop import xutil
 from chatforge.logging_setup import configure_logging, flush_logging, get_logger
 from chatforge.paths import Paths, home_overridden
 
@@ -40,6 +41,10 @@ QUIT_TIMEOUT_S = 20.0
 APP_USER_MODEL_ID = "LaserLloyd.ChatForge"
 #: Bump the version when the artwork changes, so the new icon is written.
 APP_ICON_FILE = "app-icon-v2.ico"
+#: Linux (GTK/Qt window icon): a PNG, written the same way.
+APP_ICON_PNG = "app-icon-v2.png"
+#: The program name GTK reports as the window class, so a launcher entry can match it.
+PROGRAM_NAME = "chatforge"
 MODEL_REFRESH_FIRST_DELAY_S = 60.0
 MODEL_REFRESH_INTERVAL_S = 24 * 3600.0
 #: ``CreateProcess`` flags for the copy that Restart starts: no visible console, and not in
@@ -197,7 +202,7 @@ class App:
     async def _adopt_unadopted(self) -> None:
         s = self.services
         try:
-            pending = s.registry.unadopted()
+            pending = await asyncio.to_thread(s.registry.unadopted)  # scans the disk
         except Exception:  # noqa: BLE001
             log.exception("registry.unadopted failed")
             return
@@ -353,6 +358,8 @@ class App:
         if error:
             log.warning("hotkey unavailable", error=error)
             self.tray.notify(error)
+        elif getattr(self.hotkey, "status", None):
+            log.info("hotkey ready", status=self.hotkey.status)
         if self.instance_sock is not None:
             self.instance_server = single_instance.start_server(
                 self.instance_sock, lambda: s.popup.show(source="instance")
@@ -386,7 +393,7 @@ class App:
         ``.ico`` (written once, versioned by name) is used for every window.
         """
         if os.name != "nt":
-            return None
+            return self._app_icon_png()
         with contextlib.suppress(Exception):
             import ctypes
 
@@ -395,6 +402,16 @@ class App:
             from chatforge.desktop.icon import write_app_ico
 
             return str(write_app_ico(self.paths.home / APP_ICON_FILE))
+        except Exception as exc:  # noqa: BLE001 - a missing icon must not stop the app
+            log.warning("app icon unavailable", error=type(exc).__name__)
+            return None
+
+    def _app_icon_png(self) -> str | None:
+        """Linux: the window icon as a PNG (GTK and Qt take a file path)."""
+        try:
+            from chatforge.desktop.icon import write_app_png
+
+            return str(write_app_png(self.paths.home / APP_ICON_PNG))
         except Exception as exc:  # noqa: BLE001 - a missing icon must not stop the app
             log.warning("app icon unavailable", error=type(exc).__name__)
             return None
@@ -418,12 +435,19 @@ class App:
         try:
             webview.start(
                 self._on_webview_started,
-                gui="edgechromium",
+                gui=webview_gui(),
                 private_mode=False,
                 storage_path=str(self.paths.webview_dir),
                 debug=False,
                 icon=self._app_icon(),
             )
+        except Exception as exc:
+            if os.name != "nt":
+                log.error(
+                    "no GUI toolkit for pywebview (GTK + WebKit2GTK or Qt); see docs/SETUP-LINUX.md",
+                    error=f"{type(exc).__name__}: {exc}"[:300],
+                )
+            raise
         finally:
             self._shutdown_after_webview()
         return self.exit_code
@@ -444,6 +468,10 @@ class App:
             if sig is not None:
                 with contextlib.suppress(Exception):
                     signal.signal(sig, _handler)
+        # Linux: the GTK loop sleeps in C, so ask GLib to deliver SIGINT/SIGTERM too.
+        xutil.install_unix_signals(
+            lambda: _handler(0, None), (int(signal.SIGINT), int(signal.SIGTERM))
+        )
 
     def quit(self) -> None:
         """Clean quit from any thread: unload the model, stop the icon, destroy windows."""
@@ -510,6 +538,11 @@ class App:
         flush_logging()
 
 
+def webview_gui() -> str | None:
+    """Windows: WebView2 only. Elsewhere ``None``: let pywebview pick (GTK, then Qt)."""
+    return "edgechromium" if os.name == "nt" else None
+
+
 def restart_command(pid: int | None = None) -> list[str]:
     """The command line of the copy Restart starts: the same one start at login uses
     (``pythonw.exe`` next to this interpreter, so the tray app owns no console, even when
@@ -522,6 +555,9 @@ def restart_command(pid: int | None = None) -> list[str]:
 def spawn_restart(home: Path) -> subprocess.Popen[bytes]:
     """Start the replacement copy apart from this process (no visible console, own process
     group, no inherited handles), in ``home``. Raises ``OSError`` when it cannot start."""
+    extra: dict[str, Any] = (
+        {"creationflags": RESTART_CREATIONFLAGS} if os.name == "nt" else {"start_new_session": True}
+    )
     return subprocess.Popen(  # noqa: S603 - our own interpreter and module
         restart_command(),
         cwd=str(home),
@@ -529,7 +565,7 @@ def spawn_restart(home: Path) -> subprocess.Popen[bytes]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         close_fds=True,
-        creationflags=RESTART_CREATIONFLAGS,
+        **extra,
     )
 
 
@@ -584,6 +620,11 @@ def main(mode: Mode = "show", *, paths: Paths | None = None) -> int:
 
     # Before any window exists (§7, DPI): per-monitor-v2 awareness.
     win32util.ensure_dpi_awareness()
+    # Linux: XWayland for toplevel positioning, and a window class a launcher can match.
+    # Both before pywebview initialises GTK.
+    if xutil.prefer_x11():
+        log.info("wayland session: using XWayland (GDK_BACKEND=x11)")
+    xutil.set_program_name(PROGRAM_NAME)
 
     if paths is None:
         paths = Paths.default()

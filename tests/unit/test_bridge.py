@@ -254,11 +254,13 @@ def test_get_state_shape(api: Api, services: Services) -> None:
         "config",
         "providers",
         "selected",
+        "recommended_model",
         "runtime",
         "conversation",
         "limits",
         "theme",
     }
+    assert st["recommended_model"] is None  # no catalog loaded in this fixture
     assert set(st["config"]) == {"chat", "ui", "local", "quick_actions"}
     assert [a["id"] for a in st["config"]["quick_actions"]][:4] == [
         "proof",
@@ -312,6 +314,15 @@ def test_get_state_shape(api: Api, services: Services) -> None:
         "error",
     }
     assert rt["state"] in ("unloaded", "not_installed")
+
+
+def test_get_state_reports_the_catalogs_recommended_model(api: Api, services: Services) -> None:
+    from chatforge.models.catalog import Catalog
+
+    services.catalog = Catalog.load()
+    expected = services.catalog.recommended()
+    assert expected is not None
+    assert api.get_state()["recommended_model"] == expected.id
 
 
 def test_update_settings_persists_and_reports_restart(api: Api, services: Services, events) -> None:
@@ -397,7 +408,6 @@ def test_upsert_and_remove_provider(api: Api, services: Services) -> None:
         "kind": "openai",
         "display_name": "Acme",
         "base_url": "https://acme.test/v1",
-        "api_key_env": "ACME_KEY",
         "models": ["a1"],
         "default_model": "a1",
         "quirks": [],
@@ -916,6 +926,319 @@ def test_quick_actions_in_settings_and_events(api: Api, services: Services, even
         "hint": "Paste the text to proofread…",
         "tools": False,
     }
-    assert views[-1]["id"] == "custom-haiku"
+    assert views[1]["id"] == "custom-haiku"  # the list's order: proof, haiku, then the rest
     bad = api.update_settings({"chat": {"quick_actions": [{"label": " "}]}})
     assert bad["ok"] is False and any(k.startswith("chat.quick_actions") for k in bad["errors"])
+
+
+# --- drop_last_turn, undo_clear ---------------------------------------------------------------
+
+
+class _TurnEngine:
+    """Just enough engine for the turn methods; every call runs on the core loop."""
+
+    def __init__(self) -> None:
+        from chatforge.errors import AppError
+
+        self._err = AppError
+        self.items = [
+            {"role": "user", "content": "hi", "ts": 1},
+            {"role": "assistant", "content": "hello", "ts": 2},
+        ]
+        self.cleared: list[dict] | None = None
+        self.busy = False
+
+    def snapshot(self) -> dict:
+        return {"conversation": list(self.items)}
+
+    def drop_last_turn(self) -> dict:
+        if self.busy:
+            raise self._err("A reply is still being written.", code="busy")
+        if not self.items:
+            raise self._err("There is no message to remove.", code="empty")
+        self.items = []
+        return {"content": "hi", "attachments": [], "action": None}
+
+    def new_chat(self) -> None:
+        self.cleared, self.items = self.items, []
+
+    def restore_cleared(self) -> bool:
+        if self.cleared is None:
+            return False
+        self.items, self.cleared = self.cleared, None
+        return True
+
+
+def test_drop_last_turn_reply_shape_and_errors(api: Api, services: Services, loop) -> None:
+    services.loop = loop
+    assert api.drop_last_turn()["error"]["code"] == "server"  # no engine wired
+    engine = services.engine = _TurnEngine()
+    engine.busy = True
+    reply = api.drop_last_turn()
+    assert reply["ok"] is False and reply["error"]["code"] == "busy"
+    assert set(reply["error"]) == {"code", "message", "hint", "action"}
+    engine.busy = False
+    reply = api.drop_last_turn()
+    assert reply == {
+        "ok": True,
+        "removed": {"content": "hi", "attachments": [], "action": None},
+        "conversation": [],
+    }
+    assert api.drop_last_turn()["error"]["code"] == "empty"
+
+
+def test_undo_clear_restores_once(api: Api, services: Services, loop) -> None:
+    services.loop = loop
+    assert api.undo_clear()["error"]["code"] == "nothing_to_undo"  # no engine wired
+    engine = services.engine = _TurnEngine()
+    assert api.undo_clear()["error"]["code"] == "nothing_to_undo"
+    assert api.new_chat() == {"ok": True}
+    reply = api.undo_clear()
+    assert reply == {"ok": True, "conversation": engine.items}
+    assert [i["content"] for i in reply["conversation"]] == ["hi", "hello"]
+    assert api.undo_clear()["error"]["code"] == "nothing_to_undo"
+
+
+def test_drop_last_turn_and_undo_clear_against_the_real_engine(
+    api: Api, services: Services, loop, tmp_path
+) -> None:
+    from chatforge.chat.engine import ChatEngine
+
+    engine = ChatEngine(
+        providers=services.providers,
+        tools=None,
+        get_config=lambda: services.config,
+        conversation_file=services.paths.conversation_file,
+    )
+    engine.conversation.append({"role": "user", "content": "q", "_ts": 1.0})
+    engine.conversation.append({"role": "assistant", "content": "a", "_ts": 2.0})
+    services.loop, services.engine = loop, engine
+    api.new_chat()
+    assert api.get_state()["conversation"] == []
+    restored = api.undo_clear()
+    assert [i["role"] for i in restored["conversation"]] == ["user", "assistant"]
+    dropped = api.drop_last_turn()
+    assert dropped["removed"] == {"content": "q", "attachments": [], "action": None}
+    assert dropped["conversation"] == []
+    import json as _json
+
+    saved = _json.loads(services.paths.conversation_file.read_text(encoding="utf-8"))
+    assert saved["messages"] == []
+
+
+# --- open_config_folder, diagnostics, open_external ------------------------------------------
+
+
+def test_open_config_folder_opens_the_folder_holding_config_toml(
+    api: Api, services: Services, monkeypatch
+) -> None:
+    from chatforge.desktop import win32util
+
+    opened: list = []
+    monkeypatch.setattr(win32util, "open_path", opened.append)
+    assert api.open_config_folder() == {"ok": True}
+    assert opened == [services.paths.config_file.parent]
+
+
+def test_diagnostics_is_a_redacted_report(
+    api: Api, services: Services, fake_keyring, monkeypatch
+) -> None:
+    import logging
+
+    from chatforge import __version__
+    from chatforge.logging_setup import RING_BUFFER, register_secret
+
+    token = "tok-0123456789abcdefghij0123456789ABCDEF"
+    api.upsert_provider(
+        {
+            "id": "acme",
+            "kind": "openai",
+            "display_name": "Acme",
+            "base_url": "https://acme.test/v1",
+            "models": ["a1"],
+        }
+    )
+    api.save_api_key("acme", SECRET)
+    services.paths.config_file.write_text(
+        services.paths.config_file.read_text(encoding="utf-8")
+        + f'\n[extra]\napi_key = "{SECRET}"\nhf_token = "{token}"\n'
+        + 'base_url = "https://user:hunter2pass@x.test/v1?key=querysecret99"\n',
+        encoding="utf-8",
+    )
+    register_secret("leaky-log-secret-1")
+    RING_BUFFER.records.clear()
+    for i in range(80):  # the ring buffer is not installed unless logging is configured
+        RING_BUFFER.emit(
+            logging.LogRecord(
+                "diag.test", logging.WARNING, __file__, 1, "line %d leaky-log-secret-1", (i,), None
+            )
+        )
+    reply = api.diagnostics()
+    assert reply["ok"] is True and set(reply) == {"ok", "text"}
+    text = reply["text"]
+    assert f"app version: {__version__}" in text
+    assert "python: " in text and "os: " in text
+    assert "active provider: local-npu" in text and "active model: " in text
+    assert "[runtime]" in text and "state: " in text
+    assert "[config.toml]" in text and "schema_version" in text
+    assert "api_key_env" in text  # env var *names* are kept
+    for leaked in (SECRET, token, "hunter2pass", "querysecret99", "leaky-log-secret-1"):
+        assert leaked not in text
+    assert "***REDACTED***" in text
+    log_part = text.split("log lines]")[1].strip().splitlines()
+    assert len(log_part) == 50 and log_part[-1].endswith("line 79 ***REDACTED***")
+    RING_BUFFER.records.clear()
+
+
+@pytest.mark.parametrize(
+    ("url", "opens"),
+    [
+        ("https://example.com/a?b=1", True),
+        ("HTTP://example.com", True),
+        ("mailto:someone@example.com?subject=Bug%20report", True),
+        ("MAILTO:a@b.c", True),
+        ("mailto:", False),
+        ("file:///etc/passwd", False),
+        ("javascript:alert(1)", False),
+        ("ftp://example.com", False),
+        ("https://example.com/\r\nHost: x", False),
+        ("https://example.com/\x00", False),
+        ("https://example.com/\x1b[0m", False),
+        ("mailto:a@b.c\nbcc:x@y.z", False),
+        ("https://example.com/" + "a" * 5000, False),
+        ("", False),
+    ],
+)
+def test_open_external_accepts_http_https_and_mailto_only(
+    api: Api, monkeypatch, url, opens
+) -> None:
+    import threading
+
+    started: list = []
+
+    class _Thread:
+        def __init__(self, *, target, args, **_kw) -> None:
+            self.args = args
+
+        def start(self) -> None:
+            started.append(self.args[0])
+
+    monkeypatch.setattr(threading, "Thread", _Thread)
+    reply = api.open_external(url)
+    assert reply["ok"] is opens
+    assert started == ([url] if opens else [])
+    if not opens:
+        assert reply["error"]["code"] == "bad_request"
+
+
+# --- keys follow their destination ---------------------------------------------------------------
+
+
+def _acme(**over) -> dict:
+    spec = {
+        "id": "acme",
+        "kind": "openai",
+        "display_name": "Acme",
+        "base_url": "https://acme.test/v1",
+        "models": ["a1"],
+    }
+    return {**spec, **over}
+
+
+def test_changing_a_providers_host_removes_its_saved_key(api: Api, fake_keyring, events) -> None:
+    assert api.upsert_provider(_acme())["key_removed"] is False
+    api.save_api_key("acme", SECRET)
+    events[0].drain()
+    # same host, other path and models: the key stays
+    same = api.upsert_provider(_acme(base_url="https://acme.test/v2", models=["a1", "a2"]))
+    assert same["ok"] and same["key_removed"] is False
+    assert fake_keyring.get_password("ChatForge", "acme") == SECRET
+    moved = api.upsert_provider(_acme(base_url="https://evil.example/v1"))
+    assert moved["ok"] is True and moved["key_removed"] is True
+    assert moved["provider"]["key"]["source"] == "none"
+    assert fake_keyring.get_password("ChatForge", "acme") is None
+    assert SECRET not in json.dumps(moved)
+    assert [e["type"] for e in events[0].drain()].count("key.status") == 1
+
+
+def test_changing_the_port_removes_the_key_too(api: Api, fake_keyring) -> None:
+    api.upsert_provider(_acme())
+    api.save_api_key("acme", SECRET)
+    assert api.upsert_provider(_acme(base_url="https://acme.test:8443/v1"))["key_removed"] is True
+
+
+def test_update_settings_provider_patch_removes_the_key_and_says_so(
+    api: Api, services: Services, fake_keyring
+) -> None:
+    api.upsert_provider(_acme())
+    api.save_api_key("acme", SECRET)
+    api.save_api_key("minimax", SECRET + "-mm")
+    benign = api.update_settings({"providers": {"acme": {"models": ["a1", "a3"]}}})
+    assert benign["ok"] and benign["key_removed"] is False and benign["keys_removed"] == []
+    reply = api.update_settings({"providers": {"acme": {"base_url": "https://evil.example/v1"}}})
+    assert reply["ok"] and reply["key_removed"] is True and reply["keys_removed"] == ["acme"]
+    assert fake_keyring.get_password("ChatForge", "acme") is None
+    assert fake_keyring.get_password("ChatForge", "minimax") == SECRET + "-mm"
+    assert services.config.providers["acme"].base_url == "https://evil.example/v1"
+
+
+def test_a_builtin_providers_env_var_change_removes_its_key(api: Api, fake_keyring) -> None:
+    api.save_api_key("openai", SECRET)
+    reply = api.update_settings({"providers": {"openai": {"api_key_env": "SOMETHING_ELSE"}}})
+    assert reply["ok"] and reply["keys_removed"] == ["openai"]
+    assert fake_keyring.get_password("ChatForge", "openai") is None
+
+
+def test_removing_a_provider_through_settings_removes_its_key(api: Api, fake_keyring) -> None:
+    api.upsert_provider(_acme())
+    api.save_api_key("acme", SECRET)
+    reply = api.update_settings({"providers": {"acme": None}})
+    assert reply["ok"] and reply["keys_removed"] == ["acme"]
+    assert fake_keyring.get_password("ChatForge", "acme") is None
+    # re-adding the id elsewhere finds no key
+    api.upsert_provider(_acme(base_url="https://evil.example/v1"))
+    assert api.list_providers()["providers"][-1]["key"]["source"] == "none"
+
+
+def test_custom_providers_cannot_name_an_env_var_for_their_key(
+    api: Api, services: Services, fake_keyring
+) -> None:
+    reply = api.upsert_provider(_acme(api_key_env="AWS_SECRET_ACCESS_KEY"))
+    assert reply["ok"] is False and reply["error"]["code"] == "bad_request"
+    assert "acme" not in services.config.providers
+    api.upsert_provider(_acme())
+    reply = api.update_settings({"providers": {"acme": {"api_key_env": "AWS_SECRET_ACCESS_KEY"}}})
+    assert reply["ok"] is False and reply["error"]["code"] == "bad_request"
+    assert "providers.acme.api_key_env" in reply["errors"]
+    assert services.config.providers["acme"].api_key_env is None
+    # empty is fine, and a built-in provider keeps its env var setting
+    assert api.upsert_provider(_acme(api_key_env=""))["ok"] is True
+    assert api.upsert_provider(_acme(id="openai", api_key_env="OPENAI_API_KEY"))["ok"] is True
+
+
+# --- config-only settings ----------------------------------------------------------------------------
+
+
+def test_update_settings_cannot_change_documents_dir_or_private_address_block(
+    api: Api, services: Services
+) -> None:
+    for patch in (
+        {"tools": {"documents_dir": "/tmp/elsewhere"}},
+        {"tools.documents_dir": "/tmp/elsewhere"},
+        {"tools": {"block_private_addresses": False}},
+        {"tools": {"location": "Oslo", "block_private_addresses": False}},
+    ):
+        reply = api.update_settings(patch)
+        assert reply["ok"] is False and reply["error"]["code"] == "bad_request", patch
+        assert reply["errors"]
+    tools = services.config.tools
+    assert tools.documents_dir == "" and tools.block_private_addresses is True
+    assert tools.location == ""  # a refused patch applies nothing
+    text = services.paths.config_file.read_text(encoding="utf-8")
+    assert "elsewhere" not in text
+
+
+def test_update_settings_ignores_unchanged_readonly_values(api: Api, services: Services) -> None:
+    same = {"documents_dir": "", "block_private_addresses": True, "location": "Oslo"}
+    reply = api.update_settings({"tools": same})
+    assert reply["ok"] is True and services.config.tools.location == "Oslo"

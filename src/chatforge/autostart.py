@@ -3,10 +3,14 @@
 # Adapted from StudioForge src/studioforge/core/autostart.py (MIT, LaserLloyd)
 
 The task, named :data:`TASK_NAME`, runs ``wscript.exe "<home>\\ChatForge.vbs"`` ten seconds
-after sign-in. The ``.vbs`` launches ``pythonw -m chatforge --hidden`` with the window
+after sign-in. The ``.vbs`` launches ``pythonw -P -m chatforge --hidden`` with the window
 hidden: a ``.lnk`` would need COM (pywin32), and a ``.bat`` would flash a console at every
 login. The task is registered from XML because ``schtasks /Create`` has no switch for
 "run on battery", and a laptop that signs in unplugged must still start the app.
+
+On Linux (the XDG autostart specification, honoured by GNOME, KDE, Xfce, ...) the same
+job is one file, ``$XDG_CONFIG_HOME/autostart/chatforge.desktop`` (``~/.config`` by
+default), whose ``Exec`` is ``<python> -P -m chatforge --hidden``; see :func:`enable_xdg`.
 
 Older versions used a shim in the per-user Startup folder. It is still the fallback when
 Task Scheduler refuses the task, :func:`enable` removes it when the task is created (the
@@ -44,6 +48,10 @@ TASK_DELAY = "PT10S"
 TASK_XML_NAME = f"{ENTRY_NAME}-task.xml"
 TASK_MECHANISM = "Task Scheduler"
 STARTUP_MECHANISM = "Windows Startup folder"
+XDG_MECHANISM = "XDG autostart"
+XDG_ENTRY_NAME = "chatforge.desktop"
+#: The icon the entry points at (written next to the data folder; ``app.APP_ICON_PNG``).
+XDG_ICON_FILE = "app-icon-v2.png"
 SCHTASKS_TIMEOUT_S = 15.0
 
 _TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
@@ -64,7 +72,10 @@ class AutostartStatus:
 
     @property
     def mode(self) -> str:
-        """``"task-scheduler"`` or ``"startup-folder"`` (the bridge's ``get_autostart.mode``)."""
+        """``"task-scheduler"``, ``"startup-folder"`` or ``"xdg-autostart"`` (the bridge's
+        ``get_autostart.mode``)."""
+        if self.mechanism == XDG_MECHANISM:
+            return "xdg-autostart"
         return "task-scheduler" if self.mechanism == TASK_MECHANISM else "startup-folder"
 
     def describe(self) -> str:
@@ -95,6 +106,10 @@ class TaskInfo:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _is_linux() -> bool:
+    return sys.platform.startswith("linux")
 
 
 def startup_dir() -> Path:
@@ -132,8 +147,12 @@ def _tray_interpreter() -> str:
 
 
 def launch_argv() -> list[str]:
-    """The command the shim runs: ``[pythonw, "-m", "chatforge", "--hidden"]``."""
-    return [_tray_interpreter(), "-m", "chatforge", "--hidden"]
+    """The command the shim runs: ``[pythonw, "-P", "-m", "chatforge", "--hidden"]``.
+
+    ``-P`` (Python 3.11+) keeps the working directory, the data folder the shim runs in,
+    off ``sys.path``: a stray ``.py`` there cannot shadow a module at login.
+    """
+    return [_tray_interpreter(), "-P", "-m", "chatforge", "--hidden"]
 
 
 def _quote_for_vbs(argv: Sequence[str]) -> str:
@@ -363,6 +382,125 @@ def _delete_task() -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# XDG autostart (Linux)
+# --------------------------------------------------------------------------- #
+
+
+def xdg_autostart_dir() -> Path:
+    """``$XDG_CONFIG_HOME/autostart`` (``~/.config/autostart`` when unset or relative)."""
+    base = os.environ.get("XDG_CONFIG_HOME", "")
+    config_home = Path(base) if base and os.path.isabs(base) else Path.home() / ".config"
+    return config_home / "autostart"
+
+
+def xdg_entry() -> Path:
+    return xdg_autostart_dir() / XDG_ENTRY_NAME
+
+
+def _exec_quote(arg: str) -> str:
+    """One argument of a desktop entry ``Exec`` line: double-quoted when it holds a space
+    or a reserved character, with ``" ` $ \\`` backslash-escaped and ``%`` doubled (the
+    Desktop Entry spec, "The Exec key")."""
+    arg = arg.replace("%", "%%")
+    if not arg or any(c in arg for c in " \t\n\"'\\><~|&;$*?#()`"):
+        escaped = arg.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+        return '"' + escaped.replace("$", "\\$") + '"'
+    return arg
+
+
+def build_desktop_entry(argv: Sequence[str], icon: str | None = None) -> str:
+    """The text of ``chatforge.desktop`` for the autostart folder."""
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        f"Name={ENTRY_NAME}",
+        "Comment=Starts ChatForge (tray assistant) at sign-in.",
+        "Exec=" + " ".join(_exec_quote(a) for a in argv),
+    ]
+    if icon:
+        lines.append(f"Icon={icon}")
+    lines += [
+        "Terminal=false",
+        "Hidden=false",
+        "X-GNOME-Autostart-enabled=true",
+        "X-GNOME-Autostart-Delay=10",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _desktop_value(text: str, key: str) -> str | None:
+    """``key``'s value in the ``[Desktop Entry]`` group (the first one wins)."""
+    inside = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            inside = line == "[Desktop Entry]"
+        elif inside and line.startswith(key + "="):
+            return line[len(key) + 1 :].strip()
+    return None
+
+
+def _write_xdg(path: Path, text: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        tmp.replace(path)
+    except (OSError, ValueError) as exc:
+        raise AutostartError(f"Could not write {path}: {exc}") from exc
+
+
+def _xdg_icon(home: Path) -> str | None:
+    """The PNG the entry names, written once into ``home``; ``None`` if it cannot be."""
+    try:
+        from chatforge.desktop.icon import write_app_png
+
+        return str(write_app_png(home / XDG_ICON_FILE))
+    except Exception as exc:  # noqa: BLE001 - an entry without an icon still works
+        log.warning("autostart icon unavailable", error=type(exc).__name__)
+        return None
+
+
+def enable_xdg(argv: Sequence[str] | None = None, *, home: Path | None = None) -> AutostartStatus:
+    """Write ``chatforge.desktop`` into the XDG autostart folder. Idempotent."""
+    home = home if home is not None else app_home()
+    command = list(argv) if argv is not None else launch_argv()
+    path = xdg_entry()
+    _write_xdg(path, build_desktop_entry(command, _xdg_icon(home)))
+    log.info("autostart enabled", path=str(path), mechanism=XDG_MECHANISM)
+    return AutostartStatus(True, XDG_MECHANISM, path)
+
+
+def disable_xdg() -> AutostartStatus:
+    removed = _remove(xdg_entry())
+    log.info("autostart disabled", removed=removed, mechanism=XDG_MECHANISM)
+    return AutostartStatus(False, XDG_MECHANISM, None, "removed" if removed else "was not enabled")
+
+
+def status_xdg() -> AutostartStatus:
+    """What the autostart folder holds: enabled when the entry exists and neither
+    ``Hidden=true`` nor GNOME's ``X-GNOME-Autostart-enabled=false`` switches it off."""
+    path = xdg_entry()
+    if not path.is_file():
+        return AutostartStatus(False, XDG_MECHANISM, None)
+    text = _read_shim(path)
+    notes: list[str] = []
+    off = False
+    if (_desktop_value(text, "Hidden") or "").lower() == "true":
+        off = True
+        notes.append("the entry is marked Hidden=true")
+    if (_desktop_value(text, "X-GNOME-Autostart-enabled") or "").lower() == "false":
+        off = True
+        notes.append("autostart is switched off in the desktop's startup applications")
+    if not _desktop_value(text, "Exec"):
+        notes.append("the entry has no Exec line")
+    elif "--hidden" not in text:
+        notes.append("entry does not pass --hidden")
+    return AutostartStatus(not off, XDG_MECHANISM, path, "; ".join(notes))
+
+
+# --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 
@@ -374,7 +512,9 @@ def enable(argv: Sequence[str] | None = None, *, home: Path | None = None) -> Au
     the Startup-folder shim is written instead and the reason is in ``detail``.
     """
     if not _is_windows():
-        raise AutostartError("Autostart is only supported on Windows.")
+        if _is_linux():
+            return enable_xdg(argv, home=home)
+        raise AutostartError("Autostart is only supported on Windows and Linux.")
     home = home if home is not None else app_home()
     command = list(argv) if argv is not None else launch_argv()
     script = task_script(home)
@@ -410,6 +550,8 @@ def disable(*, home: Path | None = None) -> AutostartStatus:
     deleted never fires against a missing script.
     """
     if not _is_windows():
+        if _is_linux():
+            return disable_xdg()
         return AutostartStatus(False, TASK_MECHANISM, None, "not supported on this platform")
     shim_removed = _remove(startup_shim())
     task_removed = _delete_task()
@@ -435,6 +577,8 @@ def status() -> AutostartStatus:
     (``duplicate`` and ``detail``). A disabled task does not count as enabled.
     """
     if not _is_windows():
+        if _is_linux():
+            return status_xdg()
         return AutostartStatus(False, TASK_MECHANISM, None, "not supported on this platform")
     shim = startup_shim()
     shim_present = shim.is_file()

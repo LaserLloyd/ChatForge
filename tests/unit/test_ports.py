@@ -84,3 +84,20 @@ def test_find_port_holder_identifies_own_listener():
     if holder.pid is not None:
         assert holder.pid == os.getpid()
         assert not holder.is_ovms
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("ovms.exe", True),
+        ("OVMS.EXE", True),
+        ("ovms", True),
+        ("Ovms", True),
+        ("ovmsx", False),
+        ("python3", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_port_holder_is_ovms_by_either_name(name, expected):
+    assert ports.PortHolder(pid=1, name=name).is_ovms is expected

@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=ChatForge
+GenericName=AI assistant
+Comment=Chat popup with a local or cloud model, in the tray
+Exec=chatforge --show
+Icon=chatforge
+Terminal=false
+Categories=Utility;
+Keywords=AI;chat;assistant;LLM;
+StartupNotify=false
+StartupWMClass=chatforge
+Actions=Settings;
+
+[Desktop Action Settings]
+Name=Settings
+Exec=chatforge --settings

@@ -186,6 +186,19 @@ def write_app_ico(path: Path | str) -> Path:
     return target
 
 
+def write_app_png(path: Path | str, size: int = 256) -> Path:
+    """Write the app icon as a ``size`` px PNG to ``path`` (skipped when it is already
+    there): the Linux window icon (GTK and Qt take a file) and the launcher entry's icon."""
+    target = Path(path)
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    make_app_icon(size).save(tmp, format="PNG")
+    tmp.replace(target)
+    return target
+
+
 def _dot_geometry(size: int) -> tuple[float, float, float]:
     pad = max(1, size // 16)
     r = size * 0.185

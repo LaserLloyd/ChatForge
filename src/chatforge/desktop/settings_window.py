@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from chatforge.desktop import theme, win32util
+from chatforge.desktop import theme, win32util, xutil
 
 _log = logging.getLogger(__name__)
 
@@ -86,6 +86,9 @@ class SettingsWindow:
     def _raise(self, window: Any) -> None:
         try:
             window.show()
+            if xutil.is_linux() and not win32util.IS_WINDOWS:
+                xutil.present(getattr(window, "native", None))  # GTK: raise and focus
+                return
             hwnd = win32util.hwnd_of(window)
             if hwnd is not None and win32util.IS_WINDOWS:
                 win32util.force_foreground(hwnd)

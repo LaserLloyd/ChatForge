@@ -125,8 +125,18 @@ class CoreLoop:
     def create_task(
         self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
     ) -> asyncio.Task[Any]:
-        """``asyncio.create_task`` that keeps a strong reference (loop thread only)."""
+        """``asyncio.create_task`` that keeps a strong reference and logs an exception the
+        task dies with (loop thread only)."""
         task = self.loop.create_task(coro, name=name)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._log_failure)
         return task
+
+    @staticmethod
+    def _log_failure(task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            _log.error("background task %s failed: %r", task.get_name(), exc, exc_info=exc)

@@ -8,6 +8,9 @@ ui-theme bundle wants ``no-cache``. So: a stdlib ``ThreadingHTTPServer`` bound t
 * an explicit MIME map (``.js`` is always ``text/javascript``),
 * ``Cache-Control: no-cache`` on everything,
 * the §1.9 CSP plus ``object-src 'none'`` (§7 item 6) and ``X-Content-Type-Options: nosniff``,
+* a Host check against DNS rebinding: a request whose ``Host`` is not this server's own
+  loopback address and port (``127.0.0.1:<port>``, ``localhost:<port>``) is answered 421;
+  a missing ``Host`` is accepted only for HTTP/1.0,
 * path confinement: every request resolves to a regular file strictly inside the root, or
   it is a 404. Query strings are ignored,
 * each page's ``ui-theme.js`` tag carrying ChatForge's theme settings (desktop/theme.py).
@@ -115,6 +118,34 @@ class _Handler(BaseHTTPRequestHandler):
 
     # Set by StaticServer.
     root: Path = WEB_ROOT
+
+    def allowed_hosts(self) -> frozenset[str]:
+        port = int(self.server.server_address[1])
+        host = str(self.server.server_address[0])
+        return frozenset({f"127.0.0.1:{port}", f"localhost:{port}", f"{host}:{port}"})
+
+    def host_allowed(self) -> bool:
+        """True for this server's own ``Host`` (any case); a missing one only on HTTP/1.0."""
+        host = self.headers.get("Host")
+        if host is None:
+            return self.request_version == "HTTP/1.0"
+        return host.strip().lower() in self.allowed_hosts()
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        if self.host_allowed():
+            return True
+        body = b"Misdirected request"
+        self.send_response(HTTPStatus.MISDIRECTED_REQUEST)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        self.close_connection = True
+        return False
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - stdlib name
         _log.debug("static %s", format % args)

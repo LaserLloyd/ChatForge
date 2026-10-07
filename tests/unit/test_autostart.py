@@ -212,10 +212,19 @@ def test_enable_falls_back_when_schtasks_cannot_run(appdata, schtasks):
 
 def test_default_argv_is_pythonw_module_hidden(appdata, chatforge_home):
     argv = autostart.launch_argv()
-    assert argv[1:] == ["-m", "chatforge", "--hidden"]
+    assert argv[1:] == ["-P", "-m", "chatforge", "--hidden"]
     autostart.enable()
     text = _decode(_script_path(chatforge_home))
     assert "-m chatforge --hidden" in text
+
+
+def test_default_argv_keeps_the_working_directory_off_sys_path(appdata, chatforge_home):
+    # The shim runs in the data folder; -P stops Python putting that folder first on
+    # sys.path, where a stray json.py would shadow the real module at login.
+    argv = autostart.launch_argv()
+    assert argv.index("-P") < argv.index("-m")
+    autostart.enable()
+    assert " -P -m chatforge --hidden" in _decode(_script_path(chatforge_home))
 
 
 def test_paths_with_spaces_are_double_quoted(appdata, chatforge_home):

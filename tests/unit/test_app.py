@@ -75,6 +75,7 @@ def test_restart_command_prefers_pythonw_next_to_a_console_python(monkeypatch, t
     monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
     assert app_mod.restart_command(7) == [
         str(tmp_path / "pythonw.exe"),
+        "-P",
         "-m",
         "chatforge",
         "--hidden",
@@ -92,7 +93,7 @@ def test_restart_command_keeps_an_interpreter_path_with_spaces_as_one_argument(
     monkeypatch.setattr(sys, "executable", str(home / "python.exe"))
     argv = app_mod.restart_command(7)
     assert argv[0] == str(home / "pythonw.exe")
-    assert subprocess.list2cmdline(argv).startswith(f'"{home / "pythonw.exe"}" -m chatforge')
+    assert subprocess.list2cmdline(argv).startswith(f'"{home / "pythonw.exe"}" -P -m chatforge')
 
 
 def test_spawn_restart_is_detached_and_runs_in_the_app_home(monkeypatch, tmp_path):
