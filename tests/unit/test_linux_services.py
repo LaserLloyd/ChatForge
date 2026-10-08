@@ -21,6 +21,11 @@ from chatforge.paths import Paths
 from chatforge.runtime import manager as manager_mod
 from chatforge.runtime import ovms_supervisor
 
+POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="exercises the Linux branch with POSIX path and HOME semantics; covered by the Ubuntu job",
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -36,6 +41,7 @@ def xdg(tmp_path, monkeypatch, chatforge_home):
     return config_home
 
 
+@POSIX_ONLY
 def test_xdg_enable_writes_the_desktop_entry(xdg, chatforge_home):
     st = autostart.enable()
     entry = xdg / "autostart" / "chatforge.desktop"
@@ -76,6 +82,7 @@ def test_xdg_entry_without_an_icon_still_works(xdg, chatforge_home, monkeypatch)
     assert "Icon=" not in text and "Exec=" in text
 
 
+@POSIX_ONLY
 def test_xdg_config_home_falls_back_to_dot_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
@@ -148,6 +155,7 @@ def test_other_platforms_stay_unsupported(monkeypatch, tmp_path):
     assert autostart.status().enabled is False and autostart.disable().enabled is False
 
 
+@POSIX_ONLY
 def test_doctor_reads_the_xdg_entry_as_a_pass(xdg):
     st = autostart.enable()
     check = doctor.autostart_verdict(st)
@@ -243,6 +251,7 @@ def test_app_running_wording_follows_the_platform():
     assert "ovms pids [7]" in doctor.check_app_running(True, 1, [7], windows=False).detail
 
 
+@POSIX_ONLY
 def test_run_checks_off_windows_has_linux_rows_and_no_windows_ones(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor.os, "name", "posix")
     monkeypatch.setattr(doctor, "probe_toolkits", lambda: ("GTK 3 + WebKit2 4.1", None))

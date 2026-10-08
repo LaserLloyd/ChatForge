@@ -236,7 +236,7 @@ def test_npu_unavailable_on_host(tmp_path, monkeypatch):
     assert sup_mod.npu_unavailable_on_host("AUTO:NPU,CPU", node=node) is False  # AUTO copes
     node.write_text("")
     assert sup_mod.npu_unavailable_on_host("NPU", node=node) is False
-    assert str(sup_mod.NPU_DEVICE_NODE) == "/dev/accel/accel0"
+    assert sup_mod.NPU_DEVICE_NODE.as_posix() == "/dev/accel/accel0"
     monkeypatch.setattr(sup_mod, "is_windows_host", lambda: True)
     assert sup_mod.npu_unavailable_on_host("NPU", node=tmp_path / "missing") is False
 

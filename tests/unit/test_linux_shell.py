@@ -23,6 +23,11 @@ from chatforge.desktop import popup as popup_mod
 from chatforge.desktop.popup import Popup
 from chatforge.desktop.win32util import Rect
 
+POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="exercises the Linux branch with POSIX path and HOME semantics; covered by the Ubuntu job",
+)
+
 WORK = Rect(0, 0, 1920, 1040)
 CORNER = Rect(1488, 408, 1908, 1028)  # 420 x 620 at 100 %, lower right, margin 12
 PLACED = Rect(1488, 388, 1908, 1028)  # the configured 420 x 640 popup in the lower right
@@ -690,6 +695,7 @@ def test_app_png_is_written_once(tmp_path):
     assert not list(tmp_path.rglob("*.tmp"))
 
 
+@POSIX_ONLY
 def test_app_icon_on_linux_is_the_png(tmp_path, monkeypatch):
     monkeypatch.setattr(app_mod.os, "name", "posix")
     fake = SimpleNamespace(paths=SimpleNamespace(home=tmp_path))
@@ -725,6 +731,7 @@ def test_app_icon_failure_is_not_fatal(tmp_path, monkeypatch):
     assert app_mod.App._app_icon_png(fake) is None
 
 
+@POSIX_ONLY
 def test_spawn_restart_on_posix_starts_a_new_session(monkeypatch, tmp_path):
     seen: dict[str, Any] = {}
     monkeypatch.setattr(app_mod.os, "name", "posix")
