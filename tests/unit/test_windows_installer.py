@@ -388,3 +388,11 @@ def test_the_ci_autostart_probe_does_not_trip_on_schtasks_stderr() -> None:
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "schtasks /Query /TN ChatForge 2>$null" not in ci
     assert 'cmd /c "schtasks /Query /TN ChatForge >nul 2>nul"' in ci
+
+
+def test_the_ci_autostart_probe_resets_the_exit_code() -> None:
+    """GitHub's powershell step exits with the last native exit code; schtasks' "no such task" (1)
+    is the expected answer there, so the probe must reset it."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    probe = ci.index('cmd /c "schtasks /Query /TN ChatForge >nul 2>nul"')
+    assert "$global:LASTEXITCODE = 0" in ci[probe : probe + 600]

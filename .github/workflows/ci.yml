@@ -69,7 +69,9 @@ jobs:
           # cmd /c keeps schtasks' "task not found" message off PowerShell's error stream (the step runs with
           # ErrorActionPreference=Stop, which turns a native tool's stderr into a terminating error).
           cmd /c "schtasks /Query /TN ChatForge >nul 2>nul"
-          if ($LASTEXITCODE -eq 0) { throw "autostart was registered although -NoAutostart was given" }
+          $taskFound = ($LASTEXITCODE -eq 0)
+          $global:LASTEXITCODE = 0   # the step's own exit code is the last native exit code; "not found" (1) is the good answer here
+          if ($taskFound) { throw "autostart was registered although -NoAutostart was given" }
       - name: Upgrade in place
         shell: powershell
         run: |
