@@ -67,7 +67,8 @@ test('without pywebview the dev mock supplies every contract method', async () =
     'get_settings', 'update_settings', 'list_providers', 'upsert_provider', 'remove_provider', 'list_models',
     'delete_model', 'clear_compile_cache', 'search_models', 'repo_details', 'start_download', 'cancel_download',
     'resume_download', 'list_downloads', 'runtime_install', 'runtime_status', 'get_logs', 'open_logs_folder',
-    'open_config_folder', 'diagnostics', 'get_autostart', 'set_autostart', 'set_hotkey', 'disk_usage'];
+    'open_config_folder', 'diagnostics', 'get_autostart', 'set_autostart', 'set_hotkey', 'disk_usage', 'setup_local_status', 'setup_local_start',
+    'setup_local_cancel', 'setup_local_dismiss', 'answer_autostart', 'get_extensions', 'set_extension_settings'];
   for (const m of methods) assert.equal(typeof win.pywebview.api[m], 'function', m);
   assert.deepEqual(Object.keys(win.pywebview.api).filter((k) => !methods.includes(k)), [], 'extra public methods');
 });
@@ -84,7 +85,9 @@ test('get_state shape', async () => {
   assert.equal(mm.key.source, 'none');
   assert.equal(mm.key.required, true);
   assert.equal(s.limits.max_prompt_chars, 4000);
-  assert.equal(s.theme, 'laserlloyd');
+  assert.equal(s.theme, 'glacier');
+  assert.equal(s.setup.phase, 'idle');          // the first-run cards' state
+  assert.equal(s.setup.autostart_asked, false);  // nothing is registered until the user answers
   assert.equal(s.runtime.state, 'unloaded');
   assert.ok(Array.isArray(s.conversation));
 });
@@ -105,7 +108,8 @@ test('providers mirror config.seed_providers() and the views carry docs_url', as
   assert.equal(by.deepseek.docs_url, 'https://platform.deepseek.com/api_keys');
   assert.equal(by.minimax.docs_url, null);
   const settings = await api.call('get_settings');
-  assert.equal(settings.config.providers.studioforge.key_required, false);
+  assert.equal(settings.config.providers.studioforge.key_required, null);   // automatic: needed off this PC
+  assert.match(by.studioforge.key_help, /studioforge keys create/);
   assert.equal(settings.config.providers.minimax.builtin, false);   // only local-npu is builtin in the config
   // A seeded provider cannot be removed even though its config says builtin: false.
   assert.equal((await api.call('remove_provider', 'openai')).ok, false);

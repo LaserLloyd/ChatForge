@@ -4,7 +4,8 @@ chatforge [--hidden | --show | --settings]      run the tray app (default: show 
        [--after-pid PID]                    ... once process PID has exited (Restart)
 chatforge runtime install|status               OVMS runtime
 chatforge autostart enable|disable|status      login autostart
-chatforge doctor                               environment check (WS9)
+chatforge doctor                               environment check
+chatforge --version                            print the version
 """
 
 from __future__ import annotations
@@ -20,7 +21,10 @@ AFTER_PID_TIMEOUT_S = 90.0  # a slow quit (model unload + services) can take ~25
 
 
 def _parser() -> argparse.ArgumentParser:
+    from chatforge import __version__
+
     parser = argparse.ArgumentParser(prog="chatforge", description="ChatForge desktop assistant")
+    parser.add_argument("--version", action="version", version=f"chatforge {__version__}")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--hidden", action="store_true", help="start in the tray only")
     mode.add_argument("--show", action="store_true", help="start and show the popup (default)")
@@ -38,6 +42,12 @@ def _parser() -> argparse.ArgumentParser:
     runtime.add_argument("action", choices=["install", "status"])
     auto = sub.add_parser("autostart", help="start ChatForge at login")
     auto.add_argument("action", choices=["enable", "disable", "status"])
+    auto.add_argument(
+        "--no-record",
+        action="store_true",
+        help="do not write the answer to config.toml (the uninstaller uses this: it must not "
+        "create a data folder)",
+    )
     sub.add_parser("doctor", help="check the environment")
     return parser
 
@@ -78,7 +88,7 @@ def _cmd_runtime(action: str) -> int:
     return 0
 
 
-def _cmd_autostart(action: str) -> int:
+def _cmd_autostart(action: str, *, record: bool = True) -> int:
     from chatforge import autostart
 
     try:
@@ -92,20 +102,30 @@ def _cmd_autostart(action: str) -> int:
         print(f"autostart {action} failed: {exc}", file=sys.stderr)
         return 1
     print(status.describe())
+    if record and action in ("enable", "disable"):
+        _remember_autostart_answer(action == "enable")
     return 0
 
 
-def _cmd_doctor() -> int:
+def _remember_autostart_answer(want: bool) -> None:
+    """Record the answer in ``config.toml`` (``startup.autostart`` + ``autostart_asked``), so
+    the app neither asks again nor disagrees with what the installer did. Never fatal."""
+    from chatforge.config import load_config, update_config
+    from chatforge.paths import Paths
+
     try:
-        from chatforge import doctor  # WS9 fills this in
-    except ImportError:
-        print("chatforge doctor is not available yet (WS9).")
-        return 2
-    run = getattr(doctor, "main", None)
-    if run is None:
-        print("chatforge doctor is not available yet (WS9).")
-        return 2
-    return int(run() or 0)
+        paths = Paths.default()
+        paths.ensure_dirs()
+        cfg = load_config(paths, recover=True)
+        update_config(cfg, {"startup": {"autostart": want, "autostart_asked": True}}, paths)
+    except Exception as exc:  # noqa: BLE001 - the task itself is already (un)registered
+        print(f"note: could not record the choice in config.toml: {exc}", file=sys.stderr)
+
+
+def _cmd_doctor() -> int:
+    from chatforge import doctor
+
+    return int(doctor.main() or 0)
 
 
 def wait_for_exit(pid: int, timeout_s: float = AFTER_PID_TIMEOUT_S) -> bool:
@@ -137,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "runtime":
         return _cmd_runtime(args.action)
     if args.command == "autostart":
-        return _cmd_autostart(args.action)
+        return _cmd_autostart(args.action, record=not args.no_record)
     if args.command == "doctor":
         return _cmd_doctor()
 

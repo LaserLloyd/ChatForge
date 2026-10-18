@@ -18,7 +18,7 @@
 [[model]]
 id = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
 label = "Qwen2.5 1.5B Instruct INT4"
-approx_gb = 0.93
+approx_gb = 0.94
 npu = "recommended"
 tool_parser = "hermes3"
 licence = "apache-2.0"

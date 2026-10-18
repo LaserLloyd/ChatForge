@@ -268,16 +268,33 @@ NPU_DEVICE_NODE = Path("/dev/accel/accel0")
 
 
 def npu_unavailable_on_host(device: str, *, node: Path | None = None) -> bool:
-    """True when ``device`` is ``NPU`` on Linux and the driver node does not exist.
+    """True when ``device`` is ``NPU`` and this PC is known to have no working NPU.
 
+    Linux: the driver node does not exist. Windows: a finished background probe
+    (:mod:`chatforge.runtime.npu_detect`) found none; an unfinished or failed probe is
+    "unknown" and answers False, so only a confirmed absence moves a launch off the NPU.
     For the manager's device resolution (warn, then run on CPU). The supervisor itself
     launches exactly the device it is given.
     """
-    if is_windows_host() or not sys.platform.startswith("linux"):
-        return False
     if device.strip().upper() != "NPU":
         return False
+    if is_windows_host():
+        from chatforge.runtime import npu_detect
+
+        return npu_detect.absent()
+    if not sys.platform.startswith("linux"):
+        return False
     return not (node if node is not None else NPU_DEVICE_NODE).exists()
+
+
+def npu_absence_reason() -> str:
+    """Why :func:`npu_unavailable_on_host` said yes, in a sentence for the status line."""
+    if is_windows_host():
+        from chatforge.runtime import npu_detect
+
+        reason = npu_detect.absence_reason() or "no Intel NPU was found on this PC"
+        return f"{reason} (running on the CPU is slower)"
+    return f"no {NPU_DEVICE_NODE} on this host (Intel NPU driver not installed)"
 
 
 def ovms_env(ovms_dir: Path, base: Mapping[str, str]) -> dict[str, str]:

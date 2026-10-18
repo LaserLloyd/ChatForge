@@ -409,6 +409,7 @@ def _manager(tmp_path, local: dict | None = None):
 def test_npu_without_a_device_node_runs_on_cpu_and_leaves_the_config(tmp_path, monkeypatch, caplog):
     mgr, holder, qwen = _manager(tmp_path)
     monkeypatch.setattr(manager_mod, "npu_unavailable_on_host", lambda device: device == "NPU")
+    monkeypatch.setattr(ovms_supervisor, "is_windows_host", lambda: False)  # the Linux wording
     spec, fallback = mgr.plan(qwen)
     assert spec.device == "CPU"
     assert spec.cache_dir.name == "CPU-4096"  # the compile cache key is the CPU's

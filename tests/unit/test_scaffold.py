@@ -15,7 +15,7 @@ def test_chatforge_import():
 def test_chatforge_version():
     """Test that chatforge has a version."""
     assert hasattr(chatforge, "__version__")
-    assert chatforge.__version__ == "0.1.0"
+    assert chatforge.__version__ == "0.2.0"
 
 
 def test_fake_keyring(fake_keyring):

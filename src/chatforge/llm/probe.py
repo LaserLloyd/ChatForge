@@ -18,7 +18,13 @@ from chatforge.config import ProviderSpec, Timeouts
 from chatforge.llm.client import ChatRequest, OpenAICompatClient
 from chatforge.llm.errors import LLMError
 from chatforge.llm.events import Completed
-from chatforge.llm.providers import key_required, make_quirks, no_key_error, resolve_base_url
+from chatforge.llm.providers import (
+    key_hint,
+    key_required,
+    make_quirks,
+    no_key_error,
+    resolve_base_url,
+)
 from chatforge.logging_setup import register_secret
 
 log = logging.getLogger(__name__)
@@ -82,6 +88,7 @@ async def test_provider(
             quirks=make_quirks(spec),
             timeouts=timeouts or _probe_timeouts(spec),
             transport=transport,
+            key_hint=key_hint(spec),
         )
     except LLMError as e:
         return _fail(e, seeded)
