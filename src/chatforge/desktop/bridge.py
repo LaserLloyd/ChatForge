@@ -963,7 +963,13 @@ class Api:
             if request_id:
                 self._stopped_ids.append(str(request_id))  # no on_reply_end for it
             if engine is not None and request_id:
-                self._s.loop.call(engine.cancel, str(request_id))
+                loop = self._s.loop
+                if loop is not None and loop.in_loop_thread():
+                    # An add-on's on_event/on_turn callback (api.chat.cancel) runs on the core
+                    # loop; CoreLoop.call would refuse there, so cancel directly.
+                    engine.cancel(str(request_id))
+                else:
+                    loop.call(engine.cancel, str(request_id))
             return ok()
 
         return self._guard(impl, "stop_generation")

@@ -324,6 +324,11 @@ class ExtensionHost:
             self.loaded.append(LoadedExtension(name, False, error="invalid extension name"))
             log.warning("extension_skipped", name=name, reason="invalid name")
             return
+        if any(e.name == name for e in self.loaded):
+            # Two packages (or one seen twice on sys.path) under one name: the first wins. A
+            # failing second must not _forget() what the first registered.
+            log.warning("extension_skipped", name=name, reason="duplicate name")
+            return
         try:
             target = ep.load()
             wanted = getattr(target, "API_VERSION", API_VERSION)
@@ -336,7 +341,7 @@ class ExtensionHost:
                 raise ExtensionError("the entry point is not callable and has no setup()")
             api = ExtensionAPI(name, self)
             setup(api)
-        except Exception as exc:  # noqa: BLE001 - an add-on never takes the app down
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - an add-on never takes the app down
             self._forget(name)
             self.loaded.append(LoadedExtension(name, False, error=str(exc)[:300]))
             log.warning(
@@ -464,5 +469,5 @@ class ExtensionHost:
     def _guarded(name: str, what: str, cb: Callable[..., Any], *args: Any) -> None:
         try:
             cb(*args)
-        except Exception as exc:  # noqa: BLE001 - an add-on's bug is not the chat's
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - an add-on's bug is not the chat's
             log.warning("extension_callback_failed", name=name, hook=what, error=type(exc).__name__)
