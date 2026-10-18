@@ -312,3 +312,54 @@ def test_a_failing_addon_does_not_break_the_turn(wired) -> None:
     emit = api._report_reply_end("req_1", seen.append, "hi")
     emit({"type": "chat.done", "request_id": "req_1", "content": "ok"})
     assert seen and seen[0]["type"] == "chat.done"
+
+
+def test_a_second_addon_with_the_same_name_cannot_undo_the_first(host: ExtensionHost) -> None:
+    def bad(api) -> None:
+        api.on_turn(lambda turn: None)
+        raise RuntimeError("second copy is broken")
+
+    loaded = host.load([FakeEntryPoint("voice", voice_setup), FakeEntryPoint("voice", bad)])
+    assert [(e.name, e.ok) for e in loaded] == [("voice", True)]
+    # The first copy's section survived (a failing second copy used to _forget() it).
+    assert [s.extension for s in host.sections] == ["voice"]
+    assert host.turn_callbacks == []
+
+
+def test_sys_exit_in_an_addon_does_not_stop_the_app(host: ExtensionHost) -> None:
+    def quits(api) -> None:
+        raise SystemExit(3)
+
+    def quits_later(api) -> None:
+        api.on_event(lambda evt: (_ for _ in ()).throw(SystemExit(4)))
+
+    loaded = host.load([FakeEntryPoint("quitter", quits), FakeEntryPoint("late", quits_later)])
+    assert [(e.name, e.ok) for e in loaded] == [("quitter", False), ("late", True)]
+    host.dispatch_event({"type": "chat.delta"})  # swallowed, not raised
+
+
+def test_chat_cancel_works_from_a_callback_on_the_core_loop(paths: Paths, fake_keyring) -> None:
+    """``api.chat.cancel`` from an on_event/on_turn callback (barge-in) runs on the core
+    loop; ``CoreLoop.call`` refuses there, so the stop used to fail silently."""
+    from chatforge.desktop.core_loop import CoreLoop
+
+    class Engine:
+        def __init__(self) -> None:
+            self.cancelled: list[str] = []
+
+        def cancel(self, request_id: str) -> None:
+            self.cancelled.append(request_id)
+
+    core = CoreLoop("test-ext-cancel").start()
+    try:
+        services = Services(paths, load_config(paths))
+        services.loop = core
+        engine = services.engine = Engine()
+        api = Api(services)
+        reply = core.call(api.stop_generation, "req_7")  # as a callback on the loop would
+        assert reply["ok"] is True
+        assert engine.cancelled == ["req_7"]
+        assert api.stop_generation("req_8")["ok"] is True  # and from a worker thread
+        assert engine.cancelled == ["req_7", "req_8"]
+    finally:
+        core.stop()

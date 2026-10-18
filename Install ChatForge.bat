@@ -35,7 +35,7 @@ if not exist "%PS1%" (
   set "PS1=%TEMP%\chatforge-installer\Install-ChatForge.ps1"
   if not exist "%TEMP%\chatforge-installer" mkdir "%TEMP%\chatforge-installer"
   echo Downloading the ChatForge installer script ...
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/LaserLloyd/ChatForge/main/deploy/windows/Install-ChatForge.ps1' -OutFile '%TEMP%\chatforge-installer\Install-ChatForge.ps1'"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/LaserLloyd/ChatForge/main/deploy/windows/Install-ChatForge.ps1' -OutFile (Join-Path $env:TEMP 'chatforge-installer\Install-ChatForge.ps1')"
   if errorlevel 1 (
     echo.
     echo Could not download the installer script. Check the internet connection and try again.

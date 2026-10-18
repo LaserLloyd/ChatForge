@@ -114,19 +114,41 @@ function Get-NativeOutput([string]$exe, [string[]]$arguments) {
   } catch { return $null } finally { $ErrorActionPreference = $prev }
 }
 
-function Get-InstallProcesses([string]$dir) {
+function Select-InstallProcesses([string]$dir, $all, [uint32]$self) {
   # Programs started from the install folder, plus their children (a venv's pythonw.exe launcher starts the
   # real interpreter, which may live elsewhere, as a child; the local AI runtime is a child of that).
-  $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  # "From the install folder" means below "<dir>\", never a sibling such as "<dir>2" or "<dir> Beta". A child
+  # counts only when it started after its parent, so a recycled process id never pulls in an unrelated program.
+  $prefix = $dir.TrimEnd('\') + '\'
+  $byId = @{}
+  foreach ($p in $all) { $byId[[uint32]$p.ProcessId] = $p }
   $ids = New-Object 'System.Collections.Generic.HashSet[uint32]'
   foreach ($p in $all) {
-    if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)) { [void]$ids.Add([uint32]$p.ProcessId) }
+    if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { [void]$ids.Add([uint32]$p.ProcessId) }
   }
   do {
     $before = $ids.Count
-    foreach ($p in $all) { if ($ids.Contains([uint32]$p.ParentProcessId)) { [void]$ids.Add([uint32]$p.ProcessId) } }
+    foreach ($p in $all) {
+      $id = [uint32]$p.ProcessId
+      $parentId = [uint32]$p.ParentProcessId
+      if ($ids.Contains($id) -or -not $ids.Contains($parentId)) { continue }
+      $parent = $byId[$parentId]
+      if ($parent -and $p.CreationDate -and $parent.CreationDate -and $p.CreationDate -ge $parent.CreationDate) { [void]$ids.Add($id) }
+    }
   } while ($ids.Count -gt $before)
-  return @($all | Where-Object { $ids.Contains([uint32]$_.ProcessId) -and $_.ProcessId -ne $PID })
+  return @($all | Where-Object { $ids.Contains([uint32]$_.ProcessId) -and [uint32]$_.ProcessId -ne $self })
+}
+
+function Get-InstallProcesses([string]$dir) {
+  return @(Select-InstallProcesses $dir @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) $PID)
+}
+
+# What the installer puts in the install folder. Anything else there is not ours: the installer refuses such a
+# folder and the uninstaller never deletes it.
+$OwnItems = @('app', 'tools', 'logs', 'uninstall', 'ChatForge.ico', 'install.json')
+function Get-ForeignItems([string]$dir) {
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
+  return @(Get-ChildItem -LiteralPath $dir -Force | Where-Object { $OwnItems -notcontains $_.Name } | ForEach-Object { $_.Name })
 }
 
 function Add-ToProcessPath([string]$dir) {
@@ -144,6 +166,14 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($DataHome) { $env:CHATFORGE_HOME = [IO.Path]::GetFullPath($DataHome) }
 if ($ForceManagedPython) { $env:UV_PYTHON_PREFERENCE = 'only-managed' }
 
+# Never install into a folder that holds other things: the uninstaller removes the install folder.
+$foreign = @(Get-ForeignItems $InstallDir)
+if ($foreign.Count -gt 0) {
+  Write-Host ''
+  Write-Host "The folder $InstallDir already holds files that are not ChatForge's ($(($foreign | Select-Object -First 3) -join ', '))." -ForegroundColor Red
+  Write-Host ('  Choose an empty or new folder, for example --install-dir "' + (Join-Path $InstallDir 'ChatForge') + '". Nothing was changed.') -ForegroundColor Red
+  exit 1
+}
 New-Item -ItemType Directory -Force -Path $InstallDir, $LogDir | Out-Null
 $Transcript = Join-Path $LogDir ('install-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
 try { Start-Transcript -Path $Transcript | Out-Null } catch { $Transcript = $null }
@@ -316,7 +346,8 @@ try {
   # ---- 6. shortcuts and the Installed-apps entry ---------------------------------------------------------------
   Step 6 'Creating shortcuts'
   $icon = Join-Path $InstallDir 'ChatForge.ico'
-  [void](Invoke-Native $venvPy @('-I', '-c', "from chatforge.desktop.icon import write_app_ico; write_app_ico(r'$icon')") -Quiet)
+  # The path goes in as an argument, never into the Python source (a quote in a user name broke that).
+  [void](Invoke-Native $venvPy @('-I', '-c', 'import sys; from chatforge.desktop.icon import write_app_ico; write_app_ico(sys.argv[1])', $icon) -Quiet)
   $shortcuts = @()
   if ($NoShortcuts) {
     Note 'Skipped (-NoShortcuts).'
