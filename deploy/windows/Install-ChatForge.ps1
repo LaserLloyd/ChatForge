@@ -89,8 +89,18 @@ function Get-Download([string]$url, [string]$dest) {
   Fail ("Could not download $url`n      $($last.Exception.Message)`n      Check the internet connection (a proxy or a firewall can block it) and run the installer again.")
 }
 
+function Get-FileSha256([string]$path) {
+  # .NET directly: Get-FileHash lives in a module that Windows PowerShell 5.1 cannot always find when it was
+  # started from PowerShell 7 or from a host with a custom PSModulePath (the CI runner's pytest does that).
+  $full = (Resolve-Path -LiteralPath $path).ProviderPath
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $stream = [IO.File]::OpenRead($full)
+  try { return (([BitConverter]::ToString($sha.ComputeHash($stream))) -replace '-', '').ToLowerInvariant() }
+  finally { $stream.Dispose(); $sha.Dispose() }
+}
+
 function Test-Sha256([string]$path, [string]$expected) {
-  return ((Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() -eq $expected.ToLowerInvariant())
+  return ((Get-FileSha256 $path) -eq $expected.ToLowerInvariant())
 }
 
 function Invoke-Native([string]$exe, [string[]]$arguments, [switch]$Quiet) {

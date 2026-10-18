@@ -66,7 +66,10 @@ jobs:
           if ($v -notmatch '^chatforge \d+\.\d+\.\d+') { throw "unexpected version output: $v" }
           if (-not (Test-Path "$t\sc\StartMenu\ChatForge.lnk")) { throw "no Start menu shortcut" }
           if (-not (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChatForgeCI")) { throw "no Installed-apps entry" }
-          if (schtasks /Query /TN ChatForge 2>$null) { throw "autostart was registered although -NoAutostart was given" }
+          # cmd /c keeps schtasks' "task not found" message off PowerShell's error stream (the step runs with
+          # ErrorActionPreference=Stop, which turns a native tool's stderr into a terminating error).
+          cmd /c "schtasks /Query /TN ChatForge >nul 2>nul"
+          if ($LASTEXITCODE -eq 0) { throw "autostart was registered although -NoAutostart was given" }
       - name: Upgrade in place
         shell: powershell
         run: |

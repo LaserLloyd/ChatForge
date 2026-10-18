@@ -61,7 +61,11 @@ try {
   $zip = Join-Path $OutDir "$name.zip"
   if (Test-Path $zip) { Remove-Item $zip -Force }
   Compress-Archive -Path $root -DestinationPath $zip
-  $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+  # .NET directly: Get-FileHash is not found by Windows PowerShell 5.1 when a PowerShell 7 host started it.
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $stream = [IO.File]::OpenRead((Resolve-Path -LiteralPath $zip).ProviderPath)
+  try { $hash = (([BitConverter]::ToString($sha.ComputeHash($stream))) -replace '-', '').ToLowerInvariant() }
+  finally { $stream.Dispose(); $sha.Dispose() }
   Set-Content -Path "$zip.sha256" -Value "$hash *$name.zip" -Encoding ASCII
   Write-Host "Built $zip ($([int]((Get-Item $zip).Length / 1KB)) KB)"
   Write-Host "SHA-256 $hash"

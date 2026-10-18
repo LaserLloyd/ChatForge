@@ -352,3 +352,39 @@ def test_paths_never_go_into_code_strings() -> None:
 def test_the_release_zip_takes_tracked_files_only() -> None:
     text = (WIN / "build-release-zip.ps1").read_text(encoding="ascii")
     assert "ls-files --cached" in text and "--others" not in text
+
+
+def test_the_scripts_do_not_depend_on_get_filehash() -> None:
+    """Windows PowerShell 5.1 could not find Get-FileHash when a PowerShell 7 host (the CI runner's
+    pytest, a pwsh terminal) started it; the scripts hash with .NET instead."""
+    for name in ("Install-ChatForge.ps1", "build-release-zip.ps1"):
+        text = (WIN / name).read_text(encoding="ascii")
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        assert not any("Get-FileHash" in ln for ln in code), name  # comments may mention it
+        assert "SHA256]::Create()" in text, name
+
+
+@windows_ps
+def test_the_installer_hashes_a_download_the_way_hashlib_does(tmp_path: Path) -> None:
+    import hashlib
+
+    blob = tmp_path / "uv.zip"
+    blob.write_bytes(b"not really a zip" * 1000)
+    want = hashlib.sha256(blob.read_bytes()).hexdigest()
+    body = (
+        f"Set-Location '{tmp_path}'; "
+        f"$a = Test-Sha256 '{blob}' '{want.upper()}'; "
+        f"$b = Test-Sha256 'uv.zip' '{want}'; "  # a relative path, as .NET alone would resolve it wrongly
+        f"$c = Test-Sha256 '{blob}' '{'0' * 64}'; "
+        '"$a $b $c"'
+    )
+    got = _run_ps_functions(WIN / "Install-ChatForge.ps1", ["Get-FileSha256", "Test-Sha256"], body)
+    assert got == "True True False"
+
+
+def test_the_ci_autostart_probe_does_not_trip_on_schtasks_stderr() -> None:
+    """The step runs with ErrorActionPreference=Stop, so `schtasks ... 2>$null` threw
+    NativeCommandError when no task existed (the expected case)."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "schtasks /Query /TN ChatForge 2>$null" not in ci
+    assert 'cmd /c "schtasks /Query /TN ChatForge >nul 2>nul"' in ci
