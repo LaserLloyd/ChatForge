@@ -1289,6 +1289,14 @@ class Api:
 
         return self._guard(impl, "refresh_models")
 
+    def _providers_in_use(self) -> set[str]:
+        """Providers the user has chosen: the selected one, the fallback, the recent models."""
+        chat = self._cfg.chat
+        used = {chat.provider, chat.fallback_provider}
+        used.update(r.provider for r in chat.recent_models)
+        used.discard("")
+        return used
+
     async def _refresh_models_async(self, provider_id: str | None = None) -> dict[str, Any]:
         """Core-loop half of :meth:`refresh_models` (also run daily by the app). One
         provider failing never stops the others."""
@@ -1304,6 +1312,11 @@ class Api:
             key, _source = await asyncio.to_thread(secrets.get_api_key, spec.id, spec.api_key_env)
             if provider_id is None and not mr.is_configured(spec, key):
                 continue  # "refresh all" skips providers without a key
+            if provider_id is None and not key and spec.id not in self._providers_in_use():
+                # A keyless server (StudioForge's seed is http://localhost:1234/v1) the user
+                # has never chosen: do not poke that port daily, and do not overwrite the
+                # row's model list with whatever else listens there (LM Studio uses 1234 too).
+                continue
             fetched = await mr.fetch_models(spec, key)
             entry: dict[str, Any] = {
                 "ok": fetched.ok,

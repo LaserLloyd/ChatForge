@@ -146,3 +146,55 @@ def test_an_old_config_that_pinned_the_key_optional_is_migrated(chatforge_home) 
     assert sf.key_required is None
     assert sf.key_help == STUDIOFORGE_KEY_HELP
     assert cfg.startup.autostart_asked is True  # an existing install is not asked again
+
+
+def _refresh_api(tmp_path, base_url: str):
+    import asyncio
+
+    from chatforge.desktop.bridge import Api, Services
+
+    paths = Paths.from_home(tmp_path / "home")
+    paths.ensure_dirs()
+    services = Services(paths, load_config(paths))
+    api = Api(services)
+    api._apply_patch(
+        {
+            "chat": {"provider": "local-npu"},
+            "providers": {"studioforge": {"base_url": base_url}},
+        }
+    )
+    return api, services, (lambda: asyncio.run(api._refresh_models_async(None)))
+
+
+def test_the_daily_refresh_leaves_an_unused_keyless_studioforge_alone(
+    tmp_path, fake_keyring, monkeypatch
+) -> None:
+    """The seed points at http://localhost:1234/v1 with no key. Refresh-all must not poke that
+    port (or rewrite the row from whatever listens there, e.g. LM Studio) until the user picks
+    StudioForge."""
+    monkeypatch.delenv("STUDIOFORGE_API_KEY", raising=False)
+    listing = {"data": [{"id": "someone-elses-model"}]}
+    with fake_openai_server(models_reply=json_reply(listing)) as srv:
+        api, services, refresh = _refresh_api(tmp_path, srv.base_url)
+        before = list(services.config.providers["studioforge"].models)
+        results = refresh()
+        assert "studioforge" not in results
+        assert not [r for r in srv.requests if r.path.endswith("/models")]
+        assert services.config.providers["studioforge"].models == before
+
+        api._apply_patch({"chat": {"provider": "studioforge"}})  # now it is in use
+        results = refresh()
+        assert results["studioforge"]["ok"] is True
+        assert [r for r in srv.requests if r.path.endswith("/models")]
+
+
+def test_the_daily_refresh_still_reads_a_keyed_studioforge(
+    tmp_path, fake_keyring, monkeypatch
+) -> None:
+    monkeypatch.delenv("STUDIOFORGE_API_KEY", raising=False)
+    listing = {"data": [{"id": "m1"}]}
+    with fake_openai_server(models_reply=json_reply(listing)) as srv:
+        _api, _services, refresh = _refresh_api(tmp_path, srv.base_url)
+        secrets.set_api_key("studioforge", GOOD)
+        results = refresh()
+        assert results["studioforge"]["ok"] is True
