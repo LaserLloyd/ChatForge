@@ -57,10 +57,12 @@ from chatforge.logging_setup import get_logger
 from chatforge.models import npu_compat
 from chatforge.runtime import compile_cache
 from chatforge.runtime.ovms_supervisor import (
-    NPU_DEVICE_NODE,
+    NPU_DEVICE_NODE,  # noqa: F401 - re-exported (tests compare it with the supervisor's)
     OVMS_VERSION,
     LaunchSpec,
     OvmsError,
+    is_windows_host,
+    npu_absence_reason,
     npu_unavailable_on_host,
     spec_compile_hash,
 )
@@ -71,6 +73,8 @@ RuntimeState = Literal[
     "not_installed", "unloaded", "starting", "compiling", "ready", "unloading", "error"
 ]
 LOADING_STATES = frozenset({"starting", "compiling"})
+#: How long the first load waits for the NPU probe (it normally takes one to three seconds).
+NPU_PROBE_WAIT_S = 20.0
 #: Where an NPU-incompatible model goes when the configured fallback fails too.
 LAST_RESORT_DEVICE = "CPU"
 #: Load failures after which a fallback device is given up for the next one.
@@ -264,6 +268,18 @@ class LocalModelManager:
 
     _warned_no_npu = False
 
+    async def _settle_device(self) -> None:
+        """Windows with ``local.device = NPU``: let the one-time NPU probe finish (a second or
+        two at start-up) before choosing the device, so the first load never races it and
+        launches OVMS for an NPU that is not there. Bounded; unknown keeps the NPU."""
+        if not is_windows_host():
+            return
+        if str(_cfg(self._get_config, "local.device", "NPU")).upper() != "NPU":
+            return
+        from chatforge.runtime import npu_detect
+
+        await asyncio.to_thread(npu_detect.wait, NPU_PROBE_WAIT_S)
+
     def _resolve_device(self, model_id: str, model_path: Path) -> tuple[str, dict[str, str] | None]:
         """The device to run ``model_id`` on, and why it is not the configured one."""
         device = str(_cfg(self._get_config, "local.device", "NPU")).upper()
@@ -272,7 +288,7 @@ class LocalModelManager:
         if npu_unavailable_on_host(device):
             # Linux without the NPU driver node: CPU for this launch (the config is kept),
             # chosen here so the compile-cache key is the CPU's.
-            reason = f"no {NPU_DEVICE_NODE} on this host (Intel NPU driver not installed)"
+            reason = npu_absence_reason()
             if not self._warned_no_npu:
                 self._warned_no_npu = True
                 log.warning("npu_unavailable_using_cpu", reason=reason)
@@ -514,6 +530,7 @@ class LocalModelManager:
                 hint="Install it in Settings → Models → Runtime.",
                 action="open_settings",
             )
+        await self._settle_device()
         spec, fallback = self.plan(model_id)
         key = self._key(spec)
         if self._precompile_key is not None and self._precompile_key == key:
@@ -593,6 +610,7 @@ class LocalModelManager:
         async with self.lock:
             if not self.installed() or not self.idle_for_background():
                 return "busy"
+            await self._settle_device()
             spec, fallback = self.plan(model_id)
             if self.is_warm(spec):
                 return "warm"

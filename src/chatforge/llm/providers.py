@@ -103,13 +103,21 @@ def make_quirks(spec: ProviderSpec, *, enable_thinking: bool = False) -> Quirks:
     return GenericQuirks()
 
 
+def key_hint(spec: ProviderSpec) -> str:
+    """What to tell a user whose request went out without a key and was refused."""
+    base = f"No API key was sent to {spec.display_name}, and it requires one."
+    help_text = f" {spec.key_help.strip()}" if spec.key_help.strip() else ""
+    return base + help_text
+
+
 def no_key_error(spec: ProviderSpec) -> LLMError:
     env = f" (or set {spec.api_key_env})" if spec.api_key_env else ""
+    help_text = f" {spec.key_help.strip()}" if spec.key_help.strip() else ""
     return LLMError(
         f"Add your {spec.display_name} API key",
         code="no_key",
         action="add_key",
-        hint=f"Paste the key in the card below or in Settings → Providers{env}.",
+        hint=f"Paste the key in the card below or in Settings → Providers{env}.{help_text}",
     )
 
 
@@ -190,6 +198,7 @@ class RemoteProvider:
             quirks=make_quirks(self.spec),
             timeouts=self.spec.timeouts,
             transport=self._transport,
+            key_hint=key_hint(self.spec),
         )
 
     def key_status(self) -> dict:

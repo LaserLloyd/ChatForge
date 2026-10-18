@@ -1,0 +1,62 @@
+# ChatForge example settings.
+#
+# ChatForge reads ONE settings file, in TOML (not YAML):
+#   Windows   %LOCALAPPDATA%\ChatForge\config.toml
+#   Linux     ~/.local/share/ChatForge/config.toml
+#   anywhere  $CHATFORGE_HOME/config.toml   (CHATFORGE_HOME moves the whole data folder)
+#
+# You rarely need to edit it: Settings in the app writes it for you, and a missing file is
+# created with the defaults. Copy this file there only to start from a known set of values.
+# Every key below is valid; the ones left commented show a default or an option.
+#
+# Any key can also be set from the environment, and the environment wins over the file:
+#   CHATFORGE_LOCAL__DEVICE=CPU          ->  [local] device = "CPU"
+#   CHATFORGE_UI__THEME=forest           ->  [ui] theme = "forest"
+# API keys never go in this file: paste them in Settings > Providers (Windows Credential
+# Manager), or set STUDIOFORGE_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY / MINIMAX_API_KEY.
+
+schema_version = 5
+
+[chat]
+provider = "local-npu"                          # local-npu | studioforge | openai | deepseek | minimax | your own
+model = "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov" # the catalog starter model (0.94 GB, Apache-2.0)
+temperature = 0.7
+max_output_tokens = 1024
+# max_prompt_chars = 4000
+# persist_conversation = true                   # false: the chat is not written to disk
+
+[local]
+# NPU = the Intel NPU (fast, needs a Core Ultra PC with the Intel AI Boost driver).
+# CPU = any PC, slower. ChatForge already falls back to the CPU by itself when it finds no
+# NPU; set this to "CPU" to skip the check, or back to "NPU" after you get one.
+device = "NPU"
+idle_unload_minutes = 10                        # free the memory after this many idle minutes (0: never)
+# precompile = true                             # compile for the NPU in the background (ignored on CPU)
+# npu_fallback_device = "GPU"                   # where a model the NPU cannot run correctly goes
+
+[ui]
+theme = "glacier"                               # glacier | midnight-gold | forest | paper | daylight | purple | laserlloyd | ...
+hotkey = "Ctrl+Alt+C"                           # also: Copilot (the Copilot key on Windows)
+sticky = true                                   # false: the popup hides when it loses focus
+# show_on_reply = true
+
+[startup]
+autostart = false                               # start at sign-in; the installer asks, nothing does it silently
+autostart_asked = false                         # true once you answered the question (then it is not asked again)
+
+[tools]
+# enabled = ["web_search", "fetch_url", "weather", "calculator", "current_datetime"]
+# location = "Lisbon, Portugal"                 # lets "weather here" work
+units = "metric"                                # metric | imperial
+
+# StudioForge (or any OpenAI-compatible server) as the model. A key is only needed when the
+# server is NOT on this PC; create one on the StudioForge machine with `studioforge keys create`
+# and paste it in Settings > Providers > StudioForge.
+# [providers.studioforge]
+# base_url = "http://192.168.0.20:1234/v1"      # the StudioForge machine on your network
+# default_model = "your-model-name"
+# models = ["your-model-name"]
+
+# Settings of installed add-ons live in [extensions.<name>] (see docs/extensions.md).
+# [extensions.voice]
+# enabled = true

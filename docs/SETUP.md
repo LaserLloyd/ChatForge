@@ -1,6 +1,9 @@
 # Setting up ChatForge on a fresh Windows machine
 
-On a Linux desktop, follow [`SETUP-LINUX.md`](SETUP-LINUX.md) instead.
+**Looking for the easy way?** Double-click `Install ChatForge` (see the README, "Get started in three steps"): it
+does steps 1 to 3 below for you. This page is the manual route, for developers and for fixing a broken install.
+
+On a Linux desktop (experimental, never run on a real desktop), see [`SETUP-LINUX.md`](SETUP-LINUX.md) instead.
 
 Everything below runs as a normal user. No step needs administrator rights on a machine that
 already has the VC++ runtime and WebView2 (both ship with Windows 11 and most software); the one
@@ -24,8 +27,8 @@ Chat settings, saved keys and models automatically.
 | VC++ 2015+ x64 runtime | Usually present. Otherwise `winget install --id Microsoft.VCRedist.2015+.x64 -e` (**needs admin**, ~25 MB) | the doctor |
 | Intel NPU driver | Windows Update or <https://www.intel.com/content/www/us/en/download/794734/>; Device Manager shows "Intel(R) AI Boost" under Neural processors | the doctor |
 
-Without an NPU the app still works: set the device to CPU (or GPU) in Settings > Providers >
-Local (`local.device`; slower), or use StudioForge or a cloud provider only.
+Without an NPU the app still works: it notices, runs the model on the CPU (slower) and says so; you can also set the
+device yourself in Settings > Providers > Local (`local.device`), or use StudioForge or a cloud provider only.
 
 ## 2. Get the code and the Python environment
 
@@ -97,7 +100,8 @@ or double-click `launchers\ChatForge.bat`. On the first run the app:
 
 - writes `%LOCALAPPDATA%\ChatForge\config.toml` with defaults, or migrates your AI Chat settings,
   keys and models if you used AI Chat before;
-- enables **start at login**: it writes `%LOCALAPPDATA%\ChatForge\ChatForge.vbs`, which runs
+- does **not** start with Windows by itself (since 0.2.0): a card in the popup asks once. If you answer yes
+  (or run `chatforge autostart enable`) it writes `%LOCALAPPDATA%\ChatForge\ChatForge.vbs`, which runs
   `.venv\Scripts\pythonw.exe -m chatforge --hidden` silently, and registers a per-user Task
   Scheduler task, "ChatForge", that runs it ten seconds after you sign in, on battery too (no
   admin). If Task Scheduler refuses the task, the script goes in your Startup folder

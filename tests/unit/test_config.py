@@ -58,7 +58,7 @@ def test_provider_spec_defaults_and_env_name_rule():
 
 def test_defaults_match_plan(paths):
     cfg = load_config(paths)
-    assert cfg.schema_version == 4
+    assert cfg.schema_version == 5
     assert cfg.chat.provider == "local-npu"
     assert cfg.chat.model == "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov"
     assert cfg.chat.max_prompt_chars == 4000
@@ -87,10 +87,11 @@ def test_defaults_match_plan(paths):
     assert cfg.tools.documents_dir == ""
     assert cfg.tools.location == ""
     assert cfg.tools.units == "metric"
-    assert cfg.ui.theme == "laserlloyd"
+    assert cfg.ui.theme == "glacier"
     assert cfg.ui.hotkey == "Ctrl+Alt+C"
     assert cfg.ui.show_on_reply is True
-    assert cfg.startup.autostart is True
+    assert cfg.startup.autostart is False  # opt-in since 0.2.0
+    assert cfg.startup.autostart_asked is False
     assert cfg.logging.level == "INFO"
     assert cfg.logging.max_bytes == 5_000_000
     assert cfg.logging.backup_count == 3
@@ -109,7 +110,7 @@ def test_seed_providers(paths):
     cfg = load_config(paths)
     assert set(cfg.providers) == {"local-npu", "minimax", "studioforge", "openai", "deepseek"}
     sf = cfg.providers["studioforge"]
-    assert (sf.kind, sf.base_url, sf.key_required) == ("openai", "http://localhost:1234/v1", False)
+    assert (sf.kind, sf.base_url, sf.key_required) == ("openai", "http://localhost:1234/v1", None)
     assert sf.api_key_env == "STUDIOFORGE_API_KEY"
     oa = cfg.providers["openai"]
     assert (oa.base_url, oa.models, oa.quirks) == (
@@ -159,7 +160,7 @@ def test_load_creates_file_with_defaults(paths):
     cfg = load_config(paths)
     assert paths.config_file.is_file()
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 4
+    assert raw["schema_version"] == 5
     assert raw["providers"]["minimax"]["base_url"] == "https://api.minimax.io/v1"
     assert "id" not in raw["providers"]["minimax"]
     assert "themes" not in raw["ui"]
@@ -532,11 +533,11 @@ def test_normalize_base_url_rejects(url):
 def test_update_config_persists_and_returns_new(paths):
     cfg = load_config(paths)
     new, restart = update_config(
-        cfg, {"ui": {"theme": "glacier"}, "chat": {"max_tool_rounds": 2}}, paths
+        cfg, {"ui": {"theme": "forest"}, "chat": {"max_tool_rounds": 2}}, paths
     )
     assert restart == []
-    assert new.ui.theme == "glacier"
-    assert cfg.ui.theme == "laserlloyd"  # input not mutated
+    assert new.ui.theme == "forest"
+    assert cfg.ui.theme == "glacier"  # input not mutated
     assert load_config(paths) == new
 
 
@@ -650,7 +651,7 @@ def test_migrate_v1_turns_on_new_tools_and_moves_the_default_prompt(paths):
         },
     )
     cfg = load_config(paths)
-    assert cfg.schema_version == 4
+    assert cfg.schema_version == 5
     assert cfg.tools.enabled == [
         "web_search",
         "calculator",
@@ -663,7 +664,7 @@ def test_migrate_v1_turns_on_new_tools_and_moves_the_default_prompt(paths):
     assert cfg.chat.system_prompt == config_mod.DEFAULT_SYSTEM_PROMPT
     assert cfg.chat.max_tool_rounds == 6
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 4
+    assert raw["schema_version"] == 5
     assert "weather" in raw["tools"]["enabled"]
     assert load_config(paths) == cfg  # a second load changes nothing
 
@@ -688,10 +689,10 @@ def test_migrate_v2_turns_on_create_document_once(paths):
     enabled = ["web_search", "news_search", "fetch_url", "weather", "calculator"]
     _write_raw(paths, {"schema_version": 2, "tools": {"enabled": enabled}})
     cfg = load_config(paths)
-    assert cfg.schema_version == 4
+    assert cfg.schema_version == 5
     assert cfg.tools.enabled == [*enabled, "create_document"]
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 4
+    assert raw["schema_version"] == 5
     assert raw["tools"]["enabled"] == [*enabled, "create_document"]
     # Switched off again after the migration, it stays off.
     update_config(cfg, {"tools": {"enabled": enabled}}, paths)
@@ -701,7 +702,11 @@ def test_migrate_v2_turns_on_create_document_once(paths):
 def test_migrate_v2_keeps_no_tools_and_an_existing_create_document():
     out, changed = config_mod.migrate_raw({"schema_version": 2, "tools": {"enabled": []}})
     assert changed is True
-    assert out == {"schema_version": 4, "tools": {"enabled": []}}
+    assert out == {
+        "schema_version": 5,
+        "tools": {"enabled": []},
+        "startup": {"autostart": True, "autostart_asked": True},
+    }
     raw = {"schema_version": 2, "tools": {"enabled": ["create_document", "calculator"]}}
     out, _ = config_mod.migrate_raw(raw)
     assert out["tools"]["enabled"] == ["create_document", "calculator"]
@@ -714,7 +719,7 @@ def test_migrate_v3_makes_the_popup_sticky(paths, hide_on_blur):
     # about a choice: sticky starts on, and a later choice is kept.
     _write_raw(paths, {"schema_version": 3, "ui": {"hide_on_blur": hide_on_blur, "width": 500}})
     cfg = load_config(paths)
-    assert cfg.schema_version == 4
+    assert cfg.schema_version == 5
     assert cfg.ui.sticky is True and cfg.ui.width == 500
     raw = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
     assert "hide_on_blur" not in raw["ui"] and raw["ui"]["sticky"] is True
@@ -723,7 +728,7 @@ def test_migrate_v3_makes_the_popup_sticky(paths, hide_on_blur):
 
 
 def test_migrate_raw_is_a_no_op_at_the_current_version():
-    raw = {"schema_version": 4, "tools": {"enabled": ["calculator"]}}
+    raw = {"schema_version": 5, "tools": {"enabled": ["calculator"]}}
     out, changed = config_mod.migrate_raw(raw)
     assert changed is False
     assert out is raw

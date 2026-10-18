@@ -229,8 +229,12 @@ def status_error(
     model: str = "",
     key_used: bool = False,
     retry_after: str | None = None,
+    key_hint: str = "",
 ) -> LLMError:
-    """Map an HTTP status (plus the provider's own words) onto an LLMError."""
+    """Map an HTTP status (plus the provider's own words) onto an LLMError.
+
+    ``key_hint``: what to say to a user whose request carried no key and was refused
+    (``providers.key_hint``: the provider's name and how to get a key)."""
     said = provider_message(payload)
     raw = said or (json.dumps(payload)[:500] if not isinstance(payload, str) else payload)
     tail = f" The provider said: {said}" if said else ""
@@ -240,7 +244,7 @@ def status_error(
             code="auth",
             status=status,
             hint=(
-                "No API key was sent; this provider requires one."
+                (key_hint or "No API key was sent; this provider requires one.")
                 if not key_used
                 else "The key was not accepted. Check it has not been revoked, and that it "
                 "belongs to the provider (and region) you selected."

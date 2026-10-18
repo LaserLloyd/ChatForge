@@ -62,3 +62,9 @@ The tools call these public APIs at run time (no key; nothing is stored beyond a
 - **Wikipedia** (page summaries) - text licensed CC BY-SA 4.0
 - **Frankfurter** (exchange rates) - republishes the European Central Bank's reference rates
 - **DuckDuckGo** via the `ddgs` package (web and news search)
+
+- **uv** 0.12.23 (Apache-2.0 OR MIT) and, when no Python 3.12 is present, a **python-build-standalone** CPython 3.12
+  (PSF-2.0) - fetched by the Windows installer (`deploy/windows/Install-ChatForge.ps1`) from github.com/astral-sh,
+  the uv download checked against a SHA-256 pinned in the script; not redistributed here
+- **Qwen2.5-1.5B-Instruct int4 OpenVINO export** (`OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov`) - Apache-2.0 License;
+  downloaded from Hugging Face by the first-run card, every file hash-checked, not redistributed here

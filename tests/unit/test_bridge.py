@@ -259,6 +259,7 @@ def test_get_state_shape(api: Api, services: Services) -> None:
         "conversation",
         "limits",
         "theme",
+        "setup",
     }
     assert st["recommended_model"] is None  # no catalog loaded in this fixture
     assert set(st["config"]) == {"chat", "ui", "local", "quick_actions"}
@@ -282,7 +283,7 @@ def test_get_state_shape(api: Api, services: Services) -> None:
         "model": services.config.chat.model,
     }
     assert st["limits"] == {"max_prompt_chars": services.config.chat.max_prompt_chars}
-    assert st["theme"] == "laserlloyd"
+    assert st["theme"] == "glacier"
     assert st["conversation"] == []
     ids = [p["id"] for p in st["providers"]]
     assert ids[0] == "local-npu" and "minimax" in ids
@@ -297,6 +298,7 @@ def test_get_state_shape(api: Api, services: Services) -> None:
             "base_url",
             "builtin",
             "docs_url",
+            "key_help",
             "key",
             "vision",
         }

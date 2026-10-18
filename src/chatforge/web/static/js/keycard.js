@@ -161,6 +161,7 @@ export function createKeyCard({ api, provider, onSuccess, onCancel, onOpenLink }
   const node = el('section', { class: 'key-card', 'aria-labelledby': `${uid}-title` }, [
     el('h2', { class: 'kc-title', id: `${uid}-title`, text: `Add your ${name} API key` }),
     el('p', { class: 'kc-body', text: 'Stored in Windows Credential Manager, never in a file. Your message is sent as soon as the key works.' }),
+    provider.key_help ? el('p', { class: 'kc-body kc-help', text: provider.key_help }) : null,
     regionRow,
     el('label', { class: 'kc-label', for: `${uid}-key`, text: 'API key' }),
     el('div', { class: 'kc-field' }, [input, eye]),

@@ -19,6 +19,7 @@ import { el, railIcon, RAIL_ICONS } from './util.js?v=13';
 import { renderMarkdown, enhanceContent, installMarkdownHandlers } from './markdown.js';
 import { t } from './i18n.js?v=3';
 import { createKeyCard } from './keycard.js';
+import { createSetupCard, createAutostartCard } from './setupcard.js';
 import { wireResize, cancelResize } from './resize.js';
 
 const $ = (id) => document.getElementById(id);
@@ -74,6 +75,8 @@ const S = {
   picking: false,         // the native file dialog is open (attach_files in flight)
   filesBlind: null,       // the chips were drawn for a model that cannot see pictures
   keyCard: null,
+  setup: null,            // get_state.setup / setup.progress: the first-run cards' state
+  setupCard: null,        // the "Set up local AI" card (kept, so progress repaints in place)
   menuOpen: false,
   unseen: 0,
   settingsOpeningUntil: 0,
@@ -1574,6 +1577,18 @@ on('runtime.status', (e) => {
   }
 });
 
+on('setup.progress', (e) => {
+  const before = setupVisible();
+  S.setup = { ...S.setup, ...e };
+  if (S.setupCard) S.setupCard.update(S.setup);
+  if (e.phase === 'done') {
+    announce('Local AI is ready');
+    toast('Local AI is ready. Ask anything.');
+    refreshProviders();
+  }
+  if (before !== setupVisible() || e.phase === 'done') { renderEmpty(); renderChip(); renderStatus(); }
+});
+
 on('key.status', (e) => {
   const p = providerById(e.provider_id);
   if (p) {
@@ -1728,7 +1743,10 @@ function statusInfo() {
       return { text: `Model failed to load${r.error ? `: ${r.error}` : ''}`, tone: 'bad',
         action: { label: 'Retry', fn: () => api.call('load_model') } };
     case 'not_installed':
-      return { text: 'The local runtime is not installed.', tone: 'bad', action: { label: 'Open settings', fn: openSettings } };
+      if (setupVisible()) return null;   // the setup card already says it
+      return S.setup
+        ? { text: 'The local runtime is not installed.', tone: 'bad', action: { label: 'Set up local AI', fn: () => api.call('setup_local_start') } }
+        : { text: 'The local runtime is not installed.', tone: 'bad', action: { label: 'Open settings', fn: openSettings } };
     default: return null;
   }
 }
@@ -1750,6 +1768,38 @@ function renderStatus() {
 }
 setInterval(() => { if (S.runtime.state === 'ready') { renderStatus(); updateChipTitle(); } }, 1000);
 
+const SETUP_RUNNING = new Set(['checking', 'runtime', 'model', 'verifying']);
+
+/** Offer "Set up local AI" while the local model is the chosen one and it has no runtime or
+ *  model yet (or a run is going, or just stopped). */
+function setupVisible() {
+  const s = S.setup;
+  if (!s) return false;
+  const p = selectedProvider();
+  if (!isLocalProvider(p)) return false;
+  if (SETUP_RUNNING.has(s.phase) || s.phase === 'error' || s.phase === 'cancelled') return true;
+  return !!s.needed && s.phase !== 'done';
+}
+
+function setupCardNode() {
+  if (!S.setupCard) {
+    S.setupCard = createSetupCard({ api, onUseStudioForge: useStudioForge, onUseKey: openSettings });
+    S.setupCard.onDismiss = () => { S.setup = { ...S.setup, needed: false }; renderEmpty(); };
+  }
+  S.setupCard.update(S.setup);
+  return S.setupCard.node;
+}
+
+/** "Use StudioForge" on the setup card: switch to it, and ask for its key when it needs one. */
+async function useStudioForge() {
+  const p = providerById('studioforge');
+  if (!p) { openSettings(); return; }
+  const model = p.default_model || (p.models || [])[0];
+  if (!model) { openSettings(); return; }
+  await chooseModel(p.id, model);
+  if (!isConfigured(p)) showKeyCard(p.id, '');
+}
+
 /** The empty chat (start, and after Clear chat): who answers, then the quick actions. */
 function renderEmpty() {
   const box = messagesBox();
@@ -1764,12 +1814,22 @@ function renderEmpty() {
     el('h2', { class: 'empty-title', text: 'Ask anything' }),
     el('p', { class: 'empty-sub', text: p ? `Chatting with ${p.display_name}${S.selected.model ? ` · ${shortModel(S.selected.model)}` : ''}.` : 'Loading…' }),
   ];
-  if (needsKey) {
+  const setupNode = setupVisible() ? setupCardNode() : null;
+  if (setupNode) {
+    kids.push(setupNode);
+  } else if (needsKey) {
     const b = el('button', { class: 'ui-btn ui-btn--primary', type: 'button', text: `Add your ${p.display_name} key` });
     b.addEventListener('click', () => showKeyCard(p.id, ''));
     kids.push(b);
   } else {
     kids.push(...actionGrid());
+  }
+  // The one-time autostart question: after the setup card, never on top of a download.
+  if (!setupNode && S.setup && S.setup.autostart_asked === false) {
+    kids.push(createAutostartCard({
+      api,
+      onAnswered: (flag) => { S.setup = { ...S.setup, autostart_asked: true, autostart_enabled: !!flag }; toast(flag ? 'ChatForge will start when you sign in.' : 'ChatForge will not start by itself.'); renderEmpty(); },
+    }).node);
   }
   const node = el('div', { class: 'empty-state' }, kids);
   if (existing) existing.replaceWith(node); else box.prepend(node);
@@ -2281,6 +2341,7 @@ async function boot() {
   S.runtime = r.runtime || { state: 'unloaded' };
   if (r.limits) S.limits = { ...S.limits, ...r.limits };
   S.selected = r.selected || S.selected;
+  S.setup = r.setup || null;
   applyConfig(r.config || {});
   if (r.theme && window.UITheme && window.UITheme.current() !== r.theme) window.UITheme.set(r.theme);
   renderChip();

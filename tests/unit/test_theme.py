@@ -75,7 +75,7 @@ def test_each_page_gets_the_settings_and_its_own_tag_agrees(page: str) -> None:
     served = _attrs(theme.apply_to_page(raw).decode("utf-8"))
     assert served == {
         "data-themes": ",".join(["laserlloyd", "laserlloyd-light", *CORE]),
-        "data-default": "laserlloyd",
+        "data-default": "glacier",
         "data-storage-key": "chatforge.theme",
         "data-families": "true",
     }
@@ -121,8 +121,8 @@ def test_windows_open_in_the_theme_colour() -> None:
     }
     assert theme.window_options("daylight")["background_color"] == colors["daylight"]
     # An unknown theme opens like the default one; no registry, pywebview's own default.
-    assert theme.window_options("gone") == {"background_color": colors["laserlloyd"]}
-    assert theme.window_options(None) == {"background_color": colors["laserlloyd"]}
+    assert theme.window_options("gone") == {"background_color": colors["glacier"]}
+    assert theme.window_options(None) == {"background_color": colors["glacier"]}
     assert theme.window_options("laserlloyd", []) == {}
     bad = [{"slug": "laserlloyd", "themeColor": "red; x"}]
     assert theme.window_options("laserlloyd", bad) == {}

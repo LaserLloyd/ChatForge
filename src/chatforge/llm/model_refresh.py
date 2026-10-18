@@ -18,7 +18,13 @@ import httpx
 from chatforge.config import ProviderSpec, Timeouts
 from chatforge.llm.client import OpenAICompatClient
 from chatforge.llm.errors import LLMError
-from chatforge.llm.providers import key_required, make_quirks, no_key_error, resolve_base_url
+from chatforge.llm.providers import (
+    key_hint,
+    key_required,
+    make_quirks,
+    no_key_error,
+    resolve_base_url,
+)
 from chatforge.logging_setup import register_secret
 
 #: Model ids that are not chat models (OpenAI and StudioForge list these too).
@@ -153,7 +159,12 @@ async def fetch_models(
         if not key and key_required(spec):
             raise no_key_error(spec)
         client = OpenAICompatClient(
-            base_url, key, quirks=make_quirks(spec), timeouts=_TIMEOUTS, transport=transport
+            base_url,
+            key,
+            quirks=make_quirks(spec),
+            timeouts=_TIMEOUTS,
+            transport=transport,
+            key_hint=key_hint(spec),
         )
         async with client:
             entries = await client.list_model_entries()

@@ -7,6 +7,7 @@
 
 import { el } from './util.js';
 import { api, on, ready } from './bridge.js';
+import { renderExtensions } from './extensions-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const REGION_URLS = {
@@ -2168,6 +2169,7 @@ async function init() {
   fillGeneral();
   fillLocalCard();
   await Promise.all([loadModels(), loadDisk(), refreshRuntime(), refreshAutostart(), refreshDownloads()]);
+  renderExtensions(api, $('ext-cards')).catch(() => { /* add-ons are optional */ });
   doSearch();
   // Typed keys are wiped when the window goes away (not on a cancelled leave).
   window.addEventListener('pagehide', clearKeyInputs);

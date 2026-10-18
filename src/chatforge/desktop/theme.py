@@ -32,7 +32,7 @@ BUNDLE_DIR = Path(__file__).resolve().parent.parent / "web" / "static" / "ui-the
 THEME_SETTINGS: dict[str, Any] = {
     #: Opt-in themes ChatForge offers, first in the picker; the core themes follow.
     "opt_in": ("laserlloyd", "laserlloyd-light"),
-    "default": "laserlloyd",
+    "default": "glacier",
     "storage_key": "chatforge.theme",
     #: The dark/light switch within a family (LaserLloyd and LaserLloyd Light).
     "families": True,

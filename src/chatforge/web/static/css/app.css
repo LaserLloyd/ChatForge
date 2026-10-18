@@ -677,3 +677,22 @@ details.json-collapse .code-block-wrapper { margin: 0; border: 0; border-top: 1p
   color: var(--text-link); font-size: var(--fs-micro); font-weight: var(--fw-medium);
 }
 .msg-action .rail-icon { flex: none; width: 11px; height: 11px; }
+
+/* ------------------------------------------------------- first-run cards ---- */
+.setup-card {
+  display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 14px; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+}
+.setup-card--small { margin-top: 12px; }
+.sc-title { font-size: 15px; font-weight: var(--fw-semibold); color: var(--text-primary); }
+.sc-body, .sc-facts, .sc-device, .sc-line { margin: 0; font-size: var(--fs-xs); line-height: 1.5; color: var(--text-secondary); }
+.sc-device[data-slow="true"] { color: var(--warning-text, var(--text-primary)); font-weight: var(--fw-medium); }
+.sc-problem { margin: 0; font-size: var(--fs-xs); line-height: 1.45; color: var(--danger-text); overflow-wrap: anywhere; }
+.sc-bar { height: 8px; overflow: hidden; background: var(--surface-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); }
+.sc-fill { height: 100%; width: 0; background: var(--accent); transition: width var(--dur-base) var(--ease-standard); }
+.sc-actions, .sc-alts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sc-or { font-size: var(--fs-xs); color: var(--text-tertiary); }
+.sc-later { margin-left: auto; }
+.setup-card [hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { .sc-fill { transition: none; } }

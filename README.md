@@ -7,45 +7,168 @@
 
 <table align="center">
   <tr>
-    <td align="center"><img src="docs/images/popup-reply.png" width="300" alt="The ChatForge popup in the dark LaserLloyd theme. The header chip reads Qwen2.5-1.5B with a green ready dot, beside the pin, Settings and Close buttons. A reply shows rendered Markdown: a Python code line, inline code, bold, italic and a link, a blue Note callout saying compiled NPU graphs are cached per model, a nested bullet list, a task list with one finished and one open item, and a footnote. Under it the reply is signed Qwen2.5-1.5B-Instruct-int4-ov at 14.2 tok/s with Copy, Copy as Markdown and Regenerate. At the bottom are the paperclip and quick-action buttons, the message box, Send, and a Clear chat button"></td>
-    <td align="center"><img src="docs/images/popup-light.png" width="300" alt="The same Markdown reply in the light Daylight theme: white background, dark text, a blue Note callout, the same lists, footnote, signature line and Copy, Copy as Markdown and Regenerate buttons"></td>
-    <td align="center"><img src="docs/images/popup-files.png" width="300" alt="The popup after the user asked for a document with a meeting summary. A create_document tool chip shows the file was saved, the reply says it saved Meeting summary.md in the ChatForge documents folder, and a document card for Meeting summary.md offers Open, Download and Show in folder buttons, with Copy, Copy as Markdown and Regenerate under the reply"></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/images/popup-search.png" width="300" alt="A web search answered by the small model: the user asked to search the web for running LLMs on an NPU with OpenVINO, a web_search tool chip shows the query and 5 results, and a two-line answer names the OpenVINO Model Server documentation with a numbered source below"></td>
-    <td align="center"><img src="docs/images/popup-model-menu.png" width="300" alt="The popup with the model menu open over the empty chat. Under the Local (NPU) heading are Qwen2.5-1.5B-Instruct-int4-ov (checked) and Qwen3-4B-int4-ov; under StudioForge is Qwen3.8-27B-Q5_K_S. A separator leads to Load model and Manage models"></td>
-    <td align="center"><img src="docs/images/settings-general.png" width="300" alt="Settings, General tab: the Window and shortcut card with the Ctrl+Alt+C hotkey field, a Record button and a Copilot key preset, a theme swatch grid with LaserLloyd selected among eight themes, and switches for Start at login, Sticky popup and Show the popup when a reply finishes"></td>
+    <td align="center" width="33%"><img src="docs/screenshots/readme/first-run-card.png" width="280" alt="The ChatForge popup on its first start in the Glacier theme: a Set up local AI card says it downloads the local runtime (139 MB) and Qwen2.5 1.5B Instruct INT4 (0.94 GB, Apache-2.0), 1.08 GB in all, that no Intel NPU was found so the model runs on the CPU (slower), and offers a Set up local AI button, Use StudioForge, Use an API key and Not now"><br><sub><b>1.</b> First start: one card, one button. On a PC without an NPU it says the model will run on the CPU.</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/readme/first-run-download.png" width="280" alt="The same card while it works: a progress bar at 57 percent, the line Downloading Qwen2.5 1.5B Instruct INT4 at 57 percent, 82 MB per second, about 10 seconds left, and a Cancel button"><br><sub><b>2.</b> It downloads the runtime and the model with a progress bar and a Cancel button, then checks the files.</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/readme/first-chat.png" width="280" alt="A first conversation: the user asked for a two-sentence reply politely declining a meeting invitation for Thursday, and the starter model answered in two polite sentences, signed Qwen2.5-1.5B-Instruct-int4-ov at 45 tokens per second, with Copy, Copy as Markdown and Regenerate buttons"><br><sub><b>3.</b> A first answer, on the CPU, about 45 tokens per second.</sub></td>
   </tr>
 </table>
 
-<p align="center"><em>Rendered Markdown in the dark and light themes, a document the model saved for you, a live web search, the model menu, and Settings. Rendered from the real pages against their development mock, so the content is example data.</em></p>
+<p align="center"><em>Real captures of the running window on Windows 11 (Glacier theme, the default), taken on a PC with no NPU. The tray menu is not pictured: capturing it needs a desktop session this capture could not drive.</em></p>
 
-A simple local NPU / API desktop assistant — an AI-button replacement. ChatForge lives in the
-Windows notification area: press `Ctrl+Alt+C` (or the keyboard's Copilot key) and a chat popup opens at the lower right of the screen. A small language model
-answers **on the Intel NPU** (no account, and the conversation stays on the PC), or a bigger one
-does: **StudioForge** (your own GPU server on the LAN or tailnet), **MiniMax**, **OpenAI**,
-**DeepSeek** or any OpenAI-compatible service. Answers stream in as rendered Markdown. Attach
-photos, text, code, CSV, JSON, PDF, Word, Excel or PowerPoint files (old `.doc`/`.xls`/`.ppt`,
-OpenDocument, RTF and emails too) and the model reads them; ask a StudioForge or cloud model for a report, a spreadsheet or slides and
-it saves a Word, Excel or PowerPoint file (or CSV, Markdown, text) in `Documents\ChatForge`,
-ready to open or download. The model has nine tools: web and news search,
-page fetch, weather, Wikipedia, exchange rates, the current date and time, a calculator, and one
-that creates documents.
+A small AI assistant that lives in the Windows notification area. Press `Ctrl+Alt+C` (or the keyboard's Copilot key)
+and a chat popup opens at the lower right of the screen. A small language model answers **on your own PC**, on the
+Intel NPU when there is one and on the CPU when there is not (no account, and the conversation stays on the
+machine), or a bigger one does: **StudioForge** (your own GPU server on the LAN), **MiniMax**, **OpenAI**,
+**DeepSeek** or any OpenAI-compatible service. Answers stream in as rendered Markdown. Attach photos, text, code,
+CSV, JSON, PDF, Word, Excel or PowerPoint files and the model reads them; ask a StudioForge or cloud model for a
+report, a spreadsheet or slides and it saves a Word, Excel or PowerPoint file in `Documents\ChatForge`. The model
+has nine tools: web and news search, page fetch, weather, Wikipedia, exchange rates, the date and time, a
+calculator, and one that creates documents.
 
-**Status:** v0.1.0, formerly *AI Chat*: existing AI Chat settings, keys and models are migrated
-automatically on first start. Built and tested on Windows 11 with an Intel Core Ultra 5 226V
-(Lunar Lake) and its "Intel AI Boost" NPU; that is the only platform verified on real hardware.
-CI runs ruff and the Python unit tests on Windows and Ubuntu, and the JS tests on Node 24.
-Questions and bug reports: [Contact](#contact).
+## Get started in three steps (Windows 11)
 
-**Linux (new, not yet verified on a real desktop).** ChatForge now also runs on a Linux desktop
-(X11, or Wayland through XWayland): the tray icon, the popup, Settings, the cloud providers and
-the local model on the CPU through the Linux OpenVINO Model Server archive (the NPU only where
-Intel's driver is installed). The global hotkey is an X11 grab; on Wayland, bind a desktop
-shortcut to `chatforge --show`. Start at login is an XDG `.desktop` file, and API keys go in
-GNOME Keyring or KWallet through `keyring` (or an environment variable). OCR of pictures and
-the conversion of old `.doc`/`.xls`/`.ppt` files are Windows only. This port was written and
-tested headless, so expect rough edges. Setup: [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md).
+1. **Get it.** On the project's GitHub page choose **Code > Download ZIP** and extract it (a release zip,
+   `ChatForge-<version>-windows.zip`, is the same thing without the developer files).
+2. **Double-click `Install ChatForge`.** It needs no terminal and no administrator rights: it sets up Python and
+   the app for your user, adds Start menu and desktop shortcuts, asks once whether to start with Windows, and
+   opens ChatForge. (Windows may say "Windows protected your PC" because the file is not signed: **More info >
+   Run anyway**.)
+3. **Click "Set up local AI"** in the window. About 1.1 GB downloads (a minute on a fast connection), then type.
+   Prefer a bigger model? Click **Use StudioForge** or **Use an API key** on the same card instead.
+
+Then try the prompts in [`docs/demo-prompts.md`](docs/demo-prompts.md). Every method, with pros and cons, is under
+[Install](#install); the installer in detail is [`deploy/windows/README.md`](deploy/windows/README.md).
+
+**Status:** v0.2.0, formerly *AI Chat* (existing AI Chat settings, keys and models migrate automatically).
+Built and tested on Windows 11. The Intel NPU path is verified on one machine, an Intel Core Ultra 5 226V
+(Lunar Lake); the CPU path was verified on a PC without an NPU. CI runs ruff and the Python unit tests on
+Windows and Ubuntu, and the JS tests on Node 24. Questions and bug reports: [Contact](#contact).
+See [`CHANGELOG.md`](CHANGELOG.md) for what changed.
+
+---
+
+## Install
+
+Pick your platform; the simplest method is listed first. ChatForge is a Windows desktop app.
+
+**Ports:** none that another computer can reach. ChatForge listens only on this PC's loopback address
+(`127.0.0.1`): a random port for its own window's pages, `47831` so a second launch can wake the first, and a
+random port for the local model's runtime. It starts no server, so there is nothing to open in a firewall.
+See [Ports](#ports) below.
+
+### Windows
+
+#### 1. Double-click installer (simplest)
+
+Choose this if you want ChatForge and do not use git or Python. Download the project zip (**Code > Download ZIP**
+on GitHub), extract it, double-click **`Install ChatForge`**. Or paste this into PowerShell, which does the same:
+
+```powershell
+# Download, extract and run the installer (needs only Windows 11 and an internet connection)
+$zip = "$env:TEMP\ChatForge.zip"
+Invoke-WebRequest https://github.com/LaserLloyd/ChatForge/archive/refs/heads/main.zip -OutFile $zip
+Expand-Archive $zip "$env:TEMP\ChatForge-install" -Force
+& "$env:TEMP\ChatForge-install\ChatForge-main\Install ChatForge.bat"
+
+# Verify: prints the version, then checks the machine
+& "$env:LOCALAPPDATA\Programs\ChatForge\app\.venv\Scripts\chatforge.exe" --version
+& "$env:LOCALAPPDATA\Programs\ChatForge\app\.venv\Scripts\chatforge.exe" doctor
+```
+
+The installer asks once whether to start ChatForge at sign-in (`--yes` answers yes without asking, `--no-autostart`
+answers no). It puts the app in `%LOCALAPPDATA%\Programs\ChatForge`; your settings, chats and models stay in `%LOCALAPPDATA%\ChatForge`.
+
+| Pros | Cons |
+| --- | --- |
+| No terminal, no Python, uv or git to install first; Python 3.12 and uv are fetched if missing (uv is hash-checked) | Not signed: Windows shows a "protected your PC" warning once |
+| Per user, no administrator rights; Start menu and desktop shortcuts; optional start at sign-in (asked, never silent) | Needs internet and about 200 MB of downloads the first time (plus 1.1 GB for the local model) |
+| Run it again to upgrade; `Uninstall ChatForge` removes the app and keeps your data | Windows 11, 64-bit Intel or AMD only |
+| Plain-text scripts you can read before running; the install log is kept | Installs a private Python environment per user, not a single `.exe` |
+
+#### 2. From a clone with uv (developers)
+
+Choose this to read the code, change it or run the tests.
+
+```powershell
+winget install --id Git.Git -e
+winget install --id astral-sh.uv -e
+# Open a new terminal window now so git and uv are on PATH, then:
+git clone https://github.com/LaserLloyd/ChatForge.git
+cd ChatForge
+uv sync --extra dev                          # Python 3.12 is picked (and fetched if missing); about 150 MB
+uv run chatforge runtime install             # the local runtime, 139 MB, SHA-256 pinned (or use the first-run card)
+uv run chatforge doctor                      # checks Python, WebView2, VC++, NPU, runtime, config
+.\.venv\Scripts\pythonw.exe -m chatforge --show
+
+# Verify
+uv run chatforge --version
+```
+
+Then click **Set up local AI** in the window (it skips the runtime if you already installed it).
+
+| Pros | Cons |
+| --- | --- |
+| Smallest and most transparent; edit the code and run it straight away | You need git and uv first (two `winget` lines above) |
+| Same `uv.lock` as the installer; `uv run pytest` runs the tests | No shortcuts or Installed-apps entry; `launchers\ChatForge.bat` is the double-click |
+| Update with `git pull; uv sync` | You manage updates yourself; no uninstaller (delete the folder, see below) |
+
+Add `--extra office` to `uv sync` if you want old `.xls`/`.ppt` attachments converted through Microsoft Office.
+
+### Linux
+
+**Not supported.** The code has a Linux port (X11 or Wayland through XWayland, GTK or Qt, XDG autostart) that was
+written and tested headless and has **never been run on a real desktop**, there is no Linux installer, and the Intel
+NPU needs a driver and device node that were not verified. If you want to try it anyway, it is `uv sync` in a clone
+plus the GTK packages listed in [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md); expect rough edges and do not report
+them as supported behaviour. Want a chat server for Linux instead? Use DisPatch (it has a Docker image) and point it
+at StudioForge.
+
+### macOS
+
+**Not supported and untested.** There is no macOS code path (the tray, the WebView window, the Credential Manager
+key store and the OpenVINO Model Server archive the app downloads are Windows and Linux only).
+
+### Docker
+
+**Not applicable, on purpose: there is no Dockerfile and no compose file.** ChatForge is a tray icon, a WebView2 window,
+a global hotkey and Windows Credential Manager, driving an Intel NPU: none of those exist inside a container
+(Docker Desktop does not expose the NPU either), and the app has no headless or HTTP mode to put behind a port. A
+container with the web pages in it would only be the interface with fake data, and could be mistaken for the app. If
+you want a chat server in a container, use DisPatch and point it at StudioForge.
+
+### Ports
+
+| Listener | Address | Why | Reachable from another PC |
+| --- | --- | --- | --- |
+| Pages for the popup and Settings | `127.0.0.1`, a random free port each start | The windows load their HTML from it; GET only, Host-checked | no |
+| Second-launch signal | `127.0.0.1:47831` | A second start tells the first to show the popup (it accepts the text `SHOW`) | no |
+| Local model runtime (OpenVINO Model Server) | `127.0.0.1`, the first free port from `18611` | Serves the model to the app; stopped after 10 idle minutes | no |
+| Everything else | none | ChatForge only makes outgoing connections: Hugging Face and GitHub for downloads, the provider you choose, and the tools' public services | n/a |
+
+### Upgrade and uninstall
+
+| If you installed with | Upgrade | Uninstall |
+| --- | --- | --- |
+| The double-click installer | Run `Install ChatForge` again (a newer zip, or `git pull` in the folder you ran it from); settings and data stay | `Uninstall ChatForge` (or Settings > Apps > ChatForge): the app goes, your data stays; `--purge` also deletes `%LOCALAPPDATA%\ChatForge` and the saved API keys |
+| A clone and uv | `git pull; uv sync` | `uv run chatforge autostart disable`, delete the clone, and delete `%LOCALAPPDATA%\ChatForge` if you want your data gone |
+
+A first start on 0.2.0 migrates your `config.toml` in place; what changes is listed in
+[`CHANGELOG.md`](CHANGELOG.md#upgrading-from-010).
+
+### First run
+
+The first start writes `%LOCALAPPDATA%\ChatForge\config.toml` with the defaults (if you used AI Chat before the
+rename, it migrates that instead), registers the hotkey and shows the popup. **Nothing is registered to start with
+Windows unless you say yes**: the installer asks, and a source install gets the same question as a card in the popup.
+
+With no model yet, the popup shows the **Set up local AI** card: **Set up local AI** installs the runtime and
+downloads the catalog's starter model (`OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov`, 0.94 GB, Apache-2.0) with one
+progress bar and a Cancel button, checks every file's SHA-256 against Hugging Face's, and points the chat at it.
+**Use StudioForge** and **Use an API key** are on the same card; **Not now** hides it (Settings > Models still
+downloads models). The model loads in a few seconds on a CPU and about 45 s the very first time on an NPU, which
+compiles it once and caches the result. Which device it uses is said on the card and in the status line: with no
+NPU it says "No Intel NPU found: runs on the CPU (slower)", and `local.device` in `config.toml` is left alone, so
+a later NPU is used by itself.
 
 ---
 
@@ -104,12 +227,12 @@ at the top.
 
 | Component | Runs on | Role |
 | --- | --- | --- |
-| **Tray app** (`pythonw -m chatforge`, one process) | Your PC, as your user | Notification-area icon with a status dot, the global hotkey, a single-instance guard and two windows: the popup and Settings (pywebview on WebView2). Starts at sign-in, hidden; restarts itself from the tray. |
+| **Tray app** (`pythonw -m chatforge`, one process) | Your PC, as your user | Notification-area icon with a status dot, the global hotkey, a single-instance guard and two windows: the popup and Settings (pywebview on WebView2). Starts at sign-in, hidden, only if you chose that; restarts itself from the tray. |
 | **Chat engine** (`chat/engine.py`) | Inside the app, on its asyncio core thread | Streams each answer, runs up to 6 rounds of tool calls per message, looks live data up early for the small model, recovers from refusals, falls back to another provider, fits long conversations to the model's context window. |
 | **Attachments** (`attachments.py`) | Inside the app | Reads attached files as text: plain text and code, CSV, JSON, HTML, Word, Excel, PowerPoint, OpenDocument, RTF, emails and old `.doc` with the standard library, PDF with `pypdf`, old `.xls`/`.ppt` through Microsoft Office when it is installed. Pictures are cleaned and stored for vision models (OCR text for the others). See [Files and documents](#files-and-documents). |
-| **OpenVINO Model Server** (`ovms.exe` 2026.4) | Your PC, a child process under a kill-on-close job object | Serves the local model on the NPU (or GPU or CPU). Installed by `chatforge runtime install`, started when the popup opens with the local model selected, stopped after 10 idle minutes. |
-| **Local model** | Your PC, `%LOCALAPPDATA%\ChatForge\models` | `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` by default, downloaded from Hugging Face in Settings > Models. Compiled once for the NPU and cached. |
-| **StudioForge** | Your GPU server (`http://localhost:1234/v1` by default; set the host in Settings) | LaserLloyd's OpenAI-compatible LLM server; any model it serves. Key optional. |
+| **OpenVINO Model Server** (`ovms.exe` 2026.4) | Your PC, a child process under a kill-on-close job object | Serves the local model on the NPU (or GPU or CPU). Installed by the first-run card or `chatforge runtime install`, started when the popup opens with the local model selected, stopped after 10 idle minutes. |
+| **Local model** | Your PC, `%LOCALAPPDATA%\ChatForge\models` | `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` by default, downloaded from Hugging Face by the first-run card or Settings > Models. Compiled once for the NPU and cached; on a PC without an NPU it runs on the CPU. |
+| **StudioForge** | Your GPU server (`http://localhost:1234/v1` by default; set the host in Settings) | LaserLloyd's OpenAI-compatible LLM server; any model it serves. No key on this PC; **a key is required when the server is another machine** (StudioForge 2.0). |
 | **Cloud providers** | MiniMax, OpenAI, DeepSeek, or any OpenAI-compatible URL you add | Bigger models, with your API key from the Windows Credential Manager. |
 | **Tools** (`tools/`) | Inside the app; they call public services | Nine tools, each shown as a chip in the reply: eight read-only lookups and `create_document`, which saves a file in `Documents\ChatForge`. See [Tools](#tools). |
 
@@ -167,14 +290,16 @@ at the top.
   (facts about you, how you like answers) go with every message.
 - **Keys stay out of files.** API keys live in the Windows Credential Manager (or an environment
   variable you name), never in `config.toml`, and the log redactor knows them.
-- **No admin rights.** Everything installs under `%LOCALAPPDATA%\ChatForge`, and start at login
-  is a per-user Task Scheduler task.
+- **No admin rights.** The app installs under `%LOCALAPPDATA%\Programs\ChatForge`, your data under
+  `%LOCALAPPDATA%\ChatForge`, and start at login (if you choose it) is a per-user Task Scheduler task.
 
 ### Where to go next
 
 | You want to… | Go to |
 | --- | --- |
-| Install it | [Install](#install) · [step-by-step guide](docs/SETUP.md) · [on Linux](docs/SETUP-LINUX.md) |
+| Install it | [Get started](#get-started-in-three-steps-windows-11) · [Install](#install) · [the installer](deploy/windows/README.md) · [step-by-step guide](docs/SETUP.md) |
+| Try it | [Prompts to try](docs/demo-prompts.md) · [`config.example.toml`](config.example.toml) |
+| Add voice or another add-on | [Writing an add-on](docs/extensions.md) |
 | See it | [What it looks like](#what-it-looks-like) |
 | Learn the popup, the tray and the hotkeys | [Usage](#usage) |
 | Know what happens when a chat gets long | [Long conversations](#long-conversations) |
@@ -190,61 +315,22 @@ at the top.
 
 ---
 
-## Install
-
-You need Windows 11 (for Linux, see [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md)), [Python 3.12](https://www.python.org/downloads/) (with the `py` launcher),
-[uv](https://docs.astral.sh/uv/) installed for it (`py -3.12 -m pip install --user uv`) and
-[Git](https://git-scm.com/download/win). The WebView2 runtime and the VC++ 2015+ x64 runtime ship
-with Windows 11; the NPU needs an Intel Core Ultra with the "Intel AI Boost" driver. Node 24 is
-only for the JS tests. `chatforge doctor` checks all of it. The full walkthrough, with a check
-after every step, is [`docs/SETUP.md`](docs/SETUP.md).
-
-1. Clone and create the environment (`uv sync` installs pywebview, pystray, httpx, keyring, ddgs
-   and the dev tools into `.venv`):
-
-   ```powershell
-   git clone https://github.com/LaserLloyd/ChatForge.git
-   cd ChatForge
-   py -3.12 -m uv sync --extra dev
-   ```
-
-   Old `.xls` and `.ppt` files (and a rare `.doc`) can only be attached on a PC with Microsoft
-   Office, through `pywin32`, which is an optional extra since the Linux port: add
-   `--extra office` (`py -3.12 -m uv sync --extra dev --extra office`) if you want that.
-
-2. Install the local runtime, OpenVINO Model Server 2026.4.0 `python_on` (a 139 MB download,
-   SHA-256 pinned, resumable), and check the machine:
-
-   ```powershell
-   py -3.12 -m uv run chatforge runtime install
-   py -3.12 -m uv run chatforge doctor
-   ```
-
-3. Start it: double-click **`launchers\ChatForge.bat`**, or
-
-   ```powershell
-   .\.venv\Scripts\pythonw.exe -m chatforge --show
-   ```
-
-4. Get the model: **Settings > Models**, search `Qwen`, then **Download** on the row badged
-   *Recommended*, `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` (0.94 GB). A model folder copied in by
-   hand under `%LOCALAPPDATA%\ChatForge\models\<publisher>\<repo>` is adopted at the next start.
-
-No NPU? Set the device to GPU or CPU in Settings > Providers > Local (slower), or use StudioForge
-or a cloud provider only.
-
-### First run
-
-The first start writes `%LOCALAPPDATA%\ChatForge\config.toml` with the defaults; if you used AI
-Chat before the rename, it migrates your AI Chat settings, keys and models instead. It also turns
-on **start at login** (a per-user Task Scheduler task, "ChatForge", that starts ChatForge hidden
-in the tray ten seconds after you sign in), registers the hotkey and shows the popup. The popup
-starts loading the local model: about 45 s the very first time, while the NPU compiles it, and
-about 3 s from the cache after that.
-
----
-
 ## What it looks like
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/images/popup-reply.png" width="300" alt="The ChatForge popup in the dark LaserLloyd theme. The header chip reads Qwen2.5-1.5B with a green ready dot, beside the pin, Settings and Close buttons. A reply shows rendered Markdown: a Python code line, inline code, bold, italic and a link, a blue Note callout saying compiled NPU graphs are cached per model, a nested bullet list, a task list with one finished and one open item, and a footnote. Under it the reply is signed Qwen2.5-1.5B-Instruct-int4-ov at 14.2 tok/s with Copy, Copy as Markdown and Regenerate. At the bottom are the paperclip and quick-action buttons, the message box, Send, and a Clear chat button"></td>
+    <td align="center"><img src="docs/images/popup-light.png" width="300" alt="The same Markdown reply in the light Daylight theme: white background, dark text, a blue Note callout, the same lists, footnote, signature line and Copy, Copy as Markdown and Regenerate buttons"></td>
+    <td align="center"><img src="docs/images/popup-files.png" width="300" alt="The popup after the user asked for a document with a meeting summary. A create_document tool chip shows the file was saved, the reply says it saved Meeting summary.md in the ChatForge documents folder, and a document card for Meeting summary.md offers Open, Download and Show in folder buttons, with Copy, Copy as Markdown and Regenerate under the reply"></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/popup-search.png" width="300" alt="A web search answered by the small model: the user asked to search the web for running LLMs on an NPU with OpenVINO, a web_search tool chip shows the query and 5 results, and a two-line answer names the OpenVINO Model Server documentation with a numbered source below"></td>
+    <td align="center"><img src="docs/images/popup-model-menu.png" width="300" alt="The popup with the model menu open over the empty chat. Under the Local (NPU) heading are Qwen2.5-1.5B-Instruct-int4-ov (checked) and Qwen3-4B-int4-ov; under StudioForge is Qwen3.8-27B-Q5_K_S. A separator leads to Load model and Manage models"></td>
+    <td align="center"><img src="docs/images/settings-general.png" width="300" alt="Settings, General tab: the Window and shortcut card with the Ctrl+Alt+C hotkey field, a Record button and a Copilot key preset, a theme swatch grid with LaserLloyd selected among eight themes, and switches for Start at login, Sticky popup and Show the popup when a reply finishes"></td>
+  </tr>
+</table>
+
+<p align="center"><em>Rendered Markdown in the dark and light themes, a document the model saved for you, a live web search, the model menu, and Settings. Rendered from the real pages against their development mock, so the content is example data.</em></p>
 
 The popup opens at the lower right of the screen, above the taskbar: 420 × 620 until you
 resize it (see [Usage](#usage)). Every answer says which model wrote it and how fast; the top of
@@ -277,14 +363,16 @@ the server name are made up. Re-run the script after a UI change.
 
 ## Usage
 
+Installed with the double-click installer: use the Start menu or desktop **ChatForge** shortcut. From a clone:
+
 ```powershell
 .\.venv\Scripts\pythonw.exe -m chatforge --show     # start and show the popup
 .\.venv\Scripts\pythonw.exe -m chatforge --hidden   # start in the tray (what autostart runs)
 .\.venv\Scripts\pythonw.exe -m chatforge --settings # start and open Settings
 ```
 
-`launchers\ChatForge.bat` does the first one; `launchers\ChatForge Autostart.bat` turns start at
-login on or off. Starting a second copy just brings the running popup up.
+`chatforge --version` prints the version. `launchers\ChatForge.bat` does the first one;
+`launchers\ChatForge Autostart.bat` turns start at login on or off. Starting a second copy just brings the running popup up.
 
 - **Popup.** `Ctrl+Alt+C` or a tray click. The header chip shows the provider and model with a
   status dot (grey unloaded, amber loading or compiling, green ready, red error). The chip
@@ -316,7 +404,7 @@ login on or off. Starting a second copy just brings the running popup up.
   [Files and documents](#files-and-documents).
 - **Model menu.** Click the header chip. A **Recently used** section at the top lists the last
   three models you used. Below it are the local models and every provider that can answer now:
-  StudioForge (no key needed) and each provider with a saved or environment key; the provider in
+  StudioForge (on this PC it needs no key; on another PC it appears once its key is saved) and each provider with a saved or environment key; the provider in
   use stays listed even without a key. With more than 8 models the menu gets a **Filter models**
   box at the top. At the bottom: Load or Unload model (when the local model
   is selected) and Manage models…, which opens Settings.
@@ -433,7 +521,7 @@ it. Nothing is summarised, so fitting costs no extra model call, only a size est
 | Provider | Base URL | API key | Default model |
 | --- | --- | --- | --- |
 | **Local (NPU)** | OVMS on `127.0.0.1`, started by the app | none | `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` |
-| **StudioForge** | `http://localhost:1234/v1` by default; point it at your GPU server (`http://<host>:1234/v1`) in Settings > Providers | optional (`STUDIOFORGE_API_KEY`) | any model the server lists |
+| **StudioForge** | `http://localhost:1234/v1` by default; point it at your GPU server (`http://<host>:1234/v1`) in Settings > Providers | **required unless the server is on this PC** (`STUDIOFORGE_API_KEY`, or paste it in Settings; create one with `studioforge keys create` on the StudioForge machine) | any model the server lists |
 | **MiniMax** | `api.minimax.io/v1` (International), `api.minimaxi.com/v1` (China) or a custom URL | `MINIMAX_API_KEY` | `MiniMax-M3` |
 | **OpenAI** | `api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | **DeepSeek** | `api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
@@ -643,7 +731,7 @@ Secrets are never written there.
 | --- | --- |
 | **Models** | Installed models (set active, load, unload, delete, clear compile cache), disk usage, the OVMS runtime card (install, re-check), Hugging Face search with badges (*Recommended*, *Supported*, *Untested*, *Avoid*), downloads with progress, cancel (after a confirmation) and resume |
 | **Providers** | Local: device (NPU, GPU, CPU) and `max_prompt_len` (reload required). Model lists: refresh all, refresh once a day. One card per provider: base URL (MiniMax: region), model, context window (with what the provider reported for the selected model), longest reply, API key with Save key, Test, Refresh models and Remove key. Add a custom OpenAI-compatible provider; custom ones can be removed |
-| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`, or press **Record** and then the keys; the **Copilot key** button fills in the `Copilot` preset, Windows only; conflicts are reported), theme (a grid of swatch cards: LaserLloyd by default, LaserLloyd Light its light partner, and the six core ThemeForge themes; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login, sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback, and the quick actions (reorder, **Restore defaults**). Unsaved changes are flagged beside **Save**, and **Revert** puts the saved values back; the theme and start at login apply at once and are not part of Save |
+| **General** | Idle unload minutes (0 = never), max prompt characters (200 to 4,000,000, the typed text), hotkey (text such as `Ctrl+Alt+C`, or press **Record** and then the keys; the **Copilot key** button fills in the `Copilot` preset, Windows only; conflicts are reported), theme (a grid of swatch cards: Glacier by default for new installs, LaserLloyd and its light partner, and the six core ThemeForge themes; see [Themes](#themes)), show reasoning, **Personality** and **Instructions**, start at login (off until you turn it on), sticky popup (stays open until closed or the hotkey is pressed again), show the popup when a reply finishes, the nine tools, home location and units, the local-model fallback, and the quick actions (reorder, **Restore defaults**). Unsaved changes are flagged beside **Save**, and **Revert** puts the saved values back; the theme and start at login apply at once and are not part of Save |
 | **Logs** | The last 500 redacted lines with a level filter and a text filter, auto-refresh, Copy, Open folder, **Copy diagnostics** (a redacted report for bug reports: versions, the runtime state, the active provider and model, `config.toml` with key-like values removed, and the last 50 log lines) and **Open config folder** |
 
 **Personality and instructions.** The *Personality* box is the system prompt: who the assistant
@@ -653,7 +741,8 @@ how you like answers; they go last in the system prompt, under "The user's instr
 them in every reply)". Each box takes up to 20,000 characters, and both count against the model's
 context window, which matters most on the 4096-token local model.
 
-Three settings are only in `config.toml`: `tools.attachment_max_chars` (the most text one attached
+[`config.example.toml`](config.example.toml) is an annotated example of the whole file (it is TOML, and the
+only settings file ChatForge reads). Three settings are only in `config.toml`: `tools.attachment_max_chars` (the most text one attached
 file contributes, 200,000 characters by default), `tools.documents_dir` (where documents are
 saved; empty means `Documents\ChatForge`) and `tools.block_private_addresses` (the guard that
 keeps `fetch_url` away from private and local addresses). The Settings page shows the last two
@@ -684,7 +773,7 @@ theme in the bundle's `themes.json`. So a new core theme is in the picker on the
 load; an opt-in one appears once it is added to `opt_in` there. Code blocks are coloured by the
 theme as well, and the windows open in the theme's colour.
 
-The picker offers LaserLloyd (the default), LaserLloyd Light and the six core themes. Electric
+The picker offers LaserLloyd, LaserLloyd Light and the six core themes; new installs start on Glacier (an existing install keeps its choice). Electric
 Yellow and Night Red are opt-in themes in the bundle that ChatForge does not offer by default.
 
 <p align="center"><img src="docs/images/themes/gallery.png" alt="A grid of ten theme cards, two per row. Each card is titled with the theme's name, has its one-line description and a few sample components in that theme's colours (tabs, a toggle, a button, tags, a code block, a table, form fields or an alert): Purple, Midnight Gold, Glacier, Forest, Paper, Daylight, Electric Yellow, LaserLloyd, LaserLloyd Light and Night Red" width="600"></p>
@@ -693,11 +782,11 @@ Yellow and Night Red are opt-in themes in the bundle that ChatForge does not off
 | --- | --- | --- |
 | [Purple](docs/images/themes/purple.png) | core, dark | Violet accent and soft lavender text on deep indigo. The base theme |
 | [Midnight Gold](docs/images/themes/midnight-gold.png) | core, OLED | Warm gold on true black, for OLED screens |
-| [Glacier](docs/images/themes/glacier.png) | core, OLED | Ice-blue text and signature on true black, with a deep teal accent. Calm |
+| [Glacier](docs/images/themes/glacier.png) | core, OLED | Ice-blue text and signature on true black, with a deep teal accent. Calm. The default for new installs |
 | [Forest](docs/images/themes/forest.png) | core, OLED | Pale sage and lichen with bark browns on true black. Earthy |
 | [Paper](docs/images/themes/paper.png) | core, light | Warm parchment with ink-brown text, a serif for prose and a red accent |
 | [Daylight](docs/images/themes/daylight.png) | core, light | Clean white with a blue accent |
-| [LaserLloyd](docs/images/themes/laserlloyd.png) | opt-in, dark | Laser blue on near-black graphite, from the author's site. Offered by ChatForge, and its default |
+| [LaserLloyd](docs/images/themes/laserlloyd.png) | opt-in, dark | Laser blue on near-black graphite, from the author's site. Offered by ChatForge; the default before 0.2.0 |
 | [LaserLloyd Light](docs/images/themes/laserlloyd-light.png) | opt-in, light | The light partner of LaserLloyd: laser blue on cool off-white. Offered by ChatForge |
 | [Electric Yellow](docs/images/themes/electric-yellow.png) | opt-in, dark | Acid yellow on graphite with tight radii and crisp strokes. Not offered by default |
 | [Night Red](docs/images/themes/night-red.png) | opt-in, OLED | Low-blue-light night theme: ember text on true black, no blue in any colour. Not offered by default |
@@ -708,6 +797,11 @@ Yellow and Night Red are opt-in themes in the bundle that ChatForge does not off
 | --- | --- | --- |
 | `OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov` | **recommended, default** | Verified on the Lunar Lake NPU (Core Ultra 5 226V): 44.5 s first compile, about 3 s cached load, 42–51 tok/s, clean `hermes3` tool calls, honours the system prompt. Compile cache 306 MiB. |
 | `OpenVINO/Qwen3-4B-int4-ov` | avoid | Compiles on the NPU but produces garbage output with OVMS 2026.4 (fine on CPU). Listed as *Avoid*. |
+
+**No NPU?** The same model runs on the CPU of any 64-bit PC, slower (about 45 tokens per second on a recent desktop
+CPU, in testing) and with no first-time compile. ChatForge detects a missing NPU by itself, says so on the first-run card
+and in the status line ("Runs on CPU instead of NPU"), and leaves `local.device` at `NPU` so an NPU you add later
+is used. To force a device, set `local.device` to `CPU` or `GPU` in Settings > Providers > Local.
 
 Why the small one: the plan started with Qwen3-4B, but the NPU gate in
 [`docs/RUNTIME-NOTES.md`](docs/RUNTIME-NOTES.md) showed its output is corrupt on this NPU, none
@@ -724,19 +818,19 @@ catalog ([`models/catalog.toml`](src/chatforge/models/catalog.toml)) does not kn
 ## Development
 
 ```powershell
-py -3.12 -m uv run ruff check .
-py -3.12 -m uv run ruff format --check .
-py -3.12 -m uv run pytest -q                 # unit tests (live and UI markers deselected)
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -q                 # unit tests (live and UI markers deselected)
 npm ci; npm run -s test:js                   # Markdown, bridge, settings and chat tests in jsdom
 
-$env:CHATFORGE_LIVE_NPU = "1"; py -3.12 -m uv run pytest -m live_npu -s   # real OVMS + NPU
-py -3.12 -m uv run pytest -m live_minimax -s                              # needs a MiniMax key
-py -3.12 -m uv run pytest -m ui -s                                        # launches the app, temp home
+$env:CHATFORGE_LIVE_NPU = "1"; uv run pytest -m live_npu -s   # real OVMS + NPU
+uv run pytest -m live_minimax -s                              # needs a MiniMax key
+uv run pytest -m ui -s                                        # launches the app, temp home
 ```
 
-Use `py -3.12 -m uv run ...` throughout: on a stock Windows install bare `python` is the Microsoft
-Store stub. The UI can be developed in a normal browser against `dev-mock.js` with
-`py -3.12 -m uv run python -m chatforge.desktop.webserver --port 8765`, which serves the pages
+Use `uv run ...` throughout: on a stock Windows install bare `python` can be the Microsoft Store stub.
+The first-run cards can be tried in a browser with `?firstrun=1` on the mock's URL. The UI can be developed in a normal
+browser against `dev-mock.js` with `uv run python -m chatforge.desktop.webserver --port 8765`, which serves the pages
 the way the app does; the magic words that drive it ("search",
 "document", "overflow", "fallback", attached files and more) are listed at the top of
 `dev-mock.js`. CI (GitHub Actions) runs ruff, the unit tests on Ubuntu and Windows, and the JS
@@ -755,6 +849,9 @@ One process, several threads:
 | Static server | `127.0.0.1:<random port>` serving `src/chatforge/web` with a CSP and `no-cache` |
 | `ovms.exe` | A child process under a kill-on-close job object, so it cannot outlive the app |
 
+- `setup_local.py` is the first-run "Set up local AI" state machine (runtime, model, check, ready), `runtime/npu_detect.py`
+  finds out whether an NPU exists so the model runs on the CPU when it does not, and `extensions.py` is the add-on socket
+  ([`docs/extensions.md`](docs/extensions.md)).
 - `src/chatforge/app.py` wires it; `desktop/bridge.py` is the `js_api` contract (every call
   returns `{ok, ...}` or `{ok: false, error}`), `desktop/events.py` the event stream.
 - `runtime/ovms_supervisor.py` spawns `ovms.exe`, polls readiness and records the per-model
@@ -812,7 +909,7 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
 
 ## Troubleshooting
 
-- `py -3.12 -m uv run chatforge doctor` prints a pass/warn/fail table: Python, WebView2, VC++,
+- `uv run chatforge doctor` prints a pass/warn/fail table: Python, WebView2, VC++,
   the NPU device, OVMS, the config, model completeness, the compile cache, the keyring backend,
   whether a MiniMax key exists (true/false only), the hotkey, autostart, free disk and whether
   the app is running. It exits 1 on any FAIL and names the fix.
@@ -839,11 +936,27 @@ enable` (or turning start at login off and on) replaces a Startup-folder copy wi
 - The popup comes back by itself when a reply finishes: that is Settings > General > *Show the
   popup when a reply finishes*.
 - A stray `ovms.exe` after a crash: end it in Task Manager; the doctor reports it.
-- `python` opens the Microsoft Store: use `py -3.12`, or the launchers in `launchers\`.
+- `python` opens the Microsoft Store: use the Start menu shortcut, `launchers\ChatForge.bat`, or `uv run`.
+- The first-run card says "Not enough disk space": the runtime (139 MB, 357 MB unpacked) and the model (0.94 GB)
+  need about 3 GB free on the drive that holds `%LOCALAPPDATA%`; free some space and press **Try again** (a
+  download resumes where it stopped).
+- StudioForge answers "No API key was sent to StudioForge, and it requires one": StudioForge 2.0 needs a key when the
+  server is another machine. On the StudioForge machine run `studioforge keys create`, then paste the key in the card that
+  appears or in Settings > Providers > StudioForge.
+- The installer stopped: its log is `%LOCALAPPDATA%\Programs\ChatForge\logs\install-<time>.log`; running
+  `Install ChatForge` again resumes. A proxy or firewall that blocks `github.com` is the usual cause; see
+  [`deploy/windows/README.md`](deploy/windows/README.md).
 
 ## Documentation
 
-- [`docs/SETUP.md`](docs/SETUP.md) — a fresh Windows machine, step by step, with a check after
+- [`deploy/windows/README.md`](deploy/windows/README.md) — the double-click installer: what it does, its options,
+  upgrade, uninstall, the dormant signed-installer file
+- [`docs/demo-prompts.md`](docs/demo-prompts.md) — ten prompts to try on the first run
+- [`config.example.toml`](config.example.toml) — an annotated settings file (ChatForge's settings are TOML)
+- [`docs/extensions.md`](docs/extensions.md) — writing an add-on (entry points, settings cards, turn hooks)
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed in each version, with upgrade notes
+- [`docs/PLAN-prosumer.md`](docs/PLAN-prosumer.md) — the decisions behind 0.2.0
+- [`docs/SETUP.md`](docs/SETUP.md) — the manual route on a fresh Windows machine, step by step, with a check after
   each step; MiniMax; the Copilot key; where everything lives; uninstall
 - [`docs/SETUP-LINUX.md`](docs/SETUP-LINUX.md) — the same on a Linux desktop (X11 or Wayland
   through XWayland)
@@ -863,6 +976,20 @@ ChatForge is built and maintained by **Lloyd** — [LaserLloyd.com](https://lase
 - Bugs, questions and ideas: [open an issue](https://github.com/LaserLloyd/ChatForge/issues)
 - Email: [Lloyd@LaserLloyd.com](mailto:Lloyd@LaserLloyd.com) <!-- scrub-ok: the maintainer's published contact address, deliberate -->
 - More projects: [github.com/LaserLloyd](https://github.com/LaserLloyd)
+
+## Voice (optional add-on)
+
+ChatForge can talk and listen. Hold a key, speak, let go, and the answer is read out loud. Speech
+recognition (NVIDIA Parakeet) and the voice (Chatterbox-Turbo) run on your CPU, so nothing leaves the
+computer. It is a separate package and off until you install it:
+
+    uv pip install ./packages/chatforge-voice
+
+Restart ChatForge, switch on **Settings > General > Voice (CPU)**, then run `chatforge-voice panel` to
+download the voice models (about 1.4 GB, once; the panel shows the licences first). Hold **Ctrl+Alt+Space**
+to talk. Plan for about 3 GB of free memory while voice is loaded. This release is push-to-talk only;
+hands-free listening and a remote speech server are not included. See
+[packages/chatforge-voice/README.md](packages/chatforge-voice/README.md).
 
 ## License
 
