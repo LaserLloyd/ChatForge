@@ -45,42 +45,96 @@ def _own(id_: str, type_: str, default: Any, **kw: Any) -> S.Setting:
 
 OWN_ROWS: tuple[S.Setting, ...] = (
     _own(
-        "enabled", "bool", False, level="basic", env=(ENV_PREFIX + "ENABLED",),
-        label="Voice (CPU)", help="Talk to ChatForge and hear it answer, all on this computer's CPU.",
+        "enabled",
+        "bool",
+        False,
+        level="basic",
+        env=(ENV_PREFIX + "ENABLED",),
+        label="Voice (CPU)",
+        help="Talk to ChatForge and hear it answer, all on this computer's CPU.",
     ),
     _own(
-        "mode", "enum", "push_to_talk", level="basic", choices=MODES, env=(ENV_PREFIX + "MODE",),
-        label="Mode", help="Only push-to-talk exists in this release; hands-free is planned.",
+        "mode",
+        "enum",
+        "push_to_talk",
+        level="basic",
+        choices=MODES,
+        env=(ENV_PREFIX + "MODE",),
+        label="Mode",
+        help="Only push-to-talk exists in this release; hands-free is planned.",
     ),
     _own(
-        "backend", "enum", "cpu", level="basic", choices=BACKENDS, env=(ENV_PREFIX + "BACKEND",),
-        label="Where speech runs", help="Only this computer's CPU in this release; SpeechForge is planned.",
+        "backend",
+        "enum",
+        "cpu",
+        level="basic",
+        choices=BACKENDS,
+        env=(ENV_PREFIX + "BACKEND",),
+        label="Where speech runs",
+        help="Only this computer's CPU in this release; SpeechForge is planned.",
     ),
     _own(
-        "hotkey", "str", DEFAULT_HOTKEY, level="basic", max_len=64, env=(ENV_PREFIX + "HOTKEY",),
-        group="input", label="Push-to-talk key (hold)",
+        "hotkey",
+        "str",
+        DEFAULT_HOTKEY,
+        level="basic",
+        max_len=64,
+        env=(ENV_PREFIX + "HOTKEY",),
+        group="input",
+        label="Push-to-talk key (hold)",
         help="Hold it while you speak, release to send. Modifiers plus one key, e.g. Ctrl+Alt+Space or F9.",
     ),
     _own(
-        "speak_replies", "enum", "voice_only", level="basic", choices=SPEAK_MODES,
-        env=(ENV_PREFIX + "SPEAK_REPLIES",), group="tts", label="Speak replies",
+        "speak_replies",
+        "enum",
+        "voice_only",
+        level="basic",
+        choices=SPEAK_MODES,
+        env=(ENV_PREFIX + "SPEAK_REPLIES",),
+        group="tts",
+        label="Speak replies",
         help="voice_only: read out the answers to what you said; always: every answer; off: never.",
     ),
     _own(
-        "max_record_s", "float", 30.0, lo=3.0, hi=120.0, env=(ENV_PREFIX + "MAX_RECORD_S",),
-        group="input", label="Longest recording (s)", help="Recording stops by itself after this long.",
+        "max_record_s",
+        "float",
+        30.0,
+        lo=3.0,
+        hi=120.0,
+        env=(ENV_PREFIX + "MAX_RECORD_S",),
+        group="input",
+        label="Longest recording (s)",
+        help="Recording stops by itself after this long.",
     ),
     _own(
-        "input_device", "str", "", max_len=128, env=(ENV_PREFIX + "INPUT_DEVICE",), group="input",
-        label="Microphone", help="Part of a device name; empty is the system default.",
+        "input_device",
+        "str",
+        "",
+        max_len=128,
+        env=(ENV_PREFIX + "INPUT_DEVICE",),
+        group="input",
+        label="Microphone",
+        help="Part of a device name; empty is the system default.",
     ),
     _own(
-        "output_device", "str", "", max_len=128, env=(ENV_PREFIX + "OUTPUT_DEVICE",), group="input",
-        label="Speaker", help="Part of a device name; empty is the system default.",
+        "output_device",
+        "str",
+        "",
+        max_len=128,
+        env=(ENV_PREFIX + "OUTPUT_DEVICE",),
+        group="input",
+        label="Speaker",
+        help="Part of a device name; empty is the system default.",
     ),
     _own(
-        "idle_unload_minutes", "int", 10, lo=0, hi=240, env=(ENV_PREFIX + "IDLE_UNLOAD_MINUTES",),
-        label="Unload models after (min)", help="Frees about 3 GB of RAM when idle; 0 keeps them loaded.",
+        "idle_unload_minutes",
+        "int",
+        10,
+        lo=0,
+        hi=240,
+        env=(ENV_PREFIX + "IDLE_UNLOAD_MINUTES",),
+        label="Unload models after (min)",
+        help="Frees about 3 GB of RAM when idle; 0 keeps them loaded.",
     ),
 )
 
@@ -96,7 +150,15 @@ _ENGINE_ROWS = tuple(
 SCHEMA = S.Schema(_ENGINE_ROWS + OWN_ROWS, env_prefix=ENV_PREFIX)
 
 #: The keys the ChatForge Settings card shows (the rest are reachable from config.toml / the environment).
-CARD_KEYS = ("enabled", "hotkey", "speak_replies", "speed", "max_record_s", "input_device", "output_device")
+CARD_KEYS = (
+    "enabled",
+    "hotkey",
+    "speak_replies",
+    "speed",
+    "max_record_s",
+    "input_device",
+    "output_device",
+)
 
 
 @dataclass(frozen=True)
@@ -142,7 +204,9 @@ def unsupported(values: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def resolve(prefs: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None) -> dict:
+def resolve(
+    prefs: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None
+) -> dict:
     """Every setting's value: environment, then ``prefs`` (``[extensions.voice]``), then default."""
     environ = os.environ if environ is None else environ
     clean = SCHEMA.clean_prefs(dict(prefs or {}))
@@ -184,7 +248,9 @@ def build(values: Mapping[str, Any], models_dir: Path | None = None) -> VoiceEng
     return VoiceEngineSettings(**kw)  # rt and rig keep their defaults: the rig is off
 
 
-def from_prefs(prefs: Mapping[str, Any] | None, environ: Mapping[str, str] | None = None) -> VoiceEngineSettings:
+def from_prefs(
+    prefs: Mapping[str, Any] | None, environ: Mapping[str, str] | None = None
+) -> VoiceEngineSettings:
     """``prefs`` (ChatForge's ``api.settings``) to the engines' settings."""
     from forge_voice_core import models
 

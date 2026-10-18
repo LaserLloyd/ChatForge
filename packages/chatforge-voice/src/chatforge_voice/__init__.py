@@ -26,10 +26,12 @@ CORE_MISSING = (
 
 
 def core_problem() -> str:
-    """"" when the engine package can be imported, else one sentence saying what to do."""
-    if importlib.util.find_spec("forge_voice_core") is None:
-        return CORE_MISSING
-    return ""
+    """ "" when the engine package can be imported, else one sentence saying what to do."""
+    try:
+        found = importlib.util.find_spec("forge_voice_core") is not None
+    except (ImportError, ValueError):
+        found = False
+    return "" if found else CORE_MISSING
 
 
 def setup(api: Any) -> None:

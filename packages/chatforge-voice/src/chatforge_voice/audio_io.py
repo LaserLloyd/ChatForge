@@ -10,6 +10,7 @@ device, and both resample in software when a device refuses the wanted rate. Not
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -91,7 +92,9 @@ def _open(backend: Any, factory_name: str, rates: list[int], **kw: Any) -> tuple
             return getattr(backend, factory_name)(samplerate=rate, **kw), rate
         except Exception as exc:  # noqa: BLE001 - PortAudioError: try the next rate
             last = exc
-    raise AudioError(f"The audio device could not be opened ({type(last).__name__}: {last}).") from None
+    raise AudioError(
+        f"The audio device could not be opened ({type(last).__name__}: {last})."
+    ) from None
 
 
 def _default_rate(backend: Any, device: int | None, kind: str) -> int | None:
@@ -144,14 +147,21 @@ class Recorder:
             rates.append(fallback)
         self._chunks, self._samples, self._limit_fired = [], 0, False
         stream, self._rate = _open(
-            sd, "InputStream", rates, channels=1, dtype="int16", device=index,
+            sd,
+            "InputStream",
+            rates,
+            channels=1,
+            dtype="int16",
+            device=index,
             callback=self._callback,
         )
         try:
             stream.start()
         except Exception as exc:  # noqa: BLE001
             self._close(stream)
-            raise AudioError(f"The microphone could not be started ({type(exc).__name__}).") from None
+            raise AudioError(
+                f"The microphone could not be started ({type(exc).__name__})."
+            ) from None
         self._stream = stream
 
     def _callback(self, indata: Any, frames: int, time_info: Any, status: Any) -> None:
@@ -163,15 +173,15 @@ class Recorder:
             if hit:
                 self._limit_fired = True
         if hit and self._on_limit is not None:
-            threading.Thread(target=self._on_limit, name="chatforge-voice-limit", daemon=True).start()
+            threading.Thread(
+                target=self._on_limit, name="chatforge-voice-limit", daemon=True
+            ).start()
 
     @staticmethod
     def _close(stream: Any) -> None:
         for step in ("stop", "close"):
-            try:
+            with contextlib.suppress(Exception):
                 getattr(stream, step)()
-            except Exception:  # noqa: BLE001 - closing a dead stream
-                pass
 
     def stop(self) -> bytes:
         """Close the microphone and return what was heard as 16 kHz PCM16 mono."""
@@ -238,7 +248,12 @@ class Player:
         if fallback and fallback != self.rate:
             rates.append(fallback)
         stream, self._out_rate = _open(
-            sd, "OutputStream", rates, channels=1, dtype="int16", device=index,
+            sd,
+            "OutputStream",
+            rates,
+            channels=1,
+            dtype="int16",
+            device=index,
             callback=self._callback,
         )
         try:
@@ -270,10 +285,8 @@ class Player:
             if self._closing and not self._buf:
                 self._cv.notify_all()
         raw = take + bytes(need - len(take))
-        try:
+        with contextlib.suppress(Exception):
             outdata[:] = _as_frames(raw, outdata)
-        except Exception:  # noqa: BLE001 - never raise inside the audio thread
-            pass
 
     def finish(self, timeout: float | None = None) -> bool:
         """Let what is queued play out, then close. False if it was stopped (or timed out)."""
@@ -297,10 +310,8 @@ class Player:
         if stream is None:
             return
         for step in ("abort" if abort else "stop", "close"):
-            try:
+            with contextlib.suppress(Exception):
                 getattr(stream, step)()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def _as_frames(raw: bytes, outdata: Any) -> Any:
