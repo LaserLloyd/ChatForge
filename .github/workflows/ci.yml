@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "refactor/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "refactor/**"]
+  workflow_dispatch:
 
 jobs:
   python:
@@ -37,3 +38,60 @@ jobs:
         run: npm ci
       - name: Run tests
         run: node --test "tests/js/**/*.test.mjs"
+
+  # The no-terminal installer, exercised for real on a clean Windows runner: install, check the result,
+  # upgrade in place, uninstall keeping data, then purge. Shortcuts, the data folder and the
+  # Installed-apps entry are pointed at throwaway locations. Also builds the release zip and keeps it.
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the release zip
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\build-release-zip.ps1 -OutDir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatforge-windows-zip
+          path: dist/*
+      - name: Install (uv and Python are downloaded by the installer, not taken from the runner)
+        shell: powershell
+        run: |
+          $t = $env:RUNNER_TEMP
+          powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\Install-ChatForge.ps1 `
+            -SourceDir $PWD.Path -InstallDir "$t\cf" -ShortcutDir "$t\sc" -DataHome "$t\data" `
+            -UninstallKeyName ChatForgeCI -Yes -NoAutostart -NoLaunch -ForceDownloadUv -ForceManagedPython
+          if ($LASTEXITCODE -ne 0) { throw "install failed ($LASTEXITCODE)" }
+          $v = & "$t\cf\app\.venv\Scripts\python.exe" -I -m chatforge --version
+          Write-Host $v
+          if ($v -notmatch '^chatforge \d+\.\d+\.\d+') { throw "unexpected version output: $v" }
+          if (-not (Test-Path "$t\sc\StartMenu\ChatForge.lnk")) { throw "no Start menu shortcut" }
+          if (-not (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChatForgeCI")) { throw "no Installed-apps entry" }
+          if (schtasks /Query /TN ChatForge 2>$null) { throw "autostart was registered although -NoAutostart was given" }
+      - name: Upgrade in place
+        shell: powershell
+        run: |
+          $t = $env:RUNNER_TEMP
+          powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\Install-ChatForge.ps1 `
+            -SourceDir $PWD.Path -InstallDir "$t\cf" -ShortcutDir "$t\sc" -DataHome "$t\data" `
+            -UninstallKeyName ChatForgeCI -Yes -NoAutostart -NoLaunch
+          if ($LASTEXITCODE -ne 0) { throw "upgrade failed ($LASTEXITCODE)" }
+      - name: Uninstall keeps data, purge removes it
+        shell: powershell
+        run: |
+          $t = $env:RUNNER_TEMP
+          New-Item -ItemType Directory -Force "$t\data" | Out-Null
+          Set-Content "$t\data\config.toml" "# user data"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$t\cf\uninstall\Uninstall-ChatForge.ps1" `
+            -InstallDir "$t\cf" -ShortcutDir "$t\sc" -DataHome "$t\data" -UninstallKeyName ChatForgeCI -Yes
+          Start-Sleep -Seconds 4
+          if (Test-Path "$t\cf") { throw "install folder still there" }
+          if (-not (Test-Path "$t\data\config.toml")) { throw "uninstall deleted the user's data" }
+          if (Test-Path "$t\sc\StartMenu\ChatForge.lnk") { throw "shortcut still there" }
+          # purge needs an install to remove
+          powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\Install-ChatForge.ps1 `
+            -SourceDir $PWD.Path -InstallDir "$t\cf" -ShortcutDir "$t\sc" -DataHome "$t\data" `
+            -UninstallKeyName ChatForgeCI -Yes -NoAutostart -NoLaunch
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$t\cf\uninstall\Uninstall-ChatForge.ps1" `
+            -InstallDir "$t\cf" -ShortcutDir "$t\sc" -DataHome "$t\data" -UninstallKeyName ChatForgeCI -Yes -Purge
+          Start-Sleep -Seconds 4
+          if (Test-Path "$t\data") { throw "purge left the data folder" }
