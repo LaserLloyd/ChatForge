@@ -7,6 +7,7 @@ a fake body instead of downloading 1.4 GB.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -68,7 +69,13 @@ class ModelsService:
             return self._sysreq()
         from forge_voice_core import sysreq
 
-        return sysreq.check()
+        # The libopus probe logs a warning about the low-bandwidth link, which push-to-talk never uses.
+        engine_log = logging.getLogger("forge_voice")
+        level, engine_log.level = engine_log.level, logging.CRITICAL
+        try:
+            return sysreq.check()
+        finally:
+            engine_log.level = level
 
     def status(self) -> dict:
         s = self._settings()
