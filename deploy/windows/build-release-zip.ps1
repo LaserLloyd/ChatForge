@@ -13,8 +13,8 @@
 
     powershell -ExecutionPolicy Bypass -File deploy\windows\build-release-zip.ps1
 
-  The files are the working tree's (tracked files plus new files that are not ignored), so build
-  from a clean checkout of the tag you are releasing.
+  Only files tracked by git go in (an untracked local file, such as a stray .env or config.toml, never
+  does), from the working tree, so build from a clean checkout of the tag you are releasing.
 
 .PARAMETER OutDir  Where the zip goes. Default <repo>\dist.
 #>
@@ -34,7 +34,7 @@ $appDir = Join-Path $root 'app'
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
 
 try {
-  $files = & git -C $repo ls-files --cached --others --exclude-standard
+  $files = & git -C $repo ls-files --cached
   if ($LASTEXITCODE -ne 0 -or -not $files) { throw 'git ls-files failed: build from a git checkout.' }
   foreach ($rel in $files) {
     $src = Join-Path $repo $rel
