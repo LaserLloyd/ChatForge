@@ -977,6 +977,20 @@ ChatForge is built and maintained by **Lloyd** — [LaserLloyd.com](https://lase
 - Email: [Lloyd@LaserLloyd.com](mailto:Lloyd@LaserLloyd.com) <!-- scrub-ok: the maintainer's published contact address, deliberate -->
 - More projects: [github.com/LaserLloyd](https://github.com/LaserLloyd)
 
+## Voice (optional add-on)
+
+ChatForge can talk and listen. Hold a key, speak, let go, and the answer is read out loud. Speech
+recognition (NVIDIA Parakeet) and the voice (Chatterbox-Turbo) run on your CPU, so nothing leaves the
+computer. It is a separate package and off until you install it:
+
+    uv pip install ./packages/chatforge-voice
+
+Restart ChatForge, switch on **Settings > General > Voice (CPU)**, then run `chatforge-voice panel` to
+download the voice models (about 1.4 GB, once; the panel shows the licences first). Hold **Ctrl+Alt+Space**
+to talk. Plan for about 3 GB of free memory while voice is loaded. This release is push-to-talk only;
+hands-free listening and a remote speech server are not included. See
+[packages/chatforge-voice/README.md](packages/chatforge-voice/README.md).
+
 ## License
 
 **MIT** — see [`LICENSE`](LICENSE). Use it, fork it, ship it; keep the copyright notice.
