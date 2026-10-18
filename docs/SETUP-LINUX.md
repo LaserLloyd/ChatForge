@@ -70,7 +70,7 @@ build) into the data folder. Download a model in Settings > Models.
 
 ## 4. Hotkey
 
-* **X11:** the hotkey (default `Ctrl+Alt+Space`) is an `XGrabKey` on the root window. If another
+* **X11:** the hotkey (default `Ctrl+Alt+C`, as on Windows) is an `XGrabKey` on the root window. If another
   program holds the combination, Settings reports it and you pick another.
 * **Wayland:** the grab only sees keys while an XWayland window has the focus, so bind a desktop
   shortcut to `chatforge --show` in your system settings (a second `chatforge --show` shows the

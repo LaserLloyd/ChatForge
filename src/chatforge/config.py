@@ -40,7 +40,7 @@ from chatforge.paths import Paths
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Changes to these keys need the local model reloaded ("reload required").
 RESTART_KEYS: tuple[str, ...] = (
@@ -199,6 +199,9 @@ class ProviderSpec(BaseModel):
     key_required: bool | None = None
     #: Where to get a key (shown as a link in Settings).
     docs_url: str | None = None
+    #: One sentence on how to get a key for this provider, added to the error a missing or
+    #: refused key produces (StudioForge 2.0: ``studioforge keys create``).
+    key_help: str = ""
     #: The context window in tokens (prompt + reply) when no per-model value is known.
     #: ``None`` uses the cloud default (``chat.history.CLOUD_CAP_TOKENS``).
     context_tokens: int | None = Field(default=None, ge=2048, le=10_000_000)
@@ -290,6 +293,13 @@ OPENAI_VISION_MODELS: tuple[str, ...] = (
 #: StudioForge (an OpenAI-compatible GPU LLM server) on this PC by default; point it at the GPU box in Settings → Providers.
 STUDIOFORGE_DEFAULT_URL = "http://localhost:1234/v1"
 
+#: Why and how a StudioForge key is needed (shown in the key card and in the 401 error).
+STUDIOFORGE_KEY_HELP = (
+    "StudioForge 2.0 needs an API key whenever the server is not on this PC. "
+    "On the StudioForge machine run `studioforge keys create`, then paste the key in "
+    "Settings → Providers → StudioForge."
+)
+
 
 # Adapted from DisPatch backend/app/llm_api.py ``PROVIDERS`` (MIT, LaserLloyd): the OpenAI
 # and DeepSeek presets (base URL, key env var, models, key docs link).
@@ -341,7 +351,9 @@ def seed_providers() -> dict[str, ProviderSpec]:
             max_output_tokens=4096,
             # The first request may load a 20+ GB model into VRAM.
             timeouts=Timeouts(connect_s=10, stall_s=300, wall_s=900),
-            key_required=False,
+            # None: no key on this PC (loopback), required for any other host.
+            key_required=None,
+            key_help=STUDIOFORGE_KEY_HELP,
         ),
         "openai": ProviderSpec(
             id="openai",
@@ -600,7 +612,7 @@ class ToolsCfg(BaseModel):
 
 
 class UiCfg(BaseModel):
-    theme: str = "laserlloyd"
+    theme: str = "glacier"
     hotkey: str = "Ctrl+Alt+C"
     #: The popup stays up until it is closed (Escape, the close button) or the hotkey is
     #: pressed again; off, it also hides when it loses the focus.
@@ -626,7 +638,12 @@ class UiCfg(BaseModel):
 
 
 class StartupCfg(BaseModel):
-    autostart: bool = True
+    #: Start at sign-in. Off until the user says yes (the installer, or the one-time card).
+    autostart: bool = False
+    #: The user has been asked about autostart (and answered), so nobody asks again.
+    autostart_asked: bool = False
+    #: The user closed the "Set up local AI" card with "Not now".
+    local_setup_dismissed: bool = False
 
 
 class LogCfg(BaseModel):
@@ -702,6 +719,10 @@ class AppConfig(BaseSettings):
     startup: StartupCfg = Field(default_factory=StartupCfg)
     logging: LogCfg = Field(default_factory=LogCfg)
     hf: HfCfg = Field(default_factory=HfCfg)
+    #: ``[extensions.<name>]`` tables: the settings of add-ons loaded through the
+    #: ``chatforge.extensions`` entry points (``chatforge.extensions``). Free-form here, validated
+    #: by the section the extension registers.
+    extensions: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     @classmethod
     def settings_customise_sources(
@@ -950,6 +971,11 @@ def migrate_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
 
     v3 → v4: ``ui.hide_on_blur`` gives way to ``ui.sticky``, which starts on for everyone
     (every file holds ``hide_on_blur``, so a saved default cannot be told from a choice).
+
+    v4 → v5: autostart is opt-in. A file that exists belongs to someone who has already
+    run the app (and, until now, had autostart switched on for them), so it keeps the value
+    it holds and is marked as asked; the StudioForge row loses its saved ``key_required =
+    false`` (a key is needed whenever the server is not on this PC).
     """
     try:
         version = int(raw.get("schema_version", 1))
@@ -971,6 +997,16 @@ def migrate_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         ui = raw.get("ui")
         if isinstance(ui, dict):
             ui.pop("hide_on_blur", None)
+    if version < 5:
+        startup = raw.get("startup")
+        if not isinstance(startup, dict):
+            startup = raw["startup"] = {}
+        startup.setdefault("autostart", True)  # the default until 0.2.0
+        startup["autostart_asked"] = True
+        providers = raw.get("providers")
+        sf = providers.get("studioforge") if isinstance(providers, dict) else None
+        if isinstance(sf, dict) and sf.get("key_required") is False:
+            del sf["key_required"]
     raw["schema_version"] = SCHEMA_VERSION
     return raw, True
 

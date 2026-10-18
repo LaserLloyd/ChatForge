@@ -104,6 +104,13 @@ class App:
         paths = self.paths
         cfg = self.cfg
 
+        if os.name == "nt" and str(cfg.local.device).upper() == "NPU":
+            # Is there an NPU at all? Answered in the background; until it is, the launch
+            # path assumes yes (runtime/npu_detect.py).
+            from chatforge.runtime import npu_detect
+
+            npu_detect.start_background()
+
         s.catalog = Catalog.load()
         s.registry = Registry(
             paths.models_dir, paths.cache_dir, catalog=s.catalog, state_file=paths.state_file
@@ -125,10 +132,69 @@ class App:
 
         s.providers = ProviderRegistry(cfg.providers, manager=s.manager, settings=self.get_config)
         s.engine = self._build_engine()
+        self._build_setup()
+        self._build_extensions()
 
         # Adoption of models that were copied in by hand (needs the network; never fatal).
         s.loop.create_task(self._adopt_unadopted(), name="adopt-models")
         s.loop.create_task(self._refresh_models_daily(), name="refresh-models")
+
+    def _publish_runtime_status(self) -> None:
+        """Tell the pages and the tray the manager's state again (the runtime was just installed)."""
+        manager = self.services.manager
+        if manager is None:
+            return
+        with contextlib.suppress(Exception):
+            self._on_runtime_status(manager.status())
+
+    def _setup_patch(self, patch: dict[str, Any]) -> Any:
+        """Apply a config patch for the setup card and tell the open pages."""
+        from chatforge.desktop.bridge import ui_config
+
+        new_cfg, restart = self.api._apply_patch(patch)  # noqa: SLF001 - same package
+        events = self.services.events
+        if events is not None:
+            events.emit({"type": "settings.changed", "config": ui_config(new_cfg)})
+        return new_cfg, restart
+
+    def _build_setup(self) -> None:
+        from chatforge.setup_local import LocalSetup
+
+        s = self.services
+
+        def emit(event: dict[str, Any]) -> None:
+            if s.events is not None:
+                s.events.emit(event)
+
+        s.setup = LocalSetup(
+            paths=self.paths,
+            get_config=self.get_config,
+            catalog=s.catalog,
+            registry=s.registry,
+            downloader=s.downloader,
+            emit=emit,
+            apply_patch=self._setup_patch,
+            on_runtime_installed=self._publish_runtime_status,
+        )
+        s.on_runtime_installed = self._publish_runtime_status
+        s.loop.create_task(s.setup.warm(), name="setup-warm")
+
+    def _build_extensions(self) -> None:
+        """Load the add-ons registered under the ``chatforge.extensions`` entry points."""
+        from chatforge import __version__
+        from chatforge.extensions import ExtensionHost
+
+        s = self.services
+        host = ExtensionHost(
+            app_version=__version__, get_config=self.get_config, home=self.paths.home
+        )
+        host.chat.bind(
+            send=lambda text: (self.api.send_message(text) or {}).get("request_id"),
+            cancel=lambda request_id: self.api.stop_generation(request_id),
+        )
+        host.load()
+        host.startup()
+        s.extensions = host
 
     def _build_manager(self) -> Any:
         try:
@@ -218,6 +284,12 @@ class App:
     async def _close_services(self) -> None:
         """WS6 quit order: cancel the reaper, cancel chats, unload, then the rest."""
         s = self.services
+        if s.extensions is not None:
+            with contextlib.suppress(Exception):
+                s.extensions.shutdown()
+        if s.setup is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(s.setup.aclose(), timeout=10)
         if self._reaper_task is not None:
             self._reaper_task.cancel()
             with contextlib.suppress(BaseException):
@@ -632,7 +704,6 @@ def main(mode: Mode = "show", *, paths: Paths | None = None) -> int:
             # An install from before the rename (AI Chat): its data folder becomes ours.
             paths = Paths.from_home(legacy.migrate_home(paths.home))
     paths.ensure_dirs()
-    first_run = not paths.config_file.exists()
     _bootstrap_logging(paths, None)
     cfg = load_config(paths, recover=True)
     _bootstrap_logging(paths, cfg)
@@ -645,12 +716,6 @@ def main(mode: Mode = "show", *, paths: Paths | None = None) -> int:
         return 0
 
     _migrate_legacy(paths, cfg)
-
-    if first_run and cfg.startup.autostart:
-        try:
-            autostart.enable(home=paths.home)
-        except Exception as exc:  # noqa: BLE001 - never fatal
-            log.warning("first-run autostart failed", error=str(exc))
 
     app = App(paths, cfg, mode=mode)
     app.instance_sock = sock

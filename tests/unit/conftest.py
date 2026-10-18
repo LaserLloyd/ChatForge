@@ -19,4 +19,6 @@ def _host_independent(monkeypatch):
 
     monkeypatch.setattr(xutil, "IS_LINUX", False)
     monkeypatch.setattr(manager, "npu_unavailable_on_host", lambda *_a, **_k: False)
+    # The first load waits for the NPU probe (a PowerShell query) on Windows: never in a test.
+    monkeypatch.setattr(manager, "is_windows_host", lambda: False)
     monkeypatch.setattr(autostart, "_is_linux", lambda: False)  # never write ~/.config

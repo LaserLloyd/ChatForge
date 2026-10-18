@@ -124,9 +124,11 @@ class OpenAICompatClient:
         quirks: Quirks,
         timeouts: Timeouts | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        key_hint: str = "",
     ) -> None:
         self.base_url = normalize_base_url(base_url)
         self._api_key = api_key or None
+        self._key_hint = key_hint
         self.quirks = quirks
         self.timeouts = timeouts or Timeouts()
         self._local = is_loopback_url(self.base_url)
@@ -204,6 +206,7 @@ class OpenAICompatClient:
                 url=url,
                 key_used=bool(self._api_key),
                 retry_after=resp.headers.get("Retry-After"),
+                key_hint=self._key_hint,
             )
         return parse_model_entries(payload)
 
@@ -240,6 +243,7 @@ class OpenAICompatClient:
                     model=req.model,
                     key_used=bool(self._api_key),
                     retry_after=headers.get("Retry-After"),
+                    key_hint=self._key_hint,
                 )
             while True:
                 kind, line = await self._next(queue, t0, cancel, url)

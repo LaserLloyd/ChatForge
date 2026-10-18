@@ -105,6 +105,13 @@ CONTRACT_METHODS: tuple[str, ...] = (
     "set_autostart",
     "set_hotkey",
     "disk_usage",
+    "setup_local_status",
+    "setup_local_start",
+    "setup_local_cancel",
+    "setup_local_dismiss",
+    "answer_autostart",
+    "get_extensions",
+    "set_extension_settings",
 )
 
 LOCAL_ID = "local-npu"
@@ -303,12 +310,17 @@ class Services:
         self.downloader: Any = None
         self.manager: Any = None  # runtime.manager.LocalModelManager (WS6)
         self.engine: Any = None  # chat.engine.ChatEngine (WS6)
+        self.setup: Any = None  # setup_local.LocalSetup (the first-run card)
+        self.extensions: Any = None  # extensions.ExtensionHost
         #: Called with the new config after every persisted change.
         self.on_config_changed: Callable[[AppConfig], None] | None = None
         #: Called on the core loop (so it must not block) with the request id when a reply
         #: ends with ``chat.done`` or an error, unless it was stopped (``cancelled``, or
         #: ``stop_generation`` was called for it: the page abandoned it).
         self.on_reply_end: Callable[[str], None] | None = None
+        #: Called (on the core loop) once the runtime install finished, so the pages learn
+        #: that it is there.
+        self.on_runtime_installed: Callable[[], None] | None = None
         self.install_task: Any = None
         self.installing = False
         #: Files attached in the composer, waiting for ``send_message``.
@@ -366,6 +378,9 @@ class Api:
     def _emit(self, evt: dict[str, Any]) -> None:
         if self._s.events is not None:
             self._s.events.emit(evt)
+        host = self._s.extensions
+        if host is not None and host.wants_events:
+            host.dispatch_event(evt)
 
     def _apply_patch(self, patch: dict[str, Any]) -> tuple[AppConfig, list[str]]:
         """Persist a config patch and tell the services. Raises ``ConfigError``."""
@@ -441,6 +456,7 @@ class Api:
             # Seeded providers cannot be removed, so they show as built in too.
             "builtin": bool(spec.builtin) or spec.id in SEED_IDS,
             "docs_url": spec.docs_url,
+            "key_help": spec.key_help or None,
             "key": self._key_status(spec),
             "vision": vision,
         }
@@ -544,9 +560,27 @@ class Api:
                 conversation=self._conversation(),
                 limits={"max_prompt_chars": cfg.chat.max_prompt_chars},
                 theme=cfg.ui.theme,
+                setup=self._setup_view(),
             )
 
         return self._guard(impl, "get_state")
+
+    def _setup_view(self) -> dict[str, Any] | None:
+        """The first-run cards' state (``LocalSetup.snapshot`` plus the autostart question),
+        or ``None`` when the setup service is not wired."""
+        setup = self._s.setup
+        if setup is None:
+            return None
+        loop = self._s.loop
+        try:
+            snap = loop.call(setup.snapshot) if loop is not None else setup.snapshot()
+        except Exception:  # noqa: BLE001 - the card is optional
+            _log.exception("setup snapshot failed")
+            return None
+        startup = self._cfg.startup
+        snap["autostart_asked"] = bool(startup.autostart_asked)
+        snap["autostart_enabled"] = bool(startup.autostart)
+        return snap
 
     def _recommended_model(self) -> str | None:
         """The catalog's recommended model id (badge "recommended"), or ``None``."""
@@ -601,10 +635,10 @@ class Api:
             # Without an action the engine is called exactly as before quick actions.
             extra: dict[str, Any] = {"action": action} if action else {}
             if files:
-                emit = self._report_reply_end(request_id, self._emit_then_release(ids))
+                emit = self._report_reply_end(request_id, self._emit_then_release(ids), message)
                 coro = engine.send(message, request_id, emit, attachments=files, **extra)
             else:
-                emit = self._report_reply_end(request_id, self._emit)
+                emit = self._report_reply_end(request_id, self._emit, message)
                 coro = engine.send(message, request_id, emit, **extra)
             self._submit(coro, f"chat:{request_id}")
             return ok(request_id=request_id)
@@ -685,7 +719,10 @@ class Api:
         return emit
 
     def _report_reply_end(
-        self, request_id: str, emit: Callable[[dict[str, Any]], None]
+        self,
+        request_id: str,
+        emit: Callable[[dict[str, Any]], None],
+        user_text: str = "",
     ) -> Callable[[dict[str, Any]], None]:
         """Wrap ``emit`` so that, after a reply's last event (``chat.done``, or a
         ``chat.error`` that is not a stop) went to the page, ``on_reply_end`` hears of it.
@@ -694,6 +731,8 @@ class Api:
         def wrapped(evt: dict[str, Any]) -> None:
             emit(evt)
             etype = evt.get("type")
+            if etype in ("chat.done", "chat.error"):
+                self._notify_turn(request_id, user_text, evt)
             if etype == "chat.done" or (etype == "chat.error" and evt.get("code") != "cancelled"):
                 hook = self._s.on_reply_end
                 if hook is None or request_id in self._stopped_ids:
@@ -704,6 +743,30 @@ class Api:
                     _log.exception("on_reply_end hook failed")
 
         return wrapped
+
+    def _notify_turn(self, request_id: str, user_text: str, evt: dict[str, Any]) -> None:
+        """Tell the add-ons (``ExtensionAPI.on_turn``) that a turn ended. Never raises."""
+        host = self._s.extensions
+        if host is None or not host.turn_callbacks:
+            return
+        try:
+            from chatforge.extensions import TurnInfo
+
+            done = evt.get("type") == "chat.done"
+            cfg = self._cfg
+            host.dispatch_turn(
+                TurnInfo(
+                    request_id=request_id,
+                    user_text=user_text,
+                    reply_text=str(evt.get("content") or "") if done else "",
+                    provider=cfg.chat.provider,
+                    model=str(evt.get("model") or cfg.chat.model),
+                    ok=done,
+                    error_code=None if done else str(evt.get("code") or "error"),
+                )
+            )
+        except Exception:  # noqa: BLE001 - an add-on must not break the turn
+            _log.exception("on_turn dispatch failed")
 
     # --- attachments (popup) ---------------------------------------------------------------
 
@@ -1596,6 +1659,8 @@ class Api:
             async def _install() -> None:
                 try:
                     await ovms_install.install(s.paths, s.config.local, progress, asyncio.Event())
+                    if s.on_runtime_installed is not None:
+                        s.on_runtime_installed()
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("runtime install failed: %s: %s", type(exc).__name__, exc)
                     self._emit(
@@ -1705,6 +1770,104 @@ class Api:
             )
 
         return self._guard(impl, "set_autostart")
+
+    # --- first run: local AI card, autostart question --------------------------------------
+
+    def _setup(self) -> Any:
+        setup = self._s.setup
+        if setup is None:
+            raise AppError("The setup service is not available.", code="server")
+        return setup
+
+    def setup_local_status(self) -> dict[str, Any]:
+        """The "Set up local AI" card's state (the same dict as ``get_state.setup`` and the
+        ``setup.progress`` event): ``phase`` is idle, checking, runtime, model, verifying,
+        done, error or cancelled."""
+
+        def impl() -> dict[str, Any]:
+            view = self._setup_view()
+            if view is None:
+                return fail("server", "The setup service is not available.")
+            return ok(**view)
+
+        return self._guard(impl, "setup_local_status")
+
+    def setup_local_start(self) -> dict[str, Any]:
+        """Start (or resume) installing the runtime and downloading the starter model.
+        Progress arrives as ``setup.progress`` events. Safe to call again while running."""
+
+        def impl() -> dict[str, Any]:
+            self._run(self._setup().start())
+            return ok(**(self._setup_view() or {}))
+
+        return self._guard(impl, "setup_local_start")
+
+    def setup_local_cancel(self) -> dict[str, Any]:
+        """Stop the setup; the model's partial files are deleted."""
+
+        def impl() -> dict[str, Any]:
+            self._run(self._setup().cancel(), timeout=30.0)
+            return ok(**(self._setup_view() or {}))
+
+        return self._guard(impl, "setup_local_cancel")
+
+    def setup_local_dismiss(self) -> dict[str, Any]:
+        """Not now: do not show the card again."""
+
+        def impl() -> dict[str, Any]:
+            self._s.loop.call(self._setup().dismiss)
+            return ok()
+
+        return self._guard(impl, "setup_local_dismiss")
+
+    def answer_autostart(self, flag: bool) -> dict[str, Any]:
+        """The one-time "Start ChatForge when you sign in?" answer. Registers (or leaves
+        unregistered) the logon task and records that the question was answered."""
+
+        def impl() -> dict[str, Any]:
+            want = bool(flag)
+            home = self._s.paths.home
+            if want:
+                st = autostart.enable(home=home)
+            else:
+                st = autostart.status()
+                if st.enabled:
+                    st = autostart.disable(home=home)
+            self._apply_patch({"startup": {"autostart": want, "autostart_asked": True}})
+            return ok(enabled=st.enabled, description=st.describe())
+
+        return self._guard(impl, "answer_autostart")
+
+    # --- add-ons -----------------------------------------------------------------------------
+
+    def get_extensions(self) -> dict[str, Any]:
+        """``{extensions: [{name, ok, version, error, sections, values}]}``: the installed
+        add-ons and their registered settings (``chatforge.extensions``)."""
+
+        def impl() -> dict[str, Any]:
+            host = self._s.extensions
+            return ok(extensions=host.view() if host is not None else [])
+
+        return self._guard(impl, "get_extensions")
+
+    def set_extension_settings(self, name: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Save ``values`` into ``[extensions.<name>]``. Unknown keys and values that do not
+        fit the add-on's registered field are refused (``bad_request``)."""
+
+        def impl() -> dict[str, Any]:
+            from chatforge.extensions import ExtensionError
+
+            host = self._s.extensions
+            if host is None or not isinstance(values, dict):
+                return fail("bad_request", "No such add-on.")
+            try:
+                clean = host.validate_values(str(name), values)
+            except ExtensionError as exc:
+                return fail("bad_request", str(exc))
+            self._apply_patch({"extensions": {str(name): clean}})
+            return ok(values=host.settings_for(str(name)))
+
+        return self._guard(impl, "set_extension_settings")
 
     def set_hotkey(self, spec: str) -> dict[str, Any]:
         def impl() -> dict[str, Any]:

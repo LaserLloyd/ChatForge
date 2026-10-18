@@ -1,6 +1,6 @@
 # ChatForge — notes for coding agents
 
-ChatForge is a Windows tray app (Python 3.12, pywebview on WebView2) with a web popup and a
+ChatForge 0.2.0 is a Windows tray app (Python 3.12 or 3.13, pywebview on WebView2) with a web popup and a
 Settings page in `src/chatforge/web/`. It also has a Linux port (see Platforms). README.md describes the current state; docs/PLAN.md and
 docs/research-brief.md are the original plan and brief, kept for reference.
 
@@ -11,7 +11,8 @@ uv sync --locked --extra dev          # once (add --extra office on Windows for 
 uv run ruff check . && uv run ruff format --check .
 uv run pytest -q                      # ~1 min; live NPU/MiniMax/UI tests are deselected by default
 npm ci && node --test "tests/js/**/*.test.mjs"
-uv run python -m chatforge.desktop.webserver --port 8765   # serve the pages in a browser (dev-mock.js)
+uv run python -m chatforge.desktop.webserver --port 8765   # serve the pages in a browser (dev-mock.js; ?firstrun=1 shows the first-run cards)
+powershell -File deploy/windows/build-release-zip.ps1     # the Windows release zip (dist/)
 node scripts/theme_showcase.mjs        # re-render docs/images/themes/ after a theme update
 ```
 
@@ -48,9 +49,25 @@ Windows only, by design: OCR of pictures (`ocr.py`, Windows.Media.Ocr), legacy `
 extra, imported lazily in `attachments.py`; never import it at module level. Code that touches
 Windows APIs must stay behind a platform check so the Ubuntu CI job still imports it.
 
+## Install, first run, add-ons (0.2.0)
+
+- `Install ChatForge.bat` + `deploy/windows/*.ps1` are the no-terminal installer (PowerShell 5.1, plain ASCII, per user,
+  `uv sync --locked --no-dev --inexact`); `deploy/windows/README.md` documents it, `docs/PLAN-prosumer.md` records why. Both
+  `.ps1` files are parsed by `tests/unit/test_windows_installer.py`; keep them ASCII. `chatforge-installer.iss` is dormant
+  (no certificate): do not advertise it.
+- `setup_local.py` is the first-run card's state machine (runtime, model, check); `runtime/npu_detect.py` decides NPU or CPU
+  (a failed probe means "unknown", never "absent"; the first load waits for it, `LocalModelManager._settle_device`).
+- Autostart is opt-in: `startup.autostart` defaults to false and `autostart_asked` records the answer; never call
+  `autostart.enable` without a user action. `chatforge autostart enable|disable` records the answer in `config.toml`
+  (`--no-record` for the uninstaller).
+- `extensions.py` is the add-on socket (`chatforge.extensions` entry points); its API is documented in
+  `docs/extensions.md` and is version 1: change it with the CHANGELOG.
+- Settings file is TOML (`config.example.toml` is validated by a test); schema version is in `config.SCHEMA_VERSION` with
+  a `migrate_raw` step per bump.
+
 ## UI styling: ThemeForge
 
-UI styling uses ThemeForge 1.0.0 in `src/chatforge/web/static/ui-theme/` (read
+UI styling uses ThemeForge 1.0.0 (default theme for new installs: Glacier) in `src/chatforge/web/static/ui-theme/` (read
 `src/chatforge/web/static/ui-theme/README.md` before writing CSS). Both page heads carry the
 theme block: `ui-theme.js` first and blocking, `ui-theme-base.css` + `ui-components.css` before
 the app's CSS, `ui-theme.css` after it, `ui-components.js` deferred. Build from its tokens and

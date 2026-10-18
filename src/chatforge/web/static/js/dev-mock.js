@@ -56,6 +56,7 @@
 // No secret is ever stored: the mock remembers only THAT a key was saved.
 
 const MOCK_KEY = 'chatforge.mock.v1';
+const STUDIOFORGE_KEY_HELP = 'StudioForge 2.0 needs an API key whenever the server is not on this PC. On the StudioForge machine run `studioforge keys create`, then paste the key in Settings → Providers → StudioForge.';
 const TIME_SCALE_FIRST_COMPILE_S = 12;   // real seconds a "6 minute" first compile takes
 const TIME_SCALE_CACHED_S = 3;           // real seconds a cached load takes
 
@@ -74,7 +75,7 @@ function providerSpec(id, fields) {
     models: [], default_model: null, quirks: [], supports_tools: true, max_output_tokens: 2048,
     temperature: null, extra_body: {}, timeouts: { connect_s: 10, stall_s: 90, wall_s: 600 },
     builtin: false, key_required: null, docs_url: null, context_tokens: null, model_context: {},
-    vision_models: [], model_vision: {},
+    vision_models: [], model_vision: {}, key_help: '',
     ...fields,
   };
 }
@@ -93,7 +94,8 @@ const SEED_PROVIDERS = {
   studioforge: providerSpec('studioforge', {
     display_name: 'StudioForge', base_url: 'http://localhost:1234/v1', api_key_env: 'STUDIOFORGE_API_KEY',
     models: ['unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q5_K_S'], default_model: 'unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q5_K_S',
-    max_output_tokens: 4096, timeouts: { connect_s: 10, stall_s: 300, wall_s: 900 }, key_required: false,
+    max_output_tokens: 4096, timeouts: { connect_s: 10, stall_s: 300, wall_s: 900 }, key_required: null,
+    key_help: STUDIOFORGE_KEY_HELP,
   }),
   openai: providerSpec('openai', {
     display_name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY',
@@ -148,8 +150,8 @@ const DEFAULT_CONFIG = {
     location: '', units: 'metric', web_search_max_results: 5, tool_result_max_chars_local: 1500, tool_result_max_chars_cloud: 6000,
     block_private_addresses: true, attachment_max_chars: 200000, documents_dir: '',
   },
-  ui: { theme: 'laserlloyd', hotkey: 'Ctrl+Alt+C', sticky: true, show_on_reply: true, width: 420, height: 620, margin: 12 },
-  startup: { autostart: true },
+  ui: { theme: 'glacier', hotkey: 'Ctrl+Alt+C', sticky: true, show_on_reply: true, width: 420, height: 620, margin: 12 },
+  startup: { autostart: false, autostart_asked: false, local_setup_dismissed: false },
   logging: { level: 'INFO' },
   hf: { endpoint: 'https://huggingface.co', default_author: 'OpenVINO' },
 };
@@ -199,12 +201,23 @@ function createState() {
       idle_timeout_s: 600, unload_at: null, error: null,
     },
     runtimeInstalled: true,
-    autostart: true,
+    autostart: false,
     downloads: {},
+    setupState: { phase: 'idle', percent: 0, speed_bps: 0, eta_s: null, failure: null, device_note: null },
+    extensionValues: {},
     logs: [],
     attachments: new Map(),   // pending attachment id -> {view, text}
     documents: [],            // paths of the documents create_document "saved"
   };
+  // ?firstrun=1: a fresh install (no runtime, no model, nothing asked yet), for the first-run cards.
+  if (new URLSearchParams(location.search).get('firstrun') === '1') {
+    st.models = [];
+    st.runtimeInstalled = false;
+    st.runtime.state = 'not_installed';
+    st.config.chat.model = 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov';
+    st.config.startup = { autostart: false, autostart_asked: false, local_setup_dismissed: false };
+    return st;
+  }
   if (persisted) {
     if (persisted.config) st.config = { ...st.config, ...persisted.config };
     st.keySaved = persisted.keySaved || {};
@@ -316,6 +329,7 @@ function providerView(pid) {
     base_url: spec.base_url || null,
     builtin: !!spec.builtin || SEED_IDS.has(pid),
     docs_url: spec.docs_url || null,
+    key_help: spec.key_help || null,
     key: keyStatus(pid),
   };
   // Which models see pictures: the listed ones, the default, and the chosen one.
@@ -436,6 +450,56 @@ function autostartView(detail = '') {
   const description = `autostart ${S.autostart ? 'enabled' : 'not enabled'} via Task Scheduler`
     + (path ? ` (${path})` : '') + (detail ? ` - ${detail}` : '');
   return { enabled: S.autostart, mode: 'task-scheduler', mechanism: 'Task Scheduler', path, detail, duplicate: null, description };
+}
+
+// ---------------------------------------------------------- first-run setup ----
+
+const SETUP_RUNTIME_BYTES = 138_798_816;
+const SETUP_MODEL_BYTES = 935_999_480;
+
+/** LocalSetup.snapshot() plus the autostart question, as get_state.setup and setup.progress. */
+function setupView() {
+  const s = S.setupState;
+  const running = ['checking', 'runtime', 'model', 'verifying'].includes(s.phase);
+  const modelInstalled = S.models.some((m) => m.complete);
+  const total = (S.runtimeInstalled ? 0 : SETUP_RUNTIME_BYTES) + (modelInstalled ? 0 : SETUP_MODEL_BYTES);
+  return {
+    phase: s.phase, running, percent: s.percent,
+    needed: running || (!(S.runtimeInstalled && modelInstalled) && !S.config.startup.local_setup_dismissed && s.phase !== 'done'),
+    downloaded_bytes: Math.round(total * s.percent / 100), total_bytes: total,
+    speed_bps: s.speed_bps, eta_s: s.eta_s,
+    message: { idle: 'Download the local runtime and Qwen2.5 1.5B Instruct INT4 (about 1.1 GB).', checking: 'Checking this PC',
+      runtime: 'Downloading the local runtime', model: 'Downloading Qwen2.5 1.5B Instruct INT4', verifying: 'Checking the downloaded files',
+      done: 'Local AI is ready', error: 'Setup stopped', cancelled: 'Setup cancelled' }[s.phase],
+    model_id: 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov', model_label: 'Qwen2.5 1.5B Instruct INT4', model_licence: 'apache-2.0',
+    model_bytes: SETUP_MODEL_BYTES, runtime_bytes: SETUP_RUNTIME_BYTES,
+    runtime_installed: S.runtimeInstalled, model_installed: modelInstalled,
+    device: 'Runs on the Intel NPU', device_note: s.device_note || { device: 'NPU', label: 'Runs on the Intel NPU', slower: false },
+    verified: null, failure: s.failure,
+    autostart_asked: !!S.config.startup.autostart_asked, autostart_enabled: !!S.config.startup.autostart,
+  };
+}
+
+function setupTick() {
+  const s = S.setupState;
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    if (!['runtime', 'model', 'verifying'].includes(s.phase)) { clearInterval(tick); timers.delete(tick); return; }
+    const step = s.phase === 'runtime' ? 3.2 : 1.1;
+    s.percent = Math.min(99, s.percent + step);
+    s.speed_bps = s.phase === 'runtime' ? 31_000_000 : 24_000_000;
+    s.eta_s = Math.max(1, (100 - s.percent) * 0.9);
+    if (s.phase === 'runtime' && s.percent >= 12.9) { s.phase = 'model'; S.runtimeInstalled = true; }
+    else if (s.phase === 'model' && s.percent >= 98.5) { s.phase = 'verifying'; }
+    else if (s.phase === 'verifying' && Date.now() - t0 > 400) {
+      s.phase = 'done'; s.percent = 100; s.speed_bps = 0; s.eta_s = 0;
+      S.runtime.state = 'unloaded';
+      if (!S.models.find((m) => m.id === 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov')) S.models.push(clone(LOCAL_MODELS[0]));
+      clearInterval(tick); timers.delete(tick);
+    }
+    emit({ type: 'setup.progress', ...setupView() });
+  }, 250);
+  timers.add(tick);
 }
 
 // -------------------------------------------------------------- runtime ----
@@ -1234,6 +1298,7 @@ function makeApi() {
         limits: { max_prompt_chars: S.config.chat.max_prompt_chars },
         theme: S.config.ui.theme,
         recommended_model: 'OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov',
+        setup: setupView(),
       });
     },
 
@@ -1687,13 +1752,39 @@ function makeApi() {
       for (const p of Object.values(cfg.providers || {})) delete p.api_key;
       const text = [
         'ChatForge diagnostics (dev mock)',
-        'ChatForge 0.1.0 · Python 3.12 · WebView2 (mock)',
+        'ChatForge 0.2.0 · Python 3.12 · WebView2 (mock)',
         `Runtime: ${JSON.stringify(S.runtime)}`,
         `OVMS installed: ${S.runtimeInstalled}`,
         '', '--- config (keys removed) ---', JSON.stringify(cfg, null, 2),
         '', '--- last 50 log lines ---', ...S.logs.slice(-50),
       ].join('\n');
       return ok({ text });
+    },
+
+    async setup_local_status() { return ok(setupView()); },
+    async setup_local_start() {
+      const s = S.setupState;
+      if (!['runtime', 'model', 'verifying', 'checking'].includes(s.phase)) {
+        Object.assign(s, { phase: S.runtimeInstalled ? 'model' : 'runtime', percent: S.runtimeInstalled ? 0 : 0, failure: null, speed_bps: 0, eta_s: null });
+        setupTick();
+        emit({ type: 'setup.progress', ...setupView() });
+      }
+      return ok(setupView());
+    },
+    async setup_local_cancel() {
+      Object.assign(S.setupState, { phase: 'cancelled', percent: 0, speed_bps: 0, eta_s: null });
+      emit({ type: 'setup.progress', ...setupView() });
+      return ok(setupView());
+    },
+    async setup_local_dismiss() { S.config.startup.local_setup_dismissed = true; persist(); return ok(); },
+    async answer_autostart(flag) {
+      S.autostart = !!flag; S.config.startup.autostart = S.autostart; S.config.startup.autostart_asked = true; persist();
+      return ok({ enabled: S.autostart, description: autostartView().description });
+    },
+    async get_extensions() { return ok({ extensions: [] }); },
+    async set_extension_settings(name, values) {
+      if (!values || typeof values !== 'object') return fail('bad_request', 'No such add-on.');
+      return fail('bad_request', 'No such add-on.');
     },
 
     async get_autostart() { return ok(autostartView()); },
