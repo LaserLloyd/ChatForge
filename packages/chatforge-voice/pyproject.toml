@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chatforge-voice"
+version = "0.1.0"
+description = "Optional CPU voice add-on for ChatForge: push-to-talk with local Parakeet speech recognition and Chatterbox-Turbo speech"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # The engines (public git source). For local development see the commented [tool.uv.sources]
+    # block below and README.md ("Developing").
+    "forge-voice-core @ git+https://github.com/LaserLloyd/DisPatch_Voice@feat/forge-voice-core#subdirectory=packages/forge-voice-core",
+    "sounddevice>=0.5",
+    "keyring>=25.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=1.4,<2",
+    "pytest-timeout>=2.3",
+    "ruff==0.16.9",
+]
+
+[project.scripts]
+chatforge-voice = "chatforge_voice.cli:main"
+
+[project.entry-points."chatforge.extensions"]
+voice = "chatforge_voice:setup"
+
+[project.urls]
+Homepage = "https://github.com/LaserLloyd/ChatForge"
+
+# Local development against a sibling checkout of DisPatch_Voice: UNCOMMENT this block. The path is
+# relative to this file (<ChatForge clone>/packages/chatforge-voice, so three levels up is the folder
+# that holds both clones). It is commented out because `uv pip install ./packages/chatforge-voice`
+# also reads it and would fail for anyone without that sibling checkout.
+# [tool.uv.sources]
+# forge-voice-core = { path = "../../../DisPatch_Voice/packages/forge-voice-core", editable = true }
+
+[tool.hatch.metadata]
+allow-direct-references = true   # the forge-voice-core git URL
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chatforge_voice"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 60
