@@ -18,7 +18,7 @@ uv pip install ./packages/chatforge-voice
 ```
 
 This also installs the engine package `forge-voice-core` (from
-`git+https://github.com/LaserLloyd/DisPatch_Voice@feat/forge-voice-core#subdirectory=packages/forge-voice-core`),
+`git+https://github.com/LaserLloyd/DisPatch_Voice@main#subdirectory=packages/forge-voice-core`),
 `sounddevice` (bundles PortAudio on Windows) and `keyring`. Python 3.12 or 3.13. Roughly 100 MB of
 wheels (numpy, onnxruntime, onnx-asr, tokenizers and friends); no GPU, no torch.
 

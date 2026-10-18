@@ -51,8 +51,8 @@ touches **no** ChatForge file. (Re-check done by diff and reading only; no run a
 * **Root `pyproject.toml` / CI (wave A's files):** nothing is required; the root suite's `testpaths = ["tests"]` does not
   collect the package, and the root `ruff check .` / `ruff format --check .` pass over `packages/` (verified: 201 files).
   To test the add-on in CI add a job that does `cd packages/chatforge-voice && uv sync --extra dev && uv run pytest -q`
-  (the git source for `forge-voice-core` must be reachable; it points at the pushed branch `feat/forge-voice-core`,
-  PR #20 of DisPatch_Voice: **repoint to a tag or `main` once that PR merges**).
+  (the git source for `forge-voice-core` must be reachable; it points at DisPatch_Voice `main`, which carries the
+  package since PR #20 merged; pin a tag instead once DisPatch_Voice cuts one that includes it).
 * **`requires-python`:** wave A sets `>=3.12,<3.14` on ChatForge; the add-on uses the same range.
 * **README / SETUP:** the main README section text is in the report of this branch (not applied here, README is wave A's).
 * **`THIRD_PARTY_NOTICES.md`:** add the Parakeet CC-BY-4.0 attribution line (text in `messages.ATTRIBUTION`) and

@@ -12,7 +12,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     # The engines (public git source). For local development see the commented [tool.uv.sources]
     # block below and README.md ("Developing").
-    "forge-voice-core @ git+https://github.com/LaserLloyd/DisPatch_Voice@feat/forge-voice-core#subdirectory=packages/forge-voice-core",
+    "forge-voice-core @ git+https://github.com/LaserLloyd/DisPatch_Voice@main#subdirectory=packages/forge-voice-core",
     "sounddevice>=0.5",
     "keyring>=25.7",
 ]
