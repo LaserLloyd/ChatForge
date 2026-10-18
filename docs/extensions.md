@@ -77,7 +77,8 @@ an add-on built for another API version instead of loading it half-working.
 | `api.audio` | Placeholder registries: `register_capture(name, factory)`, `register_playback(name, factory)`, `capture_backends()`, `playback_backends()`, `create_capture(name, ...)`, `create_playback(name, ...)`. ChatForge ships no back-end and defines no frame format: the first add-on with audio decides it, and a second add-on finds it here. |
 
 Callbacks run on the core thread or a bridge worker thread, **never the GUI thread**, so they must return
-quickly: hand slow work (a speech model) to your own thread. An exception in a callback is logged and swallowed
+quickly: hand slow work (a speech model) to your own thread. `api.chat.send` and `api.chat.cancel` may be
+called from a callback as well as from your own threads. An exception in a callback is logged and swallowed
 (`extension_callback_failed`); it never breaks a turn.
 
 `TurnInfo` is a frozen dataclass: `request_id`, `user_text` (what the user typed; empty for a regenerated turn),
@@ -123,6 +124,11 @@ markup.
   (a speech add-on adds `numpy` and `onnxruntime`, around 100 MB).
 - **Safe mode.** `CHATFORGE_NO_EXTENSIONS=1` starts ChatForge without loading any add-on; the way to find out
   whether an add-on is the problem.
+- **Trust.** There is no sandbox and no permission list: an add-on is ordinary Python in ChatForge's own
+  environment, imported at every start, with your user's rights (files, network, the credential store,
+  ChatForge's chat). Installing one is the consent; install only add-ons whose source you trust, and pin them
+  (a git dependency should name a tag or commit, not a branch). Two add-ons with the same entry-point name:
+  the first one loads, the second is skipped.
 
 ## Testing an add-on without ChatForge's window
 

@@ -68,15 +68,15 @@ on GitHub), extract it, double-click **`Install ChatForge`**. Or paste this into
 $zip = "$env:TEMP\ChatForge.zip"
 Invoke-WebRequest https://github.com/LaserLloyd/ChatForge/archive/refs/heads/main.zip -OutFile $zip
 Expand-Archive $zip "$env:TEMP\ChatForge-install" -Force
-& "$env:TEMP\ChatForge-install\ChatForge-main\Install ChatForge.bat" --yes
+& "$env:TEMP\ChatForge-install\ChatForge-main\Install ChatForge.bat"
 
 # Verify: prints the version, then checks the machine
 & "$env:LOCALAPPDATA\Programs\ChatForge\app\.venv\Scripts\chatforge.exe" --version
 & "$env:LOCALAPPDATA\Programs\ChatForge\app\.venv\Scripts\chatforge.exe" doctor
 ```
 
-`--yes` starts ChatForge at sign-in without asking; leave it out to be asked, or use `--no-autostart`. The installer
-puts the app in `%LOCALAPPDATA%\Programs\ChatForge`; your settings, chats and models stay in `%LOCALAPPDATA%\ChatForge`.
+The installer asks once whether to start ChatForge at sign-in (`--yes` answers yes without asking, `--no-autostart`
+answers no). It puts the app in `%LOCALAPPDATA%\Programs\ChatForge`; your settings, chats and models stay in `%LOCALAPPDATA%\ChatForge`.
 
 | Pros | Cons |
 | --- | --- |

@@ -64,9 +64,11 @@ already on the PC, to exercise the download paths).
   rewritten, your earlier answer about signing in is kept, your data is not touched. A running ChatForge is closed
   first (only the one in the install folder).
 - **Uninstall** (`Uninstall ChatForge.bat`, or Settings > Apps > ChatForge): removes the sign-in entry, the
-  shortcuts, the Installed-apps entry and the install folder. **Your data stays** in `%LOCALAPPDATA%\ChatForge`.
+  shortcuts, the Installed-apps entry and what the installer put in the install folder (the folder itself goes
+  when nothing else is in it; the installer refuses a folder that already holds other files). **Your data stays**
+  in `%LOCALAPPDATA%\ChatForge`.
 - **Purge** (`--purge`, or answer Y when the uninstaller asks, then type YES): also deletes `%LOCALAPPDATA%\ChatForge`
-  and the API keys ChatForge stored in Credential Manager. `Documents\ChatForge` (files the model made for you) is
+  and the API keys ChatForge (and the voice add-on) stored in Credential Manager. `Documents\ChatForge` (files the model made for you) is
   never touched. uv and Python are shared tools and stay; `uv python uninstall 3.12` removes a uv-managed Python.
 
 ## Windows warnings you may see
