@@ -69,6 +69,9 @@ def test_app_main_never_registers_autostart_on_its_own(monkeypatch, chatforge_ho
     monkeypatch.setattr(app_mod.single_instance, "acquire_single_instance", lambda: None)
     monkeypatch.setattr(app_mod.single_instance, "signal_existing", lambda: False)
     monkeypatch.setattr(app_mod.xutil, "prefer_x11", lambda: False)
+    monkeypatch.setattr(
+        app_mod, "_bootstrap_logging", lambda *a, **k: None
+    )  # keep the global log setup
     monkeypatch.setattr("chatforge.desktop.win32util.ensure_dpi_awareness", lambda: None)
     assert app_mod.main("hidden", paths=Paths.default()) == 0  # "another instance is running"
     assert called == []

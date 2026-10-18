@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+rem  No setlocal on purpose: see the last block.
 title Uninstall ChatForge
 
 rem  Double-click to remove ChatForge. Your settings, chats and models are KEPT unless you pass --purge.
@@ -44,12 +44,14 @@ if "%ASKED%"=="0" (
 )
 
 rem  Everything below is ONE block, which cmd reads before running it: this file may live in the folder
-rem  the uninstall deletes, and cmd must not go back to read a file that is gone.
+rem  the uninstall deletes, and cmd must not go back to read a file that is gone. "(goto) 2>nul" leaves the
+rem  batch context quietly first (a setlocal, or a plain "exit /b", would print "The system cannot find the
+rem  path specified" once the file is gone). The exit code is therefore always 0; the script prints any failure.
 (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%RUN%"%INSTARG% %PSARGS%
-  set "RC=!ERRORLEVEL!"
+  if errorlevel 1 echo The uninstall reported a problem: see the messages above.
   del "%RUN%" >nul 2>&1
   echo.
   pause
-  exit /b !RC!
+  (goto) 2>nul & exit /b 0
 )
