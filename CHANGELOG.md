@@ -3,6 +3,14 @@
 All notable changes to ChatForge. Versions follow [Semantic Versioning](https://semver.org/):
 0.x while the settings file and the add-on API may still change, with the change listed here.
 
+## [Unreleased]
+
+### Changed
+- **Licence: MIT No Attribution (MIT-0)**, together with `packages/chatforge-voice`. You can use,
+  copy, change and ship ChatForge with no conditions; no copyright notice has to be kept. You don't
+  need to credit this project — but if you do, a link back is appreciated. `LICENSE`, both
+  `pyproject.toml` files (`MIT-0`) and the README say so. Releases up to 0.2.0 were MIT.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

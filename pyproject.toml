@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "chatforge"
 version = "0.2.0"
 description = "ChatForge desktop assistant"
+license = "MIT-0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "pywebview>=6.2,<7",

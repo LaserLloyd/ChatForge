@@ -3,7 +3,7 @@
 # ChatForge
 
 [![CI](https://github.com/LaserLloyd/ChatForge/actions/workflows/ci.yml/badge.svg)](https://github.com/LaserLloyd/ChatForge/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: MIT-0](https://img.shields.io/badge/License-MIT--0-green.svg)](LICENSE)
 
 <table align="center">
   <tr>
@@ -993,7 +993,8 @@ hands-free listening and a remote speech server are not included. See
 
 ## License
 
-**MIT** — see [`LICENSE`](LICENSE). Use it, fork it, ship it; keep the copyright notice.
+MIT No Attribution ([MIT-0](LICENSE)). You don't need to credit this project — but if you do, a link back is appreciated.
+Use it, fork it, ship it; no notice has to be kept. Releases up to 0.2.0 were MIT.
 
 The Python dependencies are permissive too (MIT, BSD, Apache-2.0, PSF) with one exception worth
 naming: `pystray`, which draws the tray icon, is **LGPL-3.0**. It is an unmodified dependency

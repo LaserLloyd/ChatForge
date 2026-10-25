@@ -7,7 +7,7 @@ name = "chatforge-voice"
 version = "0.1.0"
 description = "Optional CPU voice add-on for ChatForge: push-to-talk with local Parakeet speech recognition and Chatterbox-Turbo speech"
 readme = "README.md"
-license = "MIT"
+license = "MIT-0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     # The engines (public git source). For local development see the commented [tool.uv.sources]
