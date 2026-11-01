@@ -39,7 +39,7 @@ calculator, and one that creates documents.
 Then try the prompts in [`docs/demo-prompts.md`](docs/demo-prompts.md). Every method, with pros and cons, is under
 [Install](#install); the installer in detail is [`deploy/windows/README.md`](deploy/windows/README.md).
 
-**Status:** v0.2.0, formerly *AI Chat* (existing AI Chat settings, keys and models migrate automatically).
+**Status:** v0.2.1, formerly *AI Chat* (existing AI Chat settings, keys and models migrate automatically).
 Built and tested on Windows 11. The Intel NPU path is verified on one machine, an Intel Core Ultra 5 226V
 (Lunar Lake); the CPU path was verified on a PC without an NPU. CI runs ruff and the Python unit tests on
 Windows and Ubuntu, and the JS tests on Node 24. Questions and bug reports: [Contact](#contact).

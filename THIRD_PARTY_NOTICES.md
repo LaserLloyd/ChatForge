@@ -53,6 +53,31 @@ naming:
   - If you redistribute a bundled or frozen build that embeds it, the LGPL's
     relinking obligation is yours to satisfy (see README › License)
 
+## Voice add-on (packages/chatforge-voice, optional)
+
+The add-on is installed separately (`uv pip install ./packages/chatforge-voice`) and is not part of the core.
+Its Python dependencies are installed by pip/uv and its speech models are downloaded by the user, on request,
+from the Voice panel (or `chatforge-voice models download`) after the sizes and licences are shown. None of
+them are shipped in this repository.
+
+- **forge-voice-core** - MIT License
+  - The speech engine package, taken from https://github.com/LaserLloyd/DisPatch_Voice (public repository,
+    `main` branch), whose LICENSE reads "MIT License, Copyright (c) 2026 Laser Lloyd"
+- **sounddevice** - MIT License
+  - Audio capture and playback; bundles PortAudio on Windows
+- **onnx-asr** - MIT License
+  - Runs the Parakeet model
+- **NVIDIA Parakeet TDT 0.6B v2** (int8 ONNX export by istupakov) - CC-BY-4.0 License
+  - Speech recognition. Attribution required: "Speech recognition: NVIDIA Parakeet TDT 0.6B v2 (ONNX int8
+    export by istupakov), licensed under CC-BY-4.0, run through onnx-asr (MIT)." The Voice panel shows it
+    before the download
+- **Chatterbox-Turbo** (ONNX q4) by Resemble AI - MIT License
+  - The spoken reply
+- **Silero VAD** (snakers4/silero-vad) - MIT License
+  - Detects speech in the recording
+- **Smart Turn v3.2** (pipecat-ai/smart-turn-v3) - BSD-2-Clause License
+  - Detects the end of an utterance
+
 ## Data Services
 
 The tools call these public APIs at run time (no key; nothing is stored beyond a short cache):

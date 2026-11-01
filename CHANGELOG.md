@@ -5,6 +5,21 @@ All notable changes to ChatForge. Versions follow [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-01
+
+### Fixed
+- **Voice add-on** (`chatforge-voice` 0.1.0 -> 0.1.1): a spoken reply that failed mid-way left its speech thread
+  waiting forever and could be read out a second time; the Voice panel refused to stop the microphone once
+  Voice had been switched off, so it kept recording until the time limit; and a hotkey press and a panel tap
+  landing together, or a very quick tap, could open two microphone streams or leave one open. `talk_start`
+  and `talk_stop` are now serialised and `/api/talk/stop` always stops.
+- The 0.2.0 notes said no add-on shipped. `packages/chatforge-voice` 0.1.0 (optional, installed separately) was in
+  fact part of 0.2.0, and the notes now say so.
+- `THIRD_PARTY_NOTICES.md` now lists the voice add-on's engines and models.
+- `packages/chatforge-voice/INTEGRATION.md` is reduced to a current-state note.
+- The installer example `--ref` points at an existing release tag (`v0.2.0` was never tagged; the `v0.2.0` and
+  `v0.2.1` tags are created with this release).
+
 ### Changed
 - **Licence: MIT No Attribution (MIT-0)**, together with `packages/chatforge-voice`. You can use,
   copy, change and ship ChatForge with no conditions; no copyright notice has to be kept. You don't
@@ -27,10 +42,13 @@ All notable changes to ChatForge. Versions follow [Semantic Versioning](https://
   labelled "slower" on the card and in the status line. The `local.device` setting is not rewritten.
 - `config.example.toml` and `docs/demo-prompts.md`.
 - `chatforge --version`.
-- **Add-on seams** (no add-on ships yet): the `chatforge.extensions` entry-point group, `ExtensionAPI`
+- **Add-on seams** and the first add-on: the `chatforge.extensions` entry-point group, `ExtensionAPI`
   (`register_settings_section()`, `on_turn()`, `on_event()`, `on_startup()`/`on_shutdown()`, `chat`, `audio`
   placeholders), an `[extensions.<name>]` table in `config.toml`, and a generic settings card. See
   [`docs/extensions.md`](docs/extensions.md).
+- **Voice add-on** `packages/chatforge-voice` 0.1.0 (optional, installed separately with
+  `uv pip install ./packages/chatforge-voice`): push-to-talk with local Parakeet speech recognition and
+  Chatterbox-Turbo speech on the CPU, through the `chatforge.extensions` entry point. See its README.
 - `docs/PLAN-prosumer.md`: the decisions behind this release.
 
 ### Changed
@@ -55,3 +73,8 @@ All notable changes to ChatForge. Versions follow [Semantic Versioning](https://
 
 First tagged baseline: tray + popup assistant, OpenVINO Model Server on the Intel NPU, OpenAI-compatible providers
 (StudioForge, MiniMax, OpenAI, DeepSeek, custom), nine tools, eight themes.
+
+[Unreleased]: https://github.com/LaserLloyd/ChatForge/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/LaserLloyd/ChatForge/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/LaserLloyd/ChatForge/compare/pre-prosumer-2026-10...v0.2.0
+[0.1.0]: https://github.com/LaserLloyd/ChatForge/releases/tag/pre-prosumer-2026-10

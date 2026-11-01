@@ -7,7 +7,7 @@ rem  The work is done by deploy\windows\Install-ChatForge.ps1; this file only fi
 rem
 rem  Options (all optional):  --yes  start at sign-in without asking      --no-autostart  never register sign-in start
 rem                           --no-launch  do not open ChatForge at the end   --no-shortcuts
-rem                           --install-dir "D:\Apps\ChatForge"   --ref v0.2.0  (which version to download when no app is beside this file)
+rem                           --install-dir "D:\Apps\ChatForge"   --ref v0.2.1  (which version to download when no app is beside this file)
 rem  Where the app comes from: the "app" folder next to this file (release zip), else this file's own folder
 rem  (a git clone), else it is downloaded from GitHub.
 

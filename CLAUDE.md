@@ -1,6 +1,6 @@
 # ChatForge — notes for coding agents
 
-ChatForge 0.2.0 is a Windows tray app (Python 3.12 or 3.13, pywebview on WebView2) with a web popup and a
+ChatForge 0.2.1 is a Windows tray app (Python 3.12 or 3.13, pywebview on WebView2) with a web popup and a
 Settings page in `src/chatforge/web/`. It also has a Linux port (see Platforms). README.md describes the current state; docs/PLAN.md and
 docs/research-brief.md are the original plan and brief, kept for reference.
 

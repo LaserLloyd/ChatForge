@@ -48,7 +48,7 @@ Run from a command prompt in the project folder:
 "Install ChatForge.bat" --yes                  :: no questions: start at sign-in (add --no-autostart to decline instead)
 "Install ChatForge.bat" --no-autostart --no-launch --no-shortcuts
 "Install ChatForge.bat" --install-dir "D:\Apps\ChatForge"
-"Install ChatForge.bat" --ref v0.2.0           :: which version to download when no app is next to the file
+"Install ChatForge.bat" --ref v0.2.1           :: which version to download when no app is next to the file
 "Uninstall ChatForge.bat" --purge --yes        :: also delete your settings, chats, models and saved API keys
 ```
 

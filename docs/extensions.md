@@ -2,8 +2,8 @@
 
 An add-on is a separate Python package that ChatForge loads at start-up through an **entry point**. It can add
 a card to Settings, hear every finished turn and every chat event, send text into the chat as if the user typed
-it, and (later) register audio back-ends. ChatForge itself ships no add-on; this is the socket one plugs into.
-A voice add-on is the first intended user, which is why the hooks are shaped like a conversation: a turn ends,
+it, and (later) register audio back-ends. The core ships no add-on; this is the socket one plugs into.
+The voice add-on in `packages/chatforge-voice` is the first user, which is why the hooks are shaped like a conversation: a turn ends,
 the reply streams, the user speaks.
 
 Status: **API version 1**, new in ChatForge 0.2.0, and still allowed to change while the version is 0.x
