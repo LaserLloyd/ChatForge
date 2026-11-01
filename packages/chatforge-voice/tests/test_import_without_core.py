@@ -78,5 +78,5 @@ def test_the_cli_still_answers_version_and_explains_the_rest():
         print("rc", cli.main(["status"]))
         """
     )
-    assert "chatforge-voice 0.1.0" in r.stdout and "rc 2" in r.stdout, r.stderr
+    assert "chatforge-voice 0.1.1" in r.stdout and "rc 2" in r.stdout, r.stderr
     assert "forge-voice-core" in r.stderr

@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib.util
 from typing import Any
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 #: The ``ExtensionAPI`` generation this add-on was written against (``chatforge.extensions.API_VERSION``).
 API_VERSION = 1

@@ -37,7 +37,13 @@ def host(tmp_path):
     return h
 
 
-def test_every_folder_is_under_the_addons_data_dir(host, tmp_path):
+def test_every_folder_is_under_the_addons_data_dir(host, tmp_path, monkeypatch):
+    # forge-voice-core prefers a complete legacy DisPatch Voice model set under the user's home;
+    # point every home lookup at an empty folder so the result does not depend on the machine.
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE", "XDG_DATA_HOME", "LOCALAPPDATA"):
+        monkeypatch.setenv(name, str(home))
     base = tmp_path / "voice"
     assert host.data_dir() == base
     assert host.models_root() == base / "models" and host.voices_dir() == base / "voices"

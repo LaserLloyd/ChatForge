@@ -142,8 +142,14 @@ class SpeechSession:
                 await asyncio.to_thread(player.finish, 120)
         except Exception as exc:  # noqa: BLE001 - shown to the person, never raised into ChatForge
             log.exception("voice: speaking failed")
+            with ctl._lock:
+                ctl._mark_ended(self.request_id)  # the rest of this reply is not respoken
             ctl._fail("The spoken reply failed", exc)
         finally:
+            # Release _chunks() if it is parked on the queue, or its executor thread never ends.
+            self.ended = True
+            self.stop_event.set()
+            self.q.put(None)
             if player is not None:
                 player.stop()
             ctl._session_finished(self)
@@ -163,6 +169,7 @@ class VoiceController:
         self.deps = deps
         self._on_status = on_status
         self._lock = threading.RLock()
+        self._talk_lock = threading.RLock()  # serialises talk_start / talk_stop
         self._load_lock = threading.Lock()
         self.state = "idle"
         self.message = ""
@@ -281,6 +288,10 @@ class VoiceController:
     # ------------------------------------------------------------------ talking
 
     def talk_start(self) -> bool:
+        with self._talk_lock:
+            return self._talk_start()
+
+    def _talk_start(self) -> bool:
         s = self.settings()
         if not s.enabled:
             self._set_state("idle", "Voice is off. Turn on Voice (CPU) in Settings.")
@@ -307,6 +318,9 @@ class VoiceController:
             self._fail("Could not use the microphone", exc)
             return False
         with self._lock:
+            if self._recorder is not None:  # cannot happen under _talk_lock; stay defensive
+                rec.abort()
+                return True
             self._recorder = rec
             self._record_started = self.deps.clock()
         self._set_state("recording", "Listening. Release the key when you are done.")
@@ -316,6 +330,10 @@ class VoiceController:
         self.talk_stop()
 
     def talk_stop(self) -> None:
+        with self._talk_lock:
+            self._talk_stop()
+
+    def _talk_stop(self) -> None:
         with self._lock:
             rec, self._recorder = self._recorder, None
             if rec is None or self.state != "recording":

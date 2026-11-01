@@ -141,3 +141,13 @@ def test_the_connection_file_is_written_for_the_cli_and_removed_on_stop(env, tmp
     assert panel.url == f"http://127.0.0.1:{panel.port}/#t={panel.token}"
     panel.stop()
     assert not (tmp_path / "data" / PANEL_FILE).exists()
+
+
+def test_talk_stop_still_closes_the_microphone_when_voice_is_switched_off(env):
+    panel, state = env
+    calls = []
+    panel.controller.talk_stop = lambda: calls.append("stop")
+    state["s"] = make_settings(enabled=False)
+    resp, data = call(panel, "POST", "/api/talk/stop", {})
+    assert resp.status == 200 and json.loads(data)["ok"] is True and calls == ["stop"]
+    assert call(panel, "POST", "/api/talk/start", {})[0].status == 409

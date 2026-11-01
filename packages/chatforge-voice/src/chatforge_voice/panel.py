@@ -109,7 +109,7 @@ class PanelServer:
             return 200, {"voice": ctl.status(), "models": models.status()}
         if method != "POST":
             return 405, {"ok": False, "message": "Not allowed."}
-        if path in ("/api/talk/start", "/api/talk/stop") and not ctl.settings().enabled:
+        if path == "/api/talk/start" and not ctl.settings().enabled:
             return 409, {"ok": False, "message": "Voice is off. Turn on Voice (CPU) in Settings."}
         if path == "/api/talk/start":
             return 200, {"ok": bool(ctl.talk_start()), "voice": ctl.status()}

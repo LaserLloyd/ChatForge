@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -315,3 +316,100 @@ def test_notices_about_unsupported_settings_are_in_the_status():
     r = Rig(mode="hands_free")
     assert "not in this release" in r.ctl.status()["notices"][0]
     r.ctl.shutdown()
+
+
+def test_a_failed_spoken_reply_frees_its_thread_and_is_not_respoken():
+    import asyncio
+
+    import numpy as np
+
+    r = Rig(speak_replies="always")
+
+    async def failing_speak(chunks, engine=None, stop=None):
+        yield np.full(2400, 500, dtype="<i2").tobytes()
+        asyncio.ensure_future(anext(chunks))  # parks a worker thread on the queue
+        await asyncio.sleep(0.1)
+        raise RuntimeError("engine blew up")
+
+    r.deps.speak = failing_speak
+    r.event("chat.start", "typed-1")
+    r.event("chat.delta", "typed-1", content="First sentence here. ")
+    sess = r.ctl._sessions["typed-1"]
+    assert wait_for(lambda: not r.ctl._sessions)
+    sess.thread.join(timeout=3)
+    assert not sess.thread.is_alive()  # no executor thread left blocked on the queue
+    assert r.ctl.state == "idle" and "engine blew up" in r.ctl.message
+    r.event("chat.delta", "typed-1", content="Second sentence. ")
+    r.event("chat.done", "typed-1", content="First sentence here. Second sentence.")
+    assert r.ctl._sessions == {}  # the rest of that reply is not respoken
+    r.ctl.shutdown()
+
+
+class GateRecorder(FakeRecorder):
+    """Records its own life; ``start`` can block until the test releases it."""
+
+    def __init__(self, log, gate=None, entered=None, delay=0.0):
+        super().__init__()
+        self.log, self.gate, self.entered, self.delay = log, gate, entered, delay
+
+    def start(self):
+        if self.entered:
+            self.entered.set()
+        if self.gate:
+            assert self.gate.wait(5)
+        time.sleep(self.delay)
+        super().start()
+        self.log.append(self)
+
+
+def _rig_with_factory(factory):
+    r = Rig()
+    r.deps.recorder_factory = lambda s, on_limit: factory()
+    return r
+
+
+def test_two_concurrent_talk_starts_leave_exactly_one_microphone_open():
+    import threading
+
+    made, started = [], []
+
+    def factory():
+        rec = GateRecorder(started, delay=0.15)
+        made.append(rec)
+        return rec
+
+    r = _rig_with_factory(factory)
+    barrier = threading.Barrier(2)
+
+    def go():
+        barrier.wait()
+        r.ctl.talk_start()
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    open_ones = [m for m in made if m.started and not (m.stopped or m.aborted)]
+    assert len(open_ones) == 1 and r.ctl._recorder is open_ones[0]
+    assert r.ctl.state == "recording"
+    r.ctl.talk_cancel()
+
+
+def test_talk_stop_racing_a_slow_talk_start_still_closes_the_microphone():
+    import threading
+
+    gate, entered, started = threading.Event(), threading.Event(), []
+    r = _rig_with_factory(lambda: GateRecorder(started, gate, entered))
+    starter = threading.Thread(target=r.ctl.talk_start)
+    starter.start()
+    assert entered.wait(5)
+    stopper = threading.Thread(target=r.ctl.talk_stop)
+    stopper.start()  # the quick tap's stop arrives before the recorder is installed
+    stopper.join(0.2)
+    gate.set()
+    starter.join(5)
+    stopper.join(5)
+    assert len(started) == 1 and started[0].stopped
+    assert r.ctl._recorder is None
+    assert r.ctl.state != "recording"
